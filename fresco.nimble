@@ -25,6 +25,10 @@ task test, "run all tests":
   let unitTests = @[
     "tests/unit/test_ansi.nim",
     "tests/unit/test_events.nim",
+    "tests/unit/test_termios.nim",
   ]
-  for t in unitTests:
+  let integrationTests = @[
+    "tests/integration/test_termios_pty.nim",
+  ]
+  for t in unitTests & integrationTests:
     exec "nim r --hints:off --warnings:off --path:src " & t
