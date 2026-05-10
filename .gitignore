@@ -1,0 +1,19 @@
+# Build artifacts
+bin/
+nimcache/
+*.exe
+
+# Docker dev home (mirrors recall's pattern — gitignored writable nimble cache)
+.docker-home/
+
+# Editor noise
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Test temp dirs
+/tmp/fresco-*
+
+# Local-only env
+.env

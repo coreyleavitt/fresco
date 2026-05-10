@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# fresco — host-side wrapper that invokes the Docker dev image.
+# Mirrors recall/dev. All toolchain ops in container; built artifacts
+# can run on host for smoke testing.
+#
+# Usage:
+#   ./dev image          (re)build the Docker dev image
+#   ./dev check          nim check (fast type/syntax)
+#   ./dev test           nimble test (tiers 1 + 2)
+#   ./dev build          compile package + examples
+#   ./dev shell          interactive shell inside the container
+#   ./dev clean          remove build artifacts + caches
+#   ./dev help           print this help
+
+set -euo pipefail
+
+IMAGE="fresco-dev:latest"
+HOST_UID="$(id -u)"
+HOST_GID="$(id -g)"
+PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+DOCKER_HOME="${PROJECT_DIR}/.docker-home"
+
+ensure_docker_home() { mkdir -p "${DOCKER_HOME}"; }
+
+docker_run() {
+    docker run --rm \
+        --user "${HOST_UID}:${HOST_GID}" \
+        --volume "${PROJECT_DIR}:/workspace" \
+        --volume "${DOCKER_HOME}:/dockerhome" \
+        --env HOME=/dockerhome \
+        --workdir /workspace \
+        "${IMAGE}" "$@"
+}
+
+cmd="${1:-help}"
+shift || true
+
+case "${cmd}" in
+    image)
+        docker build -t "${IMAGE}" "${PROJECT_DIR}"
+        ;;
+    check)
+        ensure_docker_home
+        docker_run nim check --hints:off src/fresco.nim
+        ;;
+    test)
+        ensure_docker_home
+        docker_run nimble test
+        ;;
+    build)
+        ensure_docker_home
+        docker_run nimble build
+        ;;
+    shell)
+        ensure_docker_home
+        # -ti for interactive shell
+        docker run --rm -ti \
+            --user "${HOST_UID}:${HOST_GID}" \
+            --volume "${PROJECT_DIR}:/workspace" \
+            --volume "${DOCKER_HOME}:/dockerhome" \
+            --env HOME=/dockerhome \
+            --workdir /workspace \
+            "${IMAGE}" /bin/bash
+        ;;
+    clean)
+        rm -rf "${PROJECT_DIR}/nimcache" "${PROJECT_DIR}/bin"
+        ;;
+    help|*)
+        sed -n '4,15p' "$0"
+        ;;
+esac

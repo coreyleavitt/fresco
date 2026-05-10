@@ -1,0 +1,25 @@
+# Package metadata for fresco — see DESIGN.md for architecture.
+
+version       = "0.0.1"
+author        = "Corey Leavitt"
+description   = "Terminal-UI kernel: raw-mode input event stream + region rendering + composable widgets."
+license       = "MIT"
+srcDir        = "src"
+
+# Library only — no `bin` line. Callers depend on `fresco` and import
+# from `fresco/...` paths.
+
+requires "nim >= 2.0.0"
+
+# Async runtime. Must match recall (the primary downstream consumer)
+# and any other Nim CLI that already commits to chronos. Pin loosely.
+requires "chronos >= 4.0.0"
+
+# Test runner. `nimble test` compiles each tests/**/*.nim file with
+# std/unittest. Run via `./dev test`. List individual test files here
+# as they land — keeps the harness simple + each test runnable in
+# isolation.
+task test, "run all tests":
+  # Tier 1 (pure unit) tests get listed here as they're added.
+  # Tier 2 (PTY integration) tests live in tests/integration/.
+  echo "no tests yet — see DESIGN.md and the v0 milestone for roadmap"
