@@ -20,6 +20,10 @@ requires "chronos >= 4.0.0"
 # as they land — keeps the harness simple + each test runnable in
 # isolation.
 task test, "run all tests":
-  # Tier 1 (pure unit) tests get listed here as they're added.
+  # Tier 1 (pure unit) — list each new test file here as it lands.
   # Tier 2 (PTY integration) tests live in tests/integration/.
-  echo "no tests yet — see DESIGN.md and the v0 milestone for roadmap"
+  let unitTests = @[
+    "tests/unit/test_ansi.nim",
+  ]
+  for t in unitTests:
+    exec "nim r --hints:off --warnings:off --path:src " & t

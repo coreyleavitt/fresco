@@ -1,0 +1,79 @@
+import std/unittest
+import fresco/terminal/ansi
+
+suite "ANSI cursor + erase":
+
+  test "cursorTo emits CUP with 1-based row/col":
+    check cursorTo(1, 1)   == "\x1b[1;1H"
+    check cursorTo(10, 20) == "\x1b[10;20H"
+
+  test "cursor relative motion":
+    check cursorUp(3)    == "\x1b[3A"
+    check cursorDown()   == "\x1b[1B"
+    check cursorRight(2) == "\x1b[2C"
+    check cursorLeft(5)  == "\x1b[5D"
+    check cursorColumn(1) == "\x1b[1G"
+
+  test "save / restore cursor use DECSC/DECRC":
+    check saveCursor()    == "\x1b7"
+    check restoreCursor() == "\x1b8"
+
+  test "cursor visibility":
+    check cursorHide() == "\x1b[?25l"
+    check cursorShow() == "\x1b[?25h"
+
+  test "line + screen erase":
+    check clearLine()         == "\x1b[2K"
+    check clearLineRight()    == "\x1b[0K"
+    check clearLineLeft()     == "\x1b[1K"
+    check clearScreen()       == "\x1b[2J"
+    check clearScreenBelow()  == "\x1b[0J"
+
+  test "alternate screen":
+    check altScreenEnter() == "\x1b[?1049h"
+    check altScreenLeave() == "\x1b[?1049l"
+
+suite "ANSI styles":
+
+  test "reset SGR":
+    check reset() == "\x1b[0m"
+
+  test "style wrappers open and close their own attribute":
+    check bold("x")      == "\x1b[1m" & "x" & "\x1b[22m"
+    check dim("x")       == "\x1b[2m" & "x" & "\x1b[22m"
+    check italic("x")    == "\x1b[3m" & "x" & "\x1b[23m"
+    check underline("x") == "\x1b[4m" & "x" & "\x1b[24m"
+    check reverse("x")   == "\x1b[7m" & "x" & "\x1b[27m"
+
+  test "fg / bg color SGR codes":
+    check fg(cRed)     == "\x1b[31m"
+    check fg(cGreen)   == "\x1b[32m"
+    check fg(cDefault) == "\x1b[39m"
+    check bg(cBlue)    == "\x1b[44m"
+    check bg(cDefault) == "\x1b[49m"
+
+  test "color() wraps and restores default fg":
+    check color("hi", cGreen) == "\x1b[32mhi\x1b[39m"
+
+suite "displayWidth":
+
+  test "ASCII counts one cell per byte":
+    check displayWidth("")      == 0
+    check displayWidth("hello") == 5
+
+  test "CSI sequences contribute zero cells":
+    check displayWidth("\x1b[31mred\x1b[0m") == 3
+    check displayWidth(bold("hi"))           == 2
+    check displayWidth(color("ok", cCyan))   == 2
+
+  test "two-byte ESC (DECSC/DECRC) contributes zero cells":
+    check displayWidth(saveCursor() & "a" & restoreCursor()) == 1
+
+  test "OSC terminated by BEL or ST contributes zero cells":
+    check displayWidth("\x1b]0;title\x07x")    == 1
+    check displayWidth("\x1b]0;title\x1b\\x")  == 1
+
+  test "CJK wide runes count as two cells":
+    check displayWidth("漢字")  == 4
+    check displayWidth("a漢b") == 4
+    check displayWidth("한")    == 2
