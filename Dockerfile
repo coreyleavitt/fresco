@@ -9,6 +9,7 @@ ARG NIM_VERSION=2.2.10
 ARG NIM_ARCH=linux_x64
 
 RUN zypper --non-interactive refresh \
+    && zypper --non-interactive --gpg-auto-import-keys dup --no-recommends --allow-vendor-change \
     && zypper --non-interactive install --no-recommends \
         gcc \
         glibc-devel \
