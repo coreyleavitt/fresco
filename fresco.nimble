@@ -24,6 +24,7 @@ task test, "run all tests":
   # Tier 2 (PTY integration) tests live in tests/integration/.
   let unitTests = @[
     "tests/unit/test_ansi.nim",
+    "tests/unit/test_events.nim",
   ]
   for t in unitTests:
     exec "nim r --hints:off --warnings:off --path:src " & t
