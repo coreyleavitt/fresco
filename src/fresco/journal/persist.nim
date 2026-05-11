@@ -113,6 +113,9 @@ type
   PersistentJournal* = ref object of Journal
     path*: string
     file*: File
+    warnedWriteFailure*: bool
+      ## Set true after the first write failure so the stderr
+      ## diagnostic doesn't spam every subsequent appended event.
 
 proc openJournal*(path: string): PersistentJournal =
   ## Open (or create) an on-disk journal at `path`. If the file
@@ -143,8 +146,17 @@ proc close*(j: PersistentJournal) =
 
 method onPersist*(j: PersistentJournal, e: Event) {.gcsafe, raises: [].} =
   {.cast(gcsafe).}:
-    if j.file != nil:
-      try:
-        j.file.write($e.toJson() & "\n")
-        j.file.flushFile()
-      except Exception: discard
+    if j.file == nil: return
+    try:
+      j.file.write($e.toJson() & "\n")
+      j.file.flushFile()
+    except CatchableError as err:
+      # First write failure: one-shot stderr diagnostic so the user
+      # sees the journal stopped persisting. Subsequent failures swallow.
+      if not j.warnedWriteFailure:
+        j.warnedWriteFailure = true
+        try:
+          stderr.writeLine("fresco journal write failed (" &
+                           $err.name & ": " & err.msg &
+                           "); subsequent events will be lost")
+        except IOError: discard

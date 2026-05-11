@@ -112,7 +112,7 @@ proc set*[T](s: Signal[T], newVal: T) {.gcsafe, raises: [].} =
         let id = globalJournal.logStateWrite(tid, parent, s.label, valRepr)
         if currentScope != nil:
           currentScope.lastEventId = id
-    except Exception:
+    except CatchableError:
       discard
   notify(s)
 

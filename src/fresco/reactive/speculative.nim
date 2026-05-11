@@ -56,7 +56,7 @@ proc rollback*(scope: SpeculativeScope) {.gcsafe.} =
     while scope.reverts.len > 0:
       let r = scope.reverts.pop()
       try: r()
-      except Exception: discard
+      except CatchableError: discard
     scope.committed = true
 
 template speculative*(body: untyped): SpeculativeScope =

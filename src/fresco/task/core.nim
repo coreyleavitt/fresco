@@ -38,7 +38,7 @@ proc cancel*(m: Mount) {.gcsafe, raises: [].} =
     m.future.cancelSoon()
   {.cast(gcsafe).}:
     try: dispose(m.scope)
-    except Exception: discard
+    except Exception: discard   # dispose's cleanup closures untyped-raise
 
 proc wait*(m: Mount): Future[void] {.async: (raises: [CancelledError, CatchableError]).} =
   ## Wait for the task to complete. Propagates the task's exception
@@ -81,7 +81,7 @@ proc wireLifecycle(m: Mount) =
         if not captured.scope.disposed:
           dispose(captured.scope)
       except Exception:
-        discard
+        discard   # dispose's cleanup closures untyped-raise
 
 template spawnRetry*(retries: int, call: untyped): Mount =
   ## Retry the spawned task up to `retries` times on failure. Each

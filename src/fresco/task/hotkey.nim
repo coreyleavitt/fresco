@@ -39,7 +39,7 @@ template hotkey*(stream: InputStream, key: KeyEvent, body: untyped): untyped =
         try:
           let id = globalJournal.logKeyConsumed(tid, parent, ev.summary)
           if owningScope != nil: owningScope.lastEventId = id
-        except Exception: discard
+        except CatchableError: discard
       body
       return true
     return false)

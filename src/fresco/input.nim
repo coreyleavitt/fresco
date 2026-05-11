@@ -193,5 +193,5 @@ proc nextKey*(s: InputStream): Future[KeyEvent] {.async.} =
     try:
       let id = globalJournal.logKeyReceived(tid, parent, ev.summary)
       if currentScope != nil: currentScope.lastEventId = id
-    except Exception: discard
+    except CatchableError: discard
   return ev

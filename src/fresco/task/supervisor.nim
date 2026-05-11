@@ -149,7 +149,7 @@ proc run*(s: Supervisor) {.async: (raises: [CatchableError]).} =
         try:
           let id = globalJournal.logSupervisorTerminate(tid, p, child.spec.name)
           if currentScope != nil: currentScope.lastEventId = id
-        except Exception: discard
+        except CatchableError: discard
       s.children.delete(idx)
       continue
 
@@ -164,7 +164,7 @@ proc run*(s: Supervisor) {.async: (raises: [CatchableError]).} =
           let id = globalJournal.logSupervisorEscalate(tid, p,
             child.spec.name, err.msg)
           if currentScope != nil: currentScope.lastEventId = id
-        except Exception: discard
+        except CatchableError: discard
       for c in s.children:
         if not c.mount.future.finished: c.mount.cancel()
       raise err
@@ -176,7 +176,7 @@ proc run*(s: Supervisor) {.async: (raises: [CatchableError]).} =
         try:
           let id = globalJournal.logSupervisorTerminate(tid, p, child.spec.name)
           if currentScope != nil: currentScope.lastEventId = id
-        except Exception: discard
+        except CatchableError: discard
       s.children.delete(idx)
       continue
 
@@ -195,7 +195,7 @@ proc run*(s: Supervisor) {.async: (raises: [CatchableError]).} =
           let id = globalJournal.logSupervisorEscalate(tid, p,
             child.spec.name, err.msg)
           if currentScope != nil: currentScope.lastEventId = id
-        except Exception: discard
+        except CatchableError: discard
       for c in s.children:
         if not c.mount.future.finished: c.mount.cancel()
       raise err
@@ -240,7 +240,7 @@ proc run*(s: Supervisor) {.async: (raises: [CatchableError]).} =
          target.mount != nil and target.mount.scope != nil:
         let prevTid = target.mount.scope.taskId
         try: target.spec.onRestart(globalJournal, prevTid)
-        except Exception: discard
+        except Exception: discard   # user-supplied closure
 
       target.mount = spawn target.spec.factory()
 
