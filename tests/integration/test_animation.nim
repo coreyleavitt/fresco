@@ -11,9 +11,9 @@ import fresco/reactive/animation
 suite "easing curves":
 
   test "linear maps t to t":
-    check applyEasing(0.0, eLinear) == 0.0
-    check applyEasing(0.5, eLinear) == 0.5
-    check applyEasing(1.0, eLinear) == 1.0
+    check applyEasing(0.0, esLinear) == 0.0
+    check applyEasing(0.5, esLinear) == 0.5
+    check applyEasing(1.0, esLinear) == 1.0
 
   test "easeIn/Out endpoints":
     for e in Easing:
@@ -21,10 +21,10 @@ suite "easing curves":
       check applyEasing(1.0, e) == 1.0
 
   test "easeInQuad accelerates from 0":
-    check applyEasing(0.5, eEaseInQuad) == 0.25
+    check applyEasing(0.5, esInQuad) == 0.25
 
   test "easeOutQuad decelerates to 1":
-    let v = applyEasing(0.5, eEaseOutQuad)
+    let v = applyEasing(0.5, esOutQuad)
     check abs(v - 0.75) < 1e-9
 
 suite "tween":
@@ -35,7 +35,7 @@ suite "tween":
   test "tween progresses signal toward target and completes":
     proc body() {.async: (raises: [Exception]).} =
       let s = signal(0.0)
-      discard tween(s, 1.0, 100.milliseconds, eLinear)
+      discard tween(s, 1.0, 100.milliseconds, esLinear)
       await sleepAsync(160.milliseconds)
       check abs(s() - 1.0) < 1e-6
     waitFor body()
@@ -43,10 +43,10 @@ suite "tween":
   test "second tween on same signal replaces the first":
     proc body() {.async: (raises: [Exception]).} =
       let s = signal(0.0)
-      discard tween(s, 100.0, 500.milliseconds, eLinear)
+      discard tween(s, 100.0, 500.milliseconds, esLinear)
       await sleepAsync(30.milliseconds)
       # restart with new target
-      discard tween(s, -50.0, 100.milliseconds, eLinear)
+      discard tween(s, -50.0, 100.milliseconds, esLinear)
       await sleepAsync(180.milliseconds)
       check abs(s() - (-50.0)) < 1e-6
     waitFor body()
@@ -57,7 +57,7 @@ suite "tween":
       var samples: seq[float] = @[]
       discard createRoot:
         createEffect proc() = samples.add s()
-      discard tween(s, 10.0, 100.milliseconds, eLinear)
+      discard tween(s, 10.0, 100.milliseconds, esLinear)
       await sleepAsync(160.milliseconds)
       # Should have collected several intermediate samples; last is target.
       check samples.len >= 3
@@ -75,7 +75,7 @@ suite "tween":
     proc body() {.async: (raises: [Exception]).} =
       let s = signal(0.0)
       let root = createRoot:
-        discard tween(s, 100.0, 500.milliseconds, eLinear)
+        discard tween(s, 100.0, 500.milliseconds, esLinear)
       # Let a couple of frames tick so the tween starts moving.
       await sleepAsync(80.milliseconds)
       let midpoint = s()
@@ -93,7 +93,7 @@ suite "tween":
     # interval because the lazy-init guard saw a non-default Duration.
     proc body() {.async: (raises: [Exception]).} =
       let s1 = signal(0.0)
-      discard tween(s1, 1.0, 100.milliseconds, eLinear)
+      discard tween(s1, 1.0, 100.milliseconds, esLinear)
       await sleepAsync(150.milliseconds)
       check abs(s1() - 1.0) < 1e-6
       stopFrameClock()
@@ -101,7 +101,7 @@ suite "tween":
       # tick at the old rate. We can't easily measure the rate but
       # we can verify a fresh tween still completes correctly.
       let s2 = signal(0.0)
-      discard tween(s2, 1.0, 100.milliseconds, eLinear)
+      discard tween(s2, 1.0, 100.milliseconds, esLinear)
       await sleepAsync(150.milliseconds)
       check abs(s2() - 1.0) < 1e-6
     waitFor body()

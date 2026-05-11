@@ -1,6 +1,6 @@
 ## Animated signals — piecewise FRP behaviors with a frame clock.
 ##
-##   tween(scroll, target = 100.0, 200.milliseconds, eEaseOutCubic)
+##   tween(scroll, target = 100.0, 200.milliseconds, esOutCubic)
 ##
 ## A `tween` creates an Animation: a closure that, for each frame
 ## while the tween is running, writes an interpolated value into the
@@ -19,13 +19,13 @@ import ./scope
 
 type
   Easing* = enum
-    eLinear
-    eEaseInQuad
-    eEaseOutQuad
-    eEaseInOutQuad
-    eEaseInCubic
-    eEaseOutCubic
-    eEaseInOutCubic
+    esLinear
+    esInQuad
+    esOutQuad
+    esInOutQuad
+    esInCubic
+    esOutCubic
+    esInOutCubic
 
   Animation* = ref object
     target: Signal[float]
@@ -47,18 +47,18 @@ var frameInterval {.threadvar.}: Duration
   ## fresco default) are unaffected. Cross-thread animation would
   ## require a shared list + a per-thread clock — not yet implemented.
 
-proc applyEasing*(t: float, e: Easing): float =
+proc applyEasing*(t: float, easing: Easing): float =
   let t = clamp(t, 0.0, 1.0)
-  case e
-  of eLinear:          t
-  of eEaseInQuad:      t * t
-  of eEaseOutQuad:     1.0 - (1.0 - t) * (1.0 - t)
-  of eEaseInOutQuad:
+  case easing
+  of esLinear:      t
+  of esInQuad:      t * t
+  of esOutQuad:     1.0 - (1.0 - t) * (1.0 - t)
+  of esInOutQuad:
     if t < 0.5: 2.0 * t * t
     else: 1.0 - pow(-2.0 * t + 2.0, 2) / 2.0
-  of eEaseInCubic:     t * t * t
-  of eEaseOutCubic:    1.0 - pow(1.0 - t, 3)
-  of eEaseInOutCubic:
+  of esInCubic:     t * t * t
+  of esOutCubic:    1.0 - pow(1.0 - t, 3)
+  of esInOutCubic:
     if t < 0.5: 4.0 * t * t * t
     else: 1.0 - pow(-2.0 * t + 2.0, 3) / 2.0
 
@@ -110,7 +110,7 @@ proc stopFrameClock*() =
   frameInterval = default(Duration)
 
 proc tween*(s: Signal[float], target: float,
-            duration: Duration, easing = eLinear): Animation
+            duration: Duration, easing = esLinear): Animation
             {.discardable.} =
   ## Animate `s` from its current value to `target` over `duration`.
   ## If another tween is already in flight against `s`, it's cancelled
