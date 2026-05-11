@@ -33,13 +33,17 @@ proc restoreTermios*(s: TermiosSnapshot) =
 
 proc enterCbreak*(fd: cint = STDIN_FILENO): TermiosSnapshot =
   ## Save current termios and switch `fd` into cbreak: ICANON, ECHO,
-  ## and ISIG cleared; one-byte reads (VMIN=1, VTIME=0). Returns the
-  ## snapshot the caller (or `withCbreak`) restores from.
+  ## and ISIG cleared on the local-mode side; IXON (XON/XOFF flow
+  ## control, which would steal Ctrl-Q / Ctrl-S) cleared on the input
+  ## side. One-byte reads (VMIN=1, VTIME=0). Returns the snapshot the
+  ## caller (or `withCbreak`) restores from.
   result = saveTermios(fd)
   if not result.valid: return
   var raw = result.saved
   let lmask = not Cflag(ICANON or ECHO or ISIG)
+  let imask = not Cflag(IXON)
   raw.c_lflag = raw.c_lflag and lmask
+  raw.c_iflag = raw.c_iflag and imask
   raw.c_cc[VMIN] = cchar(1)
   raw.c_cc[VTIME] = cchar(0)
   discard tcSetAttr(fd, TCSAFLUSH, addr raw)

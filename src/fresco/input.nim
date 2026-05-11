@@ -18,6 +18,15 @@ import ./events
 const DefaultEscTimeout* = 50.milliseconds
 
 type
+  KeyFilter* = proc(ev: KeyEvent): bool {.closure.}
+    ## Pre-filter on the input stream. Returns `true` if the event was
+    ## consumed (don't enqueue for `nextKey`); `false` to pass through.
+    ## Filters run synchronously in the read callback — keep them fast.
+
+  FilterEntry = object
+    id: int
+    fn: KeyFilter
+
   InputStream* = ref object
     fd: cint
     queue: AsyncQueue[KeyEvent]
@@ -28,6 +37,8 @@ type
     registered: bool
     escTimeout: Duration
     escWaiter: Future[void]
+    filters: seq[FilterEntry]
+    nextFilterId: int
 
 proc setNonblocking(fd: cint): cint =
   result = fcntl(fd, F_GETFL, 0)
@@ -38,10 +49,37 @@ proc restoreFlags(fd: cint, flags: cint) =
   if flags >= 0:
     discard fcntl(fd, F_SETFL, flags)
 
-proc enqueue(s: InputStream, evs: seq[KeyEvent]) =
+proc runFilters(s: InputStream, ev: KeyEvent): bool {.gcsafe.} =
+  ## Walk filters in registration order. First filter that returns
+  ## true consumes the event; the rest don't see it.
+  {.cast(gcsafe).}:
+    for entry in s.filters:
+      try:
+        if entry.fn(ev):
+          return true
+      except Exception:
+        discard
+    return false
+
+proc enqueue(s: InputStream, evs: seq[KeyEvent]) {.gcsafe.} =
   for e in evs:
+    if s.runFilters(e): continue
     try: s.queue.putNoWait(e)
     except AsyncQueueFullError: discard
+
+proc addFilter*(s: InputStream, fn: KeyFilter): int =
+  ## Register a filter. Returns a handle for `removeFilter`.
+  let id = s.nextFilterId
+  inc s.nextFilterId
+  s.filters.add FilterEntry(id: id, fn: fn)
+  return id
+
+proc removeFilter*(s: InputStream, handle: int) =
+  ## Remove a filter by its handle. No-op if the handle isn't found.
+  for i in 0 ..< s.filters.len:
+    if s.filters[i].id == handle:
+      s.filters.del i
+      return
 
 proc finalizeEsc(s: InputStream) {.async.} =
   try:
