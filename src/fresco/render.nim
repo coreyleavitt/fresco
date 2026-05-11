@@ -14,7 +14,7 @@ import ./terminal/ansi
 
 type
   Renderer* = ref object
-    height*, width*: int
+    height, width: int   ## internal — callers reach through Screen
     current: seq[string]
     known:   seq[bool]
 

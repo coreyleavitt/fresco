@@ -80,6 +80,13 @@ proc step(a: Animation, now: Moment): bool =
   ## `withScope(a.originScope)` so the settled value journals under
   ## the task that originated the tween, not under whichever coroutine
   ## the dispatcher last left in `currentScope` when the clock ticked.
+  ##
+  ## **Disposed-origin invariant:** `tween` registers an `onCleanup`
+  ## against the origin scope that sets `a.cancelled = true`. If
+  ## `originScope` is disposed before the duration elapses, that
+  ## cleanup fires first, the next clock tick's `if a.cancelled`
+  ## guard returns true, and the terminal `set` never runs against
+  ## a disposed scope.
   if a.cancelled: return true
   let elapsed = now - a.startMono
   if elapsed >= a.duration:

@@ -120,6 +120,10 @@ proc removeFilter*(s: InputStream, handle: int) =
       s.filters.del i
       return
 
+proc stop*(s: InputStream)
+  ## Forward decl — full definition below. `onReadable` calls this to
+  ## tear down on EOF/HUP.
+
 proc finalizeEsc(s: InputStream) {.task, async.} =
   let myGen = s.escGen
   try:
@@ -142,9 +146,24 @@ proc onReadable(udata: pointer) {.gcsafe, raises: [].} =
   if s.closed: return
 
   var buf: array[256, char]
+  var totalRead = 0
   while true:
     let n = posix.read(s.fd, addr buf[0], buf.len)
-    if n <= 0: break
+    if n < 0: break          # EAGAIN/EWOULDBLOCK — drained for this tick
+    if n == 0:
+      # EOF (pty HUP, stdin closed). Without this teardown the
+      # dispatcher re-arms the reader and `onReadable` busy-loops on
+      # zero-byte reads. Stop the stream so pending awaiters wake
+      # with InputStreamClosedError and the fd is unregistered.
+      if totalRead == 0:
+        # stop() touches signal handlers / termios — onReadable is
+        # `{.gcsafe, raises: [].}` so we both cast-gcsafe and swallow
+        # any exception (Defect included) before returning control to
+        # chronos's read-callback dispatch.
+        {.cast(gcsafe).}:
+          try: stop(s) except Exception: discard
+      break
+    inc totalRead, n
     let start = s.pending.len
     s.pending.setLen(start + n)
     for k in 0 ..< n:

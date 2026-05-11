@@ -118,3 +118,23 @@ suite "InputStream over PTY":
         let evs = await collect(stream, 1)
         check evs == @[atomKey(kArrowDown)]
     waitFor body()
+
+  test "bounded queue overflow increments droppedEvents":
+    # Regression for round-5 M2: the dropped-events counter was added
+    # in round 4 but never tested. A bounded queue (maxsize > 0) that
+    # fills up should silently drop the excess but bump the counter.
+    proc body() {.async: (raises: [Exception]).} =
+      let (master, slave) = openPtyPair()
+      # queueSize = 2 so we can overflow it deterministically.
+      let stream = newInputStream(slave, queueSize = 2)
+      fresco_input.start(stream)
+      defer:
+        fresco_input.stop(stream)
+        discard close(master); discard close(slave)
+      writeAll(master, "abcde")     # 5 char events; queue can hold 2
+      await sleepAsync(50.milliseconds)
+      check stream.droppedEvents >= 1
+      # Drain the two that did fit so the rest of the suite stays clean.
+      discard await stream.nextKey()
+      discard await stream.nextKey()
+    waitFor body()

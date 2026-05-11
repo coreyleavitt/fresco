@@ -41,10 +41,10 @@ suite "supervisor onRestart":
   test "lastWritesByLabel returns the most-recent state per signal":
     let t = TaskId.fresh()
     discard globalJournal.logTaskSpawned(t, NoEvent, "demo", "")
-    discard globalJournal.logStateWrite(t, NoEvent, "count", "1")
-    discard globalJournal.logStateWrite(t, NoEvent, "title", "hello")
-    discard globalJournal.logStateWrite(t, NoEvent, "count", "2")
-    discard globalJournal.logStateWrite(t, NoEvent, "count", "7")
+    discard globalJournal.logSignalWrite(t, NoEvent, "count", "1")
+    discard globalJournal.logSignalWrite(t, NoEvent, "title", "hello")
+    discard globalJournal.logSignalWrite(t, NoEvent, "count", "2")
+    discard globalJournal.logSignalWrite(t, NoEvent, "count", "7")
 
     let table = globalJournal.lastWritesByLabel(t)
     check "count" in table

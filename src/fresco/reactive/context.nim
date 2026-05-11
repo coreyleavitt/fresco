@@ -25,8 +25,14 @@ type
 proc typeMarker*[T](_: typedesc[T]): pointer =
   ## Stable unique key per type T. The `{.global.}` storage gives one
   ## ref per instantiation of this generic — different `T`s get
-  ## different markers regardless of `$T` collisions. Pre-warm from a
-  ## single thread before multi-thread use (lazy init isn't atomic).
+  ## different markers regardless of `$T` collisions.
+  ##
+  ## fresco runs one chronos dispatcher per thread by design, so the
+  ## first-touch lazy init is racy only for callers that explicitly
+  ## spawn OS threads and call `provide`/`use` from them. Such callers
+  ## must pre-warm each marker from the main thread (e.g. `discard
+  ## typeMarker(MyType)`) before spawning workers, otherwise two
+  ## threads first-touching the same `T` may produce distinct keys.
   var marker {.global.}: TypeMarkerObj
   if marker == nil: marker = TypeMarkerObj()
   cast[pointer](marker)

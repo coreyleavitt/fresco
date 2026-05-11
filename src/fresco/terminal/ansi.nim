@@ -7,8 +7,10 @@
 import std/unicode
 
 const
-  ESC* = "\x1b"
-  CSI* = ESC & "["
+  ESC = "\x1b"
+  CSI = ESC & "["
+  ## Internal — callers compose sequences via the named helpers below
+  ## (`cursorTo`, `bold`, etc.) rather than concatenating raw escapes.
 
 # --- Cursor positioning ----------------------------------------------------
 
@@ -63,6 +65,7 @@ proc italic*(s: string): string    = CSI & "3m" & s & CSI & "23m"
 proc underline*(s: string): string = CSI & "4m" & s & CSI & "24m"
 proc reverse*(s: string): string   = CSI & "7m" & s & CSI & "27m"
 
+# ECMA-48 SGR offsets: 30..37 = 8-color foreground, 40..47 = background.
 proc fg*(c: Color): string = CSI & $(30 + c.ord) & "m"
 proc bg*(c: Color): string = CSI & $(40 + c.ord) & "m"
 

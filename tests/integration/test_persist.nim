@@ -19,7 +19,7 @@ suite "persist: round-trip":
       let j = openJournal(path)
       let t = TaskId.fresh()
       discard j.logTaskSpawned(t, NoEvent, "boot", "")
-      discard j.logStateWrite(t, NoEvent, "count", "5")
+      discard j.logSignalWrite(t, NoEvent, "count", "5")
       discard j.logTaskCompleted(t, NoEvent)
       close(j)
 
@@ -39,7 +39,7 @@ suite "persist: round-trip":
     discard j.logTaskSpawned(t, NoEvent, "n", "T")
     discard j.logTaskCancelled(t, NoEvent, "user")
     discard j.logTaskFailed(t, NoEvent, "msg", "ValueError")
-    discard j.logStateWrite(t, NoEvent, "x", "42")
+    discard j.logSignalWrite(t, NoEvent, "x", "42")
     discard j.logKeyReceived(t, NoEvent, "Char(a)")
     discard j.logKeyConsumed(t, NoEvent, "Ctrl-q")
     discard j.logSupervisorRestart(t, NoEvent, "worker", 2)
@@ -67,8 +67,8 @@ suite "persist: round-trip":
     block:
       let j = openJournal(path)
       let t = TaskId.fresh()
-      discard j.logStateWrite(t, NoEvent, "x", "1")
-      discard j.logStateWrite(t, NoEvent, "x", "2")
+      discard j.logSignalWrite(t, NoEvent, "x", "1")
+      discard j.logSignalWrite(t, NoEvent, "x", "2")
       close(j)
 
     # Simulate a crashed half-write at end of file.
@@ -87,8 +87,8 @@ suite "persist: round-trip":
     block:
       let j = openJournal(path)
       let t = TaskId.fresh()
-      discard j.logStateWrite(t, NoEvent, "x", "1")
-      discard j.logStateWrite(t, NoEvent, "x", "2")
+      discard j.logSignalWrite(t, NoEvent, "x", "1")
+      discard j.logSignalWrite(t, NoEvent, "x", "2")
       close(j)
 
     let j2 = openJournal(path)
@@ -137,7 +137,7 @@ suite "persist: edge cases":
       let t = TaskId.fresh()
       # Burn a few thousand ids before our recorded event.
       for _ in 0 ..< 5000: discard EventId.fresh()
-      discard j.logStateWrite(t, NoEvent, "x", "high")
+      discard j.logSignalWrite(t, NoEvent, "x", "high")
       close(j)
 
     let started = epochTime()

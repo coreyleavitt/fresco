@@ -41,10 +41,12 @@ template journalEvent*(body: untyped) =
   ## no-op when no journal is installed. Failures during append are
   ## swallowed — the journal is an audit trail, not a critical path.
   ##
-  ## Inside `body`, three names are injected:
+  ## Inside `body`, three names are `{.inject.}`'d into scope and one
+  ## additional name (`id`) is bound non-injectively:
   ##   `j`   — the active journal (non-nil)
   ##   `tid` — current scope's TaskId, or RootTask if no scope
   ##   `p`   — current scope's lastEventId, or NoEvent if no scope
+  ##   `id`  — the resulting EventId (post-body); do not shadow
   ##
   ## `body` must evaluate to an `EventId` (typically a `j.logXxx`
   ## call). Usage:
@@ -112,7 +114,7 @@ proc logTaskCancelled*(j: Journal, taskId: TaskId, parentId: EventId,
   ev.cancelReason = reason
   j.append(ev)
 
-proc logStateWrite*(j: Journal, taskId: TaskId, parentId: EventId,
+proc logSignalWrite*(j: Journal, taskId: TaskId, parentId: EventId,
                     label, valueRepr: string): EventId =
   var ev = baseEvent(ekSignalWrite, taskId, parentId)
   ev.signalLabel = label

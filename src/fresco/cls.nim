@@ -49,7 +49,7 @@
 import std/macros
 import ./reactive/scope
 import ./reactive/speculative
-import ./task/core
+import ./task/types   # Mount, MountCollector, parallelCollector — types only
 
 type
   TaskContext* = object

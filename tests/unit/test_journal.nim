@@ -31,7 +31,7 @@ suite "journal: append + query":
     let tB = TaskId.fresh()
     discard j.logTaskSpawned(tA, NoEvent, "A", "")
     discard j.logTaskSpawned(tB, NoEvent, "B", "")
-    discard j.logStateWrite(tA, NoEvent, "count", "1")
+    discard j.logSignalWrite(tA, NoEvent, "count", "1")
     let a = j.byTask(tA)
     check a.len == 2
     for e in a: check e.taskId == tA
@@ -40,8 +40,8 @@ suite "journal: append + query":
     let j = newJournal()
     let t = TaskId.fresh()
     discard j.logTaskSpawned(t, NoEvent)
-    discard j.logStateWrite(t, NoEvent, "x", "1")
-    discard j.logStateWrite(t, NoEvent, "y", "2")
+    discard j.logSignalWrite(t, NoEvent, "x", "1")
+    discard j.logSignalWrite(t, NoEvent, "y", "2")
     discard j.logTaskCompleted(t, NoEvent)
     check j.byKind(ekSignalWrite).len == 2
     check j.byKind(ekTaskSpawned).len == 1
@@ -49,7 +49,7 @@ suite "journal: append + query":
   test "find by EventId":
     let j = newJournal()
     let t = TaskId.fresh()
-    let id = j.logStateWrite(t, NoEvent, "x", "42")
+    let id = j.logSignalWrite(t, NoEvent, "x", "42")
     let ev = j.find(id)
     check ev.id == id
     check ev.kind == ekSignalWrite
@@ -66,8 +66,8 @@ suite "journal: causal ancestors":
     let j = newJournal()
     let t = TaskId.fresh()
     let a = j.logTaskSpawned(t, NoEvent, "root")
-    let b = j.logStateWrite(t, a, "x", "1")
-    let c = j.logStateWrite(t, b, "x", "2")
+    let b = j.logSignalWrite(t, a, "x", "1")
+    let c = j.logSignalWrite(t, b, "x", "2")
     let chain = j.ancestors(c)
     check chain.len == 3
     check chain[0].id == c
@@ -88,8 +88,8 @@ suite "journal: timestamps":
     let j = newJournal()
     let t = TaskId.fresh()
     discard j.logTaskSpawned(t, NoEvent)
-    discard j.logStateWrite(t, NoEvent, "x", "1")
-    discard j.logStateWrite(t, NoEvent, "x", "2")
+    discard j.logSignalWrite(t, NoEvent, "x", "1")
+    discard j.logSignalWrite(t, NoEvent, "x", "2")
     check j[0].mono <= j[1].mono
     check j[1].mono <= j[2].mono
 

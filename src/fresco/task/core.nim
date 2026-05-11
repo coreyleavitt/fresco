@@ -18,23 +18,8 @@ import chronos
 import ../reactive/scope
 import ../journal/events
 import ../journal/log
-
-type
-  Mount* = ref object
-    scope*: Scope
-    future*: Future[void]
-
-type MountCollector* = ref object
-  ## Heap-allocated collector for `parallel:` blocks. Holding it as a
-  ## ref (not a raw pointer to a stack-allocated seq) means we can
-  ## safely carry it through CLS save/restore around awaits without
-  ## the pointer dangling if the surrounding stack frame moves.
-  mounts*: seq[Mount]
-
-var parallelCollector* {.threadvar.}: MountCollector
-  ## When non-nil, any `spawn` adds its Mount to `collector.mounts` so
-  ## a `parallel:` block can await them as a group. Lifetime-scoped by
-  ## the `parallel` template; do not touch directly.
+import ./types
+export types  # Mount, MountCollector, parallelCollector — public surface
 
 proc cancel*(m: Mount) {.gcsafe, raises: [].} =
   ## Cancel the task. Idempotent. Triggers scope dispose via the

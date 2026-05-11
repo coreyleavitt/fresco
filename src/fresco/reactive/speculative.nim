@@ -30,7 +30,7 @@
 type
   SpeculativeScope* = ref object
     parent*: SpeculativeScope
-    reverts*: seq[proc() {.closure.}]
+    reverts: seq[proc() {.closure.}]   ## internal — populated via recordRevert
     committed*: bool
 
 var currentSpeculative* {.threadvar.}: SpeculativeScope

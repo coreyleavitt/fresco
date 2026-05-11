@@ -112,7 +112,7 @@ proc setCore[T](s: Signal[T], newVal: T, journal: bool)
         when compiles($newVal): $newVal
         else: ""
       journalEvent:
-        j.logStateWrite(tid, p, s.label, valRepr)
+        j.logSignalWrite(tid, p, s.label, valRepr)
   notify(s)
 
 proc set*[T](s: Signal[T], newVal: T) {.gcsafe, raises: [].} =

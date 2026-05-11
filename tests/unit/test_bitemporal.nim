@@ -9,8 +9,8 @@ suite "bitemporal: eventsBefore + stateAt":
     let j = newJournal()
     let t = TaskId.fresh()
     let a = j.logTaskSpawned(t, NoEvent, "boot", "")
-    let b = j.logStateWrite(t, a, "x", "1")
-    let c = j.logStateWrite(t, b, "x", "2")
+    let b = j.logSignalWrite(t, a, "x", "1")
+    let c = j.logSignalWrite(t, b, "x", "2")
     let d = j.logTaskCompleted(t, c)
     check j.eventsBefore(a).len == 1
     check j.eventsBefore(b).len == 2
@@ -21,11 +21,11 @@ suite "bitemporal: eventsBefore + stateAt":
     let j = newJournal()
     let t = TaskId.fresh()
     discard j.logTaskSpawned(t, NoEvent, "boot", "")
-    discard j.logStateWrite(t, NoEvent, "cursor", "0")
-    discard j.logStateWrite(t, NoEvent, "title",  "hello")
-    let mid = j.logStateWrite(t, NoEvent, "cursor", "5")
-    discard j.logStateWrite(t, NoEvent, "title",  "world")
-    let final = j.logStateWrite(t, NoEvent, "cursor", "9")
+    discard j.logSignalWrite(t, NoEvent, "cursor", "0")
+    discard j.logSignalWrite(t, NoEvent, "title",  "hello")
+    let mid = j.logSignalWrite(t, NoEvent, "cursor", "5")
+    discard j.logSignalWrite(t, NoEvent, "title",  "world")
+    let final = j.logSignalWrite(t, NoEvent, "cursor", "9")
 
     # Scrub to mid: cursor was just set to 5, title still "hello".
     let snapMid = j.stateAt(mid, t)
@@ -41,8 +41,8 @@ suite "bitemporal: eventsBefore + stateAt":
     let j = newJournal()
     let tA = TaskId.fresh()
     let tB = TaskId.fresh()
-    discard j.logStateWrite(tA, NoEvent, "x", "1")
-    let last = j.logStateWrite(tB, NoEvent, "y", "2")
+    discard j.logSignalWrite(tA, NoEvent, "x", "1")
+    let last = j.logSignalWrite(tB, NoEvent, "y", "2")
     let snap = j.stateAt(last)
     check "x" in snap and "y" in snap
 
@@ -50,8 +50,8 @@ suite "bitemporal: eventsBefore + stateAt":
     let j = newJournal()
     let tA = TaskId.fresh()
     let tB = TaskId.fresh()
-    discard j.logStateWrite(tA, NoEvent, "x", "from-A")
-    let last = j.logStateWrite(tB, NoEvent, "x", "from-B")
+    discard j.logSignalWrite(tA, NoEvent, "x", "from-A")
+    let last = j.logSignalWrite(tB, NoEvent, "x", "from-B")
     check j.stateAt(last, tA)["x"] == "from-A"
     check j.stateAt(last, tB)["x"] == "from-B"
 
@@ -64,7 +64,7 @@ suite "bitemporal: eventsBefore + stateAt":
     # Simulate a gap: synthesize an event whose parentId points to a
     # non-existent id (as if the parent was skipped during load).
     let phantom = EventId(99_999_999'u)
-    let b = j.logStateWrite(t, phantom, "x", "1")  # parent missing
+    let b = j.logSignalWrite(t, phantom, "x", "1")  # parent missing
     let chain = j.ancestors(b)
     # Walk starts at b, fails to find phantom, stops gracefully.
     check chain.len == 1
@@ -77,9 +77,9 @@ suite "bitemporal: eventsBefore + stateAt":
     # excluded from lastWritesByLabel / stateAt / stateAtTime entirely.
     let j = newJournal()
     let t = TaskId.fresh()
-    discard j.logStateWrite(t, NoEvent, "",      "unlabeled-a")
-    discard j.logStateWrite(t, NoEvent, "named", "value")
-    let last = j.logStateWrite(t, NoEvent, "",   "unlabeled-b")
+    discard j.logSignalWrite(t, NoEvent, "",      "unlabeled-a")
+    discard j.logSignalWrite(t, NoEvent, "named", "value")
+    let last = j.logSignalWrite(t, NoEvent, "",   "unlabeled-b")
     let snap = j.stateAt(last, t)
     check "" notin snap
     check snap["named"] == "value"
@@ -93,9 +93,9 @@ suite "bitemporal: eventsBetween (wall clock)":
     let j = newJournal()
     let t = TaskId.fresh()
     let mid0 = getTime()
-    discard j.logStateWrite(t, NoEvent, "x", "before")
+    discard j.logSignalWrite(t, NoEvent, "x", "before")
     let cut = getTime()
-    discard j.logStateWrite(t, NoEvent, "x", "after")
+    discard j.logSignalWrite(t, NoEvent, "x", "after")
     let later = getTime()
     let inRange = j.eventsBetween(mid0, cut)
     # Some events fall in [mid0, cut]; the one written after `cut`
