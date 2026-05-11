@@ -119,6 +119,34 @@ suite "InputStream over PTY":
         check evs == @[atomKey(kArrowDown)]
     waitFor body()
 
+  test "EOF on the master side tears down the stream":
+    # Regression for round-5 L5: when the PTY master is closed, the
+    # slave reads return 0 indefinitely. Without onReadable's EOF
+    # handling, the dispatcher would re-arm the reader and spin in a
+    # zero-byte read loop. The fix calls stop() on first all-zero
+    # wakeup, which wakes pending nextKey awaiters with
+    # InputStreamClosedError.
+    proc body() {.async: (raises: [Exception]).} =
+      let (master, slave) = openPtyPair()
+      let stream = newInputStream(slave)
+      fresco_input.start(stream)
+      defer:
+        discard close(slave)
+      let pending = stream.nextKey()
+      await sleepAsync(20.milliseconds)
+      check not pending.finished
+      # Close the master — slave reads return EOF.
+      discard close(master)
+      var raised = false
+      try:
+        discard await pending.wait(500.milliseconds)
+      except InputStreamClosedError:
+        raised = true
+      except CancelledError:
+        raised = true
+      check raised
+    waitFor body()
+
   test "bounded queue overflow increments droppedEvents":
     # Regression for round-5 M2: the dropped-events counter was added
     # in round 4 but never tested. A bounded queue (maxsize > 0) that

@@ -59,8 +59,11 @@ proc toJson*(e: Event): JsonNode =
   of ekTaskSpawned:
     result["spawnedName"] = %e.spawnedName
     result["spawnedType"] = %e.spawnedType
-  of ekTaskCompleted, ekTaskCancelled:
-    if e.kind == ekTaskCancelled: result["cancelReason"] = %e.cancelReason
+  of ekTaskCompleted:
+    discard   # no payload — kept as its own arm so a future field
+              # addition becomes a compile error if not serialized.
+  of ekTaskCancelled:
+    result["cancelReason"] = %e.cancelReason
   of ekTaskFailed:
     result["failureMsg"]  = %e.failureMsg
     result["failureType"] = %e.failureType

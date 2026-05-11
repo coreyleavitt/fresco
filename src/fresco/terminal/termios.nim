@@ -55,23 +55,26 @@ proc enterCbreak*(fd: cint = STDIN_FILENO): TermiosSnapshot =
 # back if a signal fires before they cleanly exit. The fatal-signal
 # handler walks the stack top-down restoring each saved state.
 
-const MaxSignalSnapshots = 16
-var snapshotStack: array[MaxSignalSnapshots, TermiosSnapshot]
-var snapshotDepth: int
-  ## Total nesting depth across all install/uninstall pairs. May exceed
-  ## MaxSignalSnapshots; only the first `MaxSignalSnapshots` snapshots
-  ## are stored in the array, but the depth counter tracks every level
-  ## so install/uninstall stay paired (the alternative — skipping a
-  ## decrement on uninstall when no push happened — would require
-  ## tracking which calls pushed, which is more fragile).
+const MaxSignalSnapshots* {.intdefine.} = 16
+  ## Bound on simultaneously-nested cbreak scopes the signal handler
+  ## can restore. Configurable via `-d:MaxSignalSnapshots=N`. Past
+  ## the bound, snapshots are silently not stored (depth counter
+  ## keeps pairing correct). Deep nesting isn't a real workload —
+  ## the bound exists to keep the handler signal-safe (no alloc).
 
-# Caller-installed signal handlers we displaced on first install.
-# Restored on the matching last uninstall so we're a good citizen for
-# embedding hosts that had their own SIGINT/TERM/SEGV traps.
+# All state for the signal-handler stack lives in threadvars. fresco is
+# single-thread by design (one chronos dispatcher per thread), so this
+# is semantically equivalent to plain globals — but Nim's gcsafe
+# inference treats threadvars as gcsafe, which lets install/uninstall
+# (and therefore `stop()` in input.nim) be genuinely gcsafe without
+# `{.cast(gcsafe).}` escape hatches at the call site.
+var snapshotStack {.threadvar.}: array[MaxSignalSnapshots, TermiosSnapshot]
+var snapshotDepth {.threadvar.}: int
+
 type SigHandler = proc(sig: cint) {.noconv.}
-var prevSigInt:  SigHandler
-var prevSigTerm: SigHandler
-var prevSigSegv: SigHandler
+var prevSigInt  {.threadvar.}: SigHandler
+var prevSigTerm {.threadvar.}: SigHandler
+var prevSigSegv {.threadvar.}: SigHandler
 
 proc termiosSignalHandler(sig: cint) {.noconv.} =
   # Restore innermost-first: each stored scope undoes its own change
@@ -85,7 +88,7 @@ proc termiosSignalHandler(sig: cint) {.noconv.} =
   signal(sig, SIG_DFL)
   discard kill(getpid(), sig)
 
-proc installSignalHandlers*(s: TermiosSnapshot) =
+proc installSignalHandlers*(s: TermiosSnapshot) {.gcsafe, raises: [].} =
   ## Register restore-on-fatal-signal hooks for SIGINT/SIGTERM/SIGSEGV.
   ## Nested install calls push onto a stack so the original termios
   ## of each scope is preserved through fatal-signal restore. Snapshots
@@ -103,7 +106,7 @@ proc installSignalHandlers*(s: TermiosSnapshot) =
     prevSigTerm = cast[SigHandler](signal(SIGTERM, termiosSignalHandler))
     prevSigSegv = cast[SigHandler](signal(SIGSEGV, termiosSignalHandler))
 
-proc uninstallSignalHandlers*() =
+proc uninstallSignalHandlers*() {.gcsafe, raises: [].} =
   ## Pop one nest level; restore the caller's prior handlers (or
   ## SIG_DFL if none were installed before us) only when the stack
   ## is empty. Mirrors `installSignalHandlers` exactly so the pairing

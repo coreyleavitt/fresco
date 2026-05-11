@@ -103,6 +103,10 @@ proc step(a: Animation, now: Moment): bool =
   return false
 
 proc clockLoop() {.async.} =
+  # No `{.task.}` — clockLoop reads no CLS vars itself, and `step()`
+  # uses `withScope(a.originScope)` synchronously around the terminal
+  # frame's journaled `set` call (intermediates use `setUntracked`
+  # which skips journaling). CLS save/restore here would do nothing.
   while true:
     let now = Moment.now()
     var i = 0
@@ -149,6 +153,13 @@ proc tween*(s: Signal[float], target: float,
   ## signal within one dispatcher iteration can therefore accumulate
   ## entries in the list — bounded by frame interval (~33ms at 30fps)
   ## and self-corrects on the next tick.
+  ##
+  ## **Scope-less callers**: if `tween` is called outside any scope
+  ## (`currentScope == nil`), `originScope` is captured as nil and
+  ## `onCleanup` is a no-op. The animation has no automatic lifetime
+  ## management — it runs to completion and cannot be cancelled
+  ## externally. Wrap calls in `createRoot:` or a `spawn`'d task if
+  ## you want cancel-on-dispose semantics.
   for a in frameAnimations:
     if a.target == s: a.cancelled = true
   result = Animation(

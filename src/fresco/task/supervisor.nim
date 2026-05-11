@@ -158,7 +158,7 @@ proc run*(s: Supervisor) {.task, async: (raises: [CatchableError]).} =
           discard
 
     if policyFired and policyAction == eaTerminate:
-      journalEvent: j.logSupervisorTerminate(tid, p, child.spec.name)
+      journalEvent: j.logSupervisorTerminate(tid, parentEvt, child.spec.name)
       s.children.delete(idx)
       continue
 
@@ -167,7 +167,7 @@ proc run*(s: Supervisor) {.task, async: (raises: [CatchableError]).} =
         "child '" & child.spec.name & "' onError requested escalation")
       err.childName = child.spec.name
       journalEvent:
-        j.logSupervisorEscalate(tid, p, child.spec.name, err.msg)
+        j.logSupervisorEscalate(tid, parentEvt, child.spec.name, err.msg)
       for c in s.children:
         if not c.mount.future.finished: c.mount.cancel()
       raise err
@@ -179,7 +179,7 @@ proc run*(s: Supervisor) {.task, async: (raises: [CatchableError]).} =
     let policyForcesRestart = policyFired and policyAction == eaRestart
     if not policyForcesRestart and
        not shouldRestart(child.spec.lifecycle, failed):
-      journalEvent: j.logSupervisorTerminate(tid, p, child.spec.name)
+      journalEvent: j.logSupervisorTerminate(tid, parentEvt, child.spec.name)
       s.children.delete(idx)
       continue
 
@@ -223,7 +223,7 @@ proc run*(s: Supervisor) {.task, async: (raises: [CatchableError]).} =
         "child '" & offendingName & "' exceeded " &
         $s.maxRestarts & " restarts in " & $s.within)
       err.childName = offendingName
-      journalEvent: j.logSupervisorEscalate(tid, p, offendingName, err.msg)
+      journalEvent: j.logSupervisorEscalate(tid, parentEvt, offendingName, err.msg)
       for c in s.children:
         if not c.mount.future.finished: c.mount.cancel()
       raise err
@@ -246,7 +246,7 @@ proc run*(s: Supervisor) {.task, async: (raises: [CatchableError]).} =
           # original racing winner still drives the cascade decision.
           let siblingName = s.children[i].spec.name
           let reason = "concurrent failure during cascade: " & siblingErr.msg
-          journalEvent: j.logSupervisorEscalate(tid, p, siblingName, reason)
+          journalEvent: j.logSupervisorEscalate(tid, parentEvt, siblingName, reason)
 
     # Re-spawn every cascaded child. Logging + onRestart handlers fire
     # per child so the journal records the full cascade.
@@ -254,7 +254,7 @@ proc run*(s: Supervisor) {.task, async: (raises: [CatchableError]).} =
       let target = s.children[i]
       let targetName = target.spec.name
       let targetGen = target.restartTimes.len
-      journalEvent: j.logSupervisorRestart(tid, p, targetName, targetGen)
+      journalEvent: j.logSupervisorRestart(tid, parentEvt, targetName, targetGen)
 
       if target.spec.onRestart != nil and globalJournal != nil and
          target.mount != nil and target.mount.scope != nil:

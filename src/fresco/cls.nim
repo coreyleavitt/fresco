@@ -5,7 +5,7 @@
 ## collectors:
 ##
 ##   `currentScope`        — who owns the cleanup chain and journal task id
-##   `currentSpeculative`  — the active MVCC frame for revert-on-rollback
+##   `currentSpeculative`  — the active speculative frame for revert-on-rollback
 ##   `parallelCollector`   — the seq into which `spawn` reports new Mounts
 ##
 ## All three are thread-locals. Chronos doesn't restore thread-locals
@@ -25,7 +25,7 @@
 ## continuation, not the OS thread — the same insight Python
 ## `contextvars`, .NET `AsyncLocal<T>`, Kotlin `CoroutineContext`,
 ## Scheme `parameterize` all converged on. We emulate it by injecting,
-## around every `await` in a proc body, a save of the four threadvars
+## around every `await` in a proc body, a save of the three threadvars
 ## into a closure-local before suspension and a restore after resume.
 ## Locals survive `await` (chronos's state-machine transform captures
 ## them in the iterator's environment), so the threadvars are correctly
@@ -43,7 +43,7 @@
 ## transforms it into a state machine.
 ##
 ## For one-off use outside a `{.task.}` proc, call `withContext` around
-## a block that needs the four threadvars to match a previously
+## a block that needs the three threadvars to match a previously
 ## captured `TaskContext`.
 
 import std/macros
@@ -79,8 +79,9 @@ macro taskAwait*(call: untyped): untyped =
   ## so task's rewriter never sees them. The `parallel:` template
   ## and the `receive:` macro use this internally.
   ##
-  ## Inside a `{.task.}` proc, bare `await X` is already rewritten —
-  ## you don't need `taskAwait` for source-level awaits.
+  ## **Do not use inside a `{.task.}` proc.** Bare `await X` there is
+  ## already rewritten by the pragma. Calling `taskAwait` would
+  ## produce harmless-but-wasteful double-wrapping.
   let ctxSym = genSym(nskLet, "frescoCtx")
   result = quote do:
     block:
@@ -91,7 +92,7 @@ macro taskAwait*(call: untyped): untyped =
         restoreContext(`ctxSym`)
 
 template withContext*(ctx: TaskContext, body: untyped) =
-  ## Run `body` with the four fresco threadvars set from `ctx`. Restores
+  ## Run `body` with the three fresco threadvars set from `ctx`. Restores
   ## the previously-current context on every exit path. Useful in
   ## callback-style code (effect bodies, input filters) that fires from
   ## the dispatcher with whatever scope happened to be current — wrap
@@ -106,7 +107,7 @@ template withContext*(ctx: TaskContext, body: untyped) =
 
 macro task*(prc: untyped): untyped =
   ## Pragma: rewrite every `await` in the proc body to inline
-  ## save/restore of the four fresco threadvars. Compose with
+  ## save/restore of the three fresco threadvars. Compose with
   ## `{.async.}` (or `{.async: (raises: [...]).}`) — *put `task`
   ## first*:
   ##
@@ -140,7 +141,10 @@ macro task*(prc: untyped): untyped =
   if prc[4].kind != nnkEmpty:
     for p in prc[4]:
       let head = if p.kind == nnkExprColonExpr: p[0] else: p
-      if head.kind == nnkIdent and head.eqIdent("async"):
+      # `eqIdent` matches nnkIdent, nnkSym, and nnkOpenSymChoice —
+      # necessary because inside a template, hygiene may wrap the
+      # pragma ident as a symbol or an open-sym-choice.
+      if head.eqIdent("async"):
         hasAsync = true
         break
   if not hasAsync:

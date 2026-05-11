@@ -121,7 +121,8 @@ src/fresco/
 │   └── capabilities.nim    # capability markers + `requires` macro
 ├── cls.nim                 # continuation-local storage — TaskContext + {.task.} pragma + taskAwait (layer-0)
 ├── task/
-│   ├── core.nim            # task primitive, Mount handle, spawn / spawnRetry / spawnCatch
+│   ├── types.nim           # Mount, MountCollector, parallelCollector — pure data, no async (layer-0 split so cls can import without dragging in core's lifecycle machinery)
+│   ├── core.nim            # task primitive, spawn / spawnRetry / spawnCatch (re-exports types)
 │   ├── receive.nim         # selective receive runtime — pattern arms + after timeout
 │   ├── parallel.nim        # parallel: block — structured-concurrency group await
 │   ├── mount.nim           # mountWhen / mount(cond) — reactive conditional spawn

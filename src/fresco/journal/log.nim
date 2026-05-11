@@ -41,36 +41,60 @@ template journalEvent*(body: untyped) =
   ## no-op when no journal is installed. Failures during append are
   ## swallowed — the journal is an audit trail, not a critical path.
   ##
-  ## Inside `body`, three names are `{.inject.}`'d into scope and one
-  ## additional name (`id`) is bound non-injectively:
-  ##   `j`   — the active journal (non-nil)
-  ##   `tid` — current scope's TaskId, or RootTask if no scope
-  ##   `p`   — current scope's lastEventId, or NoEvent if no scope
-  ##   `id`  — the resulting EventId (post-body); do not shadow
+  ## Inside `body`, three names are `{.inject.}`'d into scope:
+  ##   `j`         — the active journal (non-nil)
+  ##   `tid`       — current scope's TaskId, or RootTask if no scope
+  ##   `parentEvt` — current scope's lastEventId, or NoEvent if no scope
+  ##
+  ## (An internal `id` let-binding holds the returned EventId for the
+  ## post-body lastEventId advancement. It's scoped to the template
+  ## body and not visible to callers.)
+  ##
+  ## The injected name `parentEvt` (rather than the more obvious `p`)
+  ## reduces shadow risk with common loop-variable names. `j` and
+  ## `tid` are kept short — they're idiomatic in the call-site code
+  ## (`j.logFooEvent(tid, parentEvt, ...)`).
   ##
   ## `body` must evaluate to an `EventId` (typically a `j.logXxx`
   ## call). Usage:
   ##
   ##   journalEvent:
-  ##     j.logTaskSpawned(tid, p, name, "")
+  ##     j.logTaskSpawned(tid, parentEvt, name, "")
   ##
   ## Replaces the 5-line `if globalJournal != nil: ...` boilerplate
   ## previously hand-rolled at every journal call site.
   if globalJournal != nil:
     let j {.inject.} = globalJournal
     let tid {.inject.} = if currentScope != nil: currentScope.taskId else: RootTask
-    let p {.inject.} = if currentScope != nil: currentScope.lastEventId else: NoEvent
+    let parentEvt {.inject.} = if currentScope != nil: currentScope.lastEventId else: NoEvent
     try:
       let id = body
       if currentScope != nil: currentScope.lastEventId = id
     except CatchableError: discard
 
 proc useJournal*(j: Journal = nil): Journal =
-  ## Install `j` as the process-wide journal (creating one if nil).
-  ## Returns the active journal so callers can hold a handle.
-  if globalJournal == nil:
-    globalJournal = if j != nil: j else: newJournal()
+  ## Install or reuse the process-wide journal. Semantics:
+  ##
+  ## - `useJournal(myJournal)` — always replaces the current journal
+  ##   with `myJournal` and returns it.
+  ## - `useJournal()` — if a journal is already installed, returns it
+  ##   unchanged; otherwise creates a fresh in-memory `newJournal()`.
+  ##
+  ## Tests that want a fresh journal per case must call `resetJournal()`
+  ## first (or assign `globalJournal = newJournal()` directly) — the
+  ## no-arg form intentionally reuses an existing journal so library
+  ## code can call it lazily without clobbering a host-installed one.
+  if j != nil:
+    globalJournal = j
+  elif globalJournal == nil:
+    globalJournal = newJournal()
   result = globalJournal
+
+proc resetJournal*() =
+  ## Clear the active journal. Tests call this between cases so events
+  ## from a prior test don't bleed into the next when subsequent code
+  ## calls `useJournal()` with no arg.
+  globalJournal = nil
 
 # --- Append helpers ------------------------------------------------------
 

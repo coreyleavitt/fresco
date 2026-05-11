@@ -19,6 +19,7 @@ import ../reactive/scope
 import ../journal/events
 import ../journal/log
 import ./types
+import ../cls
 export types  # Mount, MountCollector, parallelCollector — public surface
 
 proc cancel*(m: Mount) {.gcsafe, raises: [].} =
@@ -43,6 +44,11 @@ proc wait*(m: Mount): Future[void] {.async: (raises: [CancelledError, CatchableE
   ## (if any) into the caller. Named `wait` rather than `await` to
   ## avoid colliding with chronos's `await` macro at call sites; use
   ## as `await m.wait()`.
+  ##
+  ## No `{.task.}` — `wait` returns immediately after its single
+  ## `await m.future` with no post-await reactive work, so CLS
+  ## save/restore would be pure overhead. Callers wrapped in their
+  ## own `{.task, async.}` are unaffected.
   if m == nil: return
   await m.future
 
@@ -99,7 +105,11 @@ template spawnRetry*(retries: int, call: untyped): Mount =
   ## (typically a plain proc invocation). Cancellation propagates and
   ## stops further retries.
   block:
-    proc retryThunk(): Future[void] {.async.} =
+    proc retryThunk(): Future[void] {.task, async.} =
+      # `{.task.}` because subsequent retries of `call` may include
+      # synchronous reactive setup (signal declarations, spawns) that
+      # read currentScope. Without CLS preservation across the await,
+      # retry iteration ≥2 would start with stale threadvars.
       var attempts = 0
       while true:
         inc attempts
@@ -119,7 +129,10 @@ template spawnCatch*(call: untyped): Mount =
   ## already handled out-of-band (logging, signal mutation) and the
   ## supervisor shouldn't see it.
   block:
-    proc catchThunk(): Future[void] {.async.} =
+    proc catchThunk(): Future[void] {.task, async.} =
+      # `{.task.}` for symmetry with `retryThunk` and correctness-by-
+      # default: a future change adding post-await code here would
+      # otherwise silently lose CLS context.
       try:
         let f = call
         await f

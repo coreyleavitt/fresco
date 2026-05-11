@@ -36,7 +36,7 @@ template hotkey*(stream: InputStream, key: KeyEvent, body: untyped): untyped =
   let handle = stream.addFilter(proc(ev: KeyEvent): bool =
     if ev == key:
       withContext(hotkeyCtx):
-        journalEvent: j.logKeyConsumed(tid, p, ev.summary)
+        journalEvent: j.logKeyConsumed(tid, parentEvt, ev.summary)
         body
       return true
     return false)

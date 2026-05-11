@@ -22,6 +22,8 @@ type
     mounts*: seq[Mount]
 
 var parallelCollector* {.threadvar.}: MountCollector
-  ## When non-nil, any `spawn` adds its Mount to `collector.mounts` so
-  ## a `parallel:` block can await them as a group. Lifetime-scoped by
-  ## the `parallel` template; do not touch directly.
+  ## INTERNAL: exported only so cls.nim's TaskContext can carry it
+  ## through CLS save/restore, and so the parallel: template and
+  ## spawn template can read/write it. Test code that needs to
+  ## introspect (e.g. assert collector.mounts.len) imports this
+  ## module directly. **Do not modify from user code.**

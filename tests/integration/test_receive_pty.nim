@@ -227,6 +227,7 @@ suite "receive: after timeout":
     # write after such an await attributes to the task's scope, not
     # to whichever stale scope the dispatcher left in currentScope.
     proc inner(): Future[bool] {.task, async: (raises: [Exception]).} =
+      resetJournal()
       discard useJournal()
       let (master, slave) = openPtyPair()
       let stream = newInputStream(slave)

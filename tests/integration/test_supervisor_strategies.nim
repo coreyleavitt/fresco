@@ -146,6 +146,7 @@ suite "supervisor strategies":
     # the cancellation case. Every ssOneForAll cascade emitted N-1
     # spurious "concurrent failure" entries.
     proc body() {.async: (raises: [Exception]).} =
+      resetJournal()
       discard useJournal()
       proc childA(): Future[void] {.async.} =
         await sleepAsync(2.milliseconds)

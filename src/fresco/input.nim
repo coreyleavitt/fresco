@@ -120,11 +120,35 @@ proc removeFilter*(s: InputStream, handle: int) =
       s.filters.del i
       return
 
-proc stop*(s: InputStream)
-  ## Forward decl — full definition below. `onReadable` calls this to
-  ## tear down on EOF/HUP.
+proc stop*(s: InputStream) {.gcsafe, raises: [].} =
+  ## Tear down: cancel pending timer, unregister reader, restore flags
+  ## and termios, uninstall signal handlers, wake any in-flight
+  ## `nextKey` awaiters with InputStreamClosedError. Safe to call
+  ## more than once. Genuinely `{.gcsafe, raises: [].}` so it can be
+  ## called directly from chronos read callbacks.
+  if s.closed: return
+  s.closed = true
+  if s.escWaiter != nil and not s.escWaiter.finished:
+    s.escWaiter.cancelSoon()
+    s.escWaiter = nil
+  if not s.closing.finished:
+    s.closing.complete()
+  if s.registered:
+    # chronos's removeReader/unregister can raise OSError. Teardown is
+    # best-effort — if the fd is already gone, the registration is too.
+    try:
+      removeReader(AsyncFD(s.fd))
+      unregister(AsyncFD(s.fd))
+    except CatchableError: discard
+    s.registered = false
+  restoreFlags(s.fd, s.prevFlags)
+  uninstallSignalHandlers()
+  restoreTermios(s.snapshot)
 
-proc finalizeEsc(s: InputStream) {.task, async.} =
+proc finalizeEsc(s: InputStream) {.async.} =
+  # No `{.task.}` — finalizeEsc reads no CLS vars after its single
+  # await; the pragma would add captureContext/restoreContext that
+  # do nothing useful.
   let myGen = s.escGen
   try:
     await sleepAsync(s.escTimeout)
@@ -156,12 +180,7 @@ proc onReadable(udata: pointer) {.gcsafe, raises: [].} =
       # zero-byte reads. Stop the stream so pending awaiters wake
       # with InputStreamClosedError and the fd is unregistered.
       if totalRead == 0:
-        # stop() touches signal handlers / termios — onReadable is
-        # `{.gcsafe, raises: [].}` so we both cast-gcsafe and swallow
-        # any exception (Defect included) before returning control to
-        # chronos's read-callback dispatch.
-        {.cast(gcsafe).}:
-          try: stop(s) except Exception: discard
+        stop(s)   # stop is {.gcsafe, raises: [].} — direct call
       break
     inc totalRead, n
     let start = s.pending.len
@@ -218,26 +237,6 @@ proc start*(s: InputStream) =
     restoreTermios(s.snapshot)
     raise
 
-proc stop*(s: InputStream) =
-  ## Tear down: cancel pending timer, unregister reader, restore flags
-  ## and termios, uninstall signal handlers, wake any in-flight
-  ## `nextKey` awaiters with InputStreamClosedError. Safe to call
-  ## more than once.
-  if s.closed: return
-  s.closed = true
-  if s.escWaiter != nil and not s.escWaiter.finished:
-    s.escWaiter.cancelSoon()
-    s.escWaiter = nil
-  if not s.closing.finished:
-    s.closing.complete()
-  if s.registered:
-    removeReader(AsyncFD(s.fd))
-    unregister(AsyncFD(s.fd))
-    s.registered = false
-  restoreFlags(s.fd, s.prevFlags)
-  uninstallSignalHandlers()
-  restoreTermios(s.snapshot)
-
 proc nextKey*(s: InputStream): Future[KeyEvent] {.task, async.} =
   if s.closed:
     raise newException(InputStreamClosedError, "stream is closed")
@@ -248,5 +247,5 @@ proc nextKey*(s: InputStream): Future[KeyEvent] {.task, async.} =
     getFut.cancelSoon()
     raise newException(InputStreamClosedError, "stream closed mid-wait")
   let ev = getFut.read
-  journalEvent: j.logKeyReceived(tid, p, ev.summary)
+  journalEvent: j.logKeyReceived(tid, parentEvt, ev.summary)
   return ev

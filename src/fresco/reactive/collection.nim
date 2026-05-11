@@ -11,6 +11,14 @@
 ## Subscribers can register handlers that receive a typed Delta and
 ## apply incremental updates. Plain `notify` still fires too, so
 ## non-delta-aware observers keep working.
+##
+## **v2.3 limitation — no journal integration:** unlike `Signal[T].set`
+## which emits `ekSignalWrite` events, CollectionSignal mutations are
+## not journaled. This means bitemporal projection (`stateAt` /
+## `stateAtTime`) and state restoration via `lastWritesByLabel` cover
+## scalar signal state but **not** collection state. v2.4 will add an
+## `ekCollectionDelta` event variant and wire emit() through journalEvent;
+## until then, treat collection state as ephemeral (not replayable).
 
 import ./signal
 import ./scope

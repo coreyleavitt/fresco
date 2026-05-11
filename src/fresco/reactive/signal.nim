@@ -95,6 +95,10 @@ proc notify*(s: Subscribable) {.gcsafe, raises: [].} =
 proc setCore[T](s: Signal[T], newVal: T, journal: bool)
     {.gcsafe, raises: [].} =
   when compiles(s.val == newVal):
+    # IEEE-754 corner: for Signal[float], `NaN != NaN` so writing NaN
+    # over NaN fires observers. For ref signals, identity equality
+    # (writing the same ref is a no-op). Both consistent with Nim
+    # equality semantics.
     if s.val == newVal: return
   # Push a revert into the active speculative frame, if any. Captures
   # the prior value by closure so a rollback restores it AND notifies
@@ -112,7 +116,7 @@ proc setCore[T](s: Signal[T], newVal: T, journal: bool)
         when compiles($newVal): $newVal
         else: ""
       journalEvent:
-        j.logSignalWrite(tid, p, s.label, valRepr)
+        j.logSignalWrite(tid, parentEvt, s.label, valRepr)
   notify(s)
 
 proc set*[T](s: Signal[T], newVal: T) {.gcsafe, raises: [].} =
