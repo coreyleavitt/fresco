@@ -58,6 +58,13 @@ type
     ## `journal.lastWritesByLabel(previousTaskId)` and restore state
     ## from `ekStateWrite` events. Restoration happens out of band —
     ## the factory will still be called fresh after the handler.
+    ##
+    ## **Prerequisite:** the handler only fires when `globalJournal`
+    ## is set (since state restoration without journal-backed history
+    ## is meaningless). If you need a side-effect on every restart
+    ## regardless, install an `onError` policy that returns
+    ## `eaRestart` after running the side-effect — that path runs
+    ## unconditionally.
 
   ChildSpec* = object
     name*: string
@@ -236,7 +243,19 @@ proc run*(s: Supervisor) {.task, async: (raises: [CatchableError]).} =
     for i in cascade:
       if i != idx:
         try: await s.children[i].mount.future
-        except CatchableError: discard
+        except CatchableError as siblingErr:
+          # A sibling that crashed simultaneously with the winner —
+          # journal it so the failure isn't silently lost. The
+          # original racing winner still drives the cascade decision.
+          if globalJournal != nil and siblingErr != nil:
+            let tid = if currentScope != nil: currentScope.taskId else: jev.RootTask
+            let p   = if currentScope != nil: currentScope.lastEventId else: jev.NoEvent
+            try:
+              let id = globalJournal.logSupervisorEscalate(tid, p,
+                s.children[i].spec.name,
+                "concurrent failure during cascade: " & siblingErr.msg)
+              if currentScope != nil: currentScope.lastEventId = id
+            except CatchableError: discard
 
     # Re-spawn every cascaded child. Logging + onRestart handlers fire
     # per child so the journal records the full cascade.

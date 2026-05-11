@@ -182,6 +182,10 @@ proc decode*(buf: string, finalize: bool = false):
     of 0x08, 0x7F:
       result.events.add atomKey(kBackspace); inc i
     of 0x00:
+      # NUL byte is canonical Ctrl-@ per the ASCII table (and what
+      # most terminals deliver when the user types it). Treating it
+      # as Ctrl-@ keeps the kCtrl decoder uniform — every control
+      # byte 0x00..0x1A maps to a printable letter via `letter - 1`.
       result.events.add ctrlKey('@'); inc i
     of 0x01..0x07, 0x0B, 0x0C, 0x0E..0x1A:
       # Ctrl+letter (lowercase canonical).

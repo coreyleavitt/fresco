@@ -20,6 +20,7 @@
 
 {.experimental: "callOperator".}
 
+import std/macros
 import ./scope
 import ./speculative
 import ../journal/events
@@ -151,8 +152,6 @@ proc createEffect*(body: proc() {.closure.}) {.gcsafe.} =
 template `:=`*[T](s: Signal[T], v: T): untyped =
   ## DSL sugar for signal writes: `count := 5` ≡ `count.set(5)`.
   s.set(v)
-
-import std/macros
 
 macro signals*(body: untyped): untyped =
   ## Declare one or more signals in a colon block:

@@ -42,6 +42,11 @@ template bindRows*(region: Region, slice: HSlice[int, int],
 proc resolveBackIndex(rIdent, expr: NimNode): NimNode =
   ## Rewrite `^N` (from-end index) to `rIdent.height - N`. Leaves
   ## other expressions untouched.
+  ##
+  ## Only the outermost `^N` is recognized — nested or compound forms
+  ## like `(^1 + 1)` aren't rewritten. The common cases (`row ^1:`,
+  ## `rows 0..^2:`) cover the v0 surface; reach for an explicit
+  ## `r.height - N - 1` if you need arithmetic.
   if expr.kind == nnkPrefix and expr.len == 2 and
      expr[0].kind == nnkIdent and $expr[0] == "^":
     let inner = expr[1]

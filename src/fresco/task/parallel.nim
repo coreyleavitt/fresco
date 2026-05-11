@@ -28,11 +28,10 @@ proc awaitParallel(mounts: seq[Mount]) {.task, async: (raises: [CatchableError])
     var idx = -1
     for i, m in pending:
       if m.future.FutureBase == winner: idx = i; break
-    if idx < 0:
-      # race() returned a future we don't recognize — should not
-      # happen since we pass it exactly the pending mounts' futures,
-      # but defend against chronos race quirks rather than crash.
-      continue
+    # race() should always return one of the futures we passed in. If
+    # it ever doesn't, falling through to `continue` would infinite-
+    # loop on the same unmatched winner — fail loudly instead.
+    doAssert idx >= 0, "awaitParallel: race() returned unknown future"
     let completed = pending[idx]
     pending.del(idx)
     if completed.future.failed:

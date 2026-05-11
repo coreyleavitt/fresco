@@ -47,13 +47,15 @@ proc atomKindFor(name: string): string =
 
 proc compileArm(evSym, arm: NimNode): tuple[cond, body: NimNode] =
   ## Translate one arm of a receive into an (if-condition, body) pair
-  ## suitable for inclusion in an elif chain.
+  ## suitable for inclusion in an elif chain. Wildcard arms return
+  ## `cond = nil` — the caller emits them as `nnkElse` for a cleaner
+  ## AST than `elif true:`.
   let armBody = arm[^1]
 
   # Wildcard: `_: body`
   if arm.kind == nnkCall and arm.len == 2 and
      arm[0].kind == nnkIdent and $arm[0] == "_":
-    return (newLit(true), armBody)
+    return (nil, armBody)
 
   # Atom: `Enter: body`, `ArrowUp: body`, `F1: body` …
   if arm.kind == nnkCall and arm.len == 2 and arm[0].kind == nnkIdent:
@@ -224,7 +226,12 @@ macro receive*(stream: untyped, body: untyped): untyped =
     chain = newNimNode(nnkIfStmt)
     for arm in nonAfterArms:
       let (cond, armBody) = compileArm(evSym, arm)
-      chain.add newTree(nnkElifBranch, cond, armBody)
+      if cond == nil:
+        # Wildcard — emit as an else branch (cleaner AST than
+        # `elif true:`, and Nim doesn't warn on "always-true cond").
+        chain.add newTree(nnkElse, armBody)
+      else:
+        chain.add newTree(nnkElifBranch, cond, armBody)
     if not hasWildcard:
       # Final else is a no-op so the if-statement remains total.
       chain.add newTree(nnkElse, quote do: discard)
