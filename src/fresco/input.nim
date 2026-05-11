@@ -59,14 +59,23 @@ proc runFilters(s: InputStream, ev: KeyEvent): bool {.gcsafe.} =
   ## The list is *snapshotted* before iteration: a filter body that
   ## disposes its registering scope (and therefore calls removeFilter)
   ## mid-loop would otherwise corrupt index-based iteration.
+  ##
+  ## Filter exceptions are caught + logged to stderr (a stderr write
+  ## from inside the input dispatcher is acceptable as a developer
+  ## diagnostic; for production silencing, wrap the filter body in
+  ## try/except). The exception does NOT propagate out of the read
+  ## callback — chronos's onReadable is `{.raises: [].}`.
   {.cast(gcsafe).}:
     let snap = s.filters
     for entry in snap:
       try:
         if entry.fn(ev):
           return true
-      except Exception:
-        discard
+      except Exception as e:
+        try:
+          stderr.writeLine("fresco hotkey/filter raised: " &
+                           $e.name & ": " & e.msg)
+        except IOError: discard
     return false
 
 proc enqueue(s: InputStream, evs: seq[KeyEvent]) {.gcsafe.} =

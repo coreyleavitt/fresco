@@ -92,6 +92,31 @@ suite "mountWhen":
       dispose(root)
     waitFor body()
 
+  test "rapid toggle false→true→false→true still remounts each true edge":
+    # Regression for review finding #13: cancel uses cancelSoon (async)
+    # so the cancelled future may not be `finished` immediately. Verify
+    # that a fast toggle sequence still produces one fresh mount per
+    # rising edge.
+    proc body() {.async: (raises: [Exception]).} =
+      var instantiations = 0
+      proc child() {.async.} =
+        inc instantiations
+        try:
+          await sleepAsync(500.milliseconds)
+        except CancelledError: raise
+      let show = signal(false)
+      let root = createRoot:
+        mountWhen(show()):
+          spawn child()
+      # Toggle without yielding to dispatcher between flips.
+      show := true; show := false
+      show := true; show := false
+      show := true; show := false
+      await tick(); await tick(); await tick()
+      check instantiations == 3
+      dispose(root)
+    waitFor body()
+
   test "mount(cond) alias has the same semantics as mountWhen":
     proc body() {.async: (raises: [Exception]).} =
       var active = false
