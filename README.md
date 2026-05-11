@@ -1,5 +1,7 @@
 # fresco
 
+[![CI](https://github.com/coreyleavitt/fresco/actions/workflows/ci.yml/badge.svg)](https://github.com/coreyleavitt/fresco/actions/workflows/ci.yml)
+
 A minimal terminal-UI kernel for Nim — raw-mode input event stream, region-based rendering, composable widgets. Designed for CLI agents and other long-running interactive programs that need an always-live input surface alongside streamed output.
 
 Inspired by [Ink](https://github.com/vadimdemedes/ink) (React-for-terminals) but written from primitives appropriate for Nim's strengths: chronos async, no VDOM unless the use case demands it, no Yoga-style flexbox layout engine until something needs it. Build the 10% you'll actually use; defer the rest.
