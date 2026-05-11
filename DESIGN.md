@@ -79,6 +79,8 @@ src/fresco/
 
 Pure infrastructure. No user-facing API. Re-exported only as primitives for T2-T4. (Signal-handler helpers live alongside termios save/restore — there's no separate `signals.nim`.)
 
+**Allowed dependency exception:** `input.nim` imports `fresco/task/cls` for the continuation-local storage substrate. CLS is treated as a layer-0 cross-cutting concern (like `chronos` itself) rather than a T4-only feature — any async-suspending code, including T1's input pump, needs context preservation across `await`. The dependency direction T1 → cls is intentional; `cls` is the only T4 module T1 may depend on.
+
 ### Tier 2: Region + render
 
 ```

@@ -55,6 +55,21 @@ suite "bitemporal: eventsBefore + stateAt":
     check j.stateAt(last, tA)["x"] == "from-A"
     check j.stateAt(last, tB)["x"] == "from-B"
 
+  test "ancestors() walks gracefully across missing parent":
+    # Regression for round-3 H3: ancestors used to crash with KeyError
+    # when a loaded journal had gaps from schema-mismatch-skipped lines.
+    let j = newJournal()
+    let t = TaskId.fresh()
+    let a = j.logTaskSpawned(t, NoEvent, "boot", "")
+    # Simulate a gap: synthesize an event whose parentId points to a
+    # non-existent id (as if the parent was skipped during load).
+    let phantom = EventId(99_999_999'u)
+    let b = j.logStateWrite(t, phantom, "x", "1")  # parent missing
+    let chain = j.ancestors(b)
+    # Walk starts at b, fails to find phantom, stops gracefully.
+    check chain.len == 1
+    check chain[0].id == b
+
   test "empty-label writes are excluded from projection":
     # Regression for round-2 H3: every unlabeled signal used to share
     # the empty-string key, so restoration would clobber them with the

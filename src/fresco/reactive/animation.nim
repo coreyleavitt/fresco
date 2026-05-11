@@ -37,7 +37,10 @@ type
 
 const DefaultFPS* = 30
 
-var frameAnimations* {.threadvar.}: seq[Animation]
+var frameAnimations {.threadvar.}: seq[Animation]
+  ## Internal scheduler list. Not exported — direct mutation would
+  ## corrupt the clock loop's iterator. `tween` / `stopFrameClock`
+  ## are the public API.
 var frameClockTask {.threadvar.}: Future[void]
 var frameInterval {.threadvar.}: Duration
   ## All three are thread-locals tied to the chronos dispatcher that
@@ -64,6 +67,14 @@ proc applyEasing*(t: float, easing: Easing): float =
 
 proc step(a: Animation, now: Moment): bool =
   ## Advance one frame. Returns true when the animation completes.
+  ##
+  ## Intermediate frames use `setUntracked` to skip the journal —
+  ## the frame clock has no owning user scope, so journaled writes
+  ## would attribute to whichever coroutine the dispatcher last ran
+  ## (typically nil or stale). The terminal frame uses `set` so the
+  ## settled value IS recorded under whatever scope happens to be
+  ## current when the animation completes; for accurate attribution,
+  ## callers can write the final value themselves before tweening.
   if a.cancelled: return true
   let elapsed = now - a.startMono
   if elapsed >= a.duration:
@@ -72,7 +83,7 @@ proc step(a: Animation, now: Moment): bool =
   let t = elapsed.nanoseconds.float / a.duration.nanoseconds.float
   let eased = applyEasing(t, a.easing)
   let v = a.startVal + (a.endVal - a.startVal) * eased
-  a.target.set(v)
+  a.target.setUntracked(v)
   return false
 
 proc clockLoop() {.async.} =

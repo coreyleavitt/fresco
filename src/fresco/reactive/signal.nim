@@ -92,7 +92,8 @@ proc notify*(s: Subscribable) {.gcsafe, raises: [].} =
           # Swallowing keeps notify deterministic; a faulty observer
           # shouldn't break sibling observers or the writing task.
 
-proc set*[T](s: Signal[T], newVal: T) {.gcsafe, raises: [].} =
+proc setCore[T](s: Signal[T], newVal: T, journal: bool)
+    {.gcsafe, raises: [].} =
   when compiles(s.val == newVal):
     if s.val == newVal: return
   # Push a revert into the active speculative frame, if any. Captures
@@ -105,20 +106,35 @@ proc set*[T](s: Signal[T], newVal: T) {.gcsafe, raises: [].} =
       captured.val = prior
       notify(captured)
   s.val = newVal
-  {.cast(gcsafe).}:
-    try:
-      if globalJournal != nil:
-        let tid = if currentScope != nil: currentScope.taskId else: RootTask
-        let parent = if currentScope != nil: currentScope.lastEventId else: NoEvent
-        let valRepr =
-          when compiles($newVal): $newVal
-          else: ""
-        let id = globalJournal.logStateWrite(tid, parent, s.label, valRepr)
-        if currentScope != nil:
-          currentScope.lastEventId = id
-    except CatchableError:
-      discard
+  if journal:
+    {.cast(gcsafe).}:
+      try:
+        if globalJournal != nil:
+          let tid = if currentScope != nil: currentScope.taskId else: RootTask
+          let parent = if currentScope != nil: currentScope.lastEventId else: NoEvent
+          let valRepr =
+            when compiles($newVal): $newVal
+            else: ""
+          let id = globalJournal.logStateWrite(tid, parent, s.label, valRepr)
+          if currentScope != nil:
+            currentScope.lastEventId = id
+      except CatchableError:
+        discard
   notify(s)
+
+proc set*[T](s: Signal[T], newVal: T) {.gcsafe, raises: [].} =
+  ## Write `newVal` to the signal. Notifies observers and records a
+  ## journal entry under the current scope (if any).
+  s.setCore(newVal, journal = true)
+
+proc setUntracked*[T](s: Signal[T], newVal: T) {.gcsafe, raises: [].} =
+  ## Like `set` but **does not write a journal entry**. Used by the
+  ## animation frame clock for intermediate interpolation values:
+  ## those writes have no meaningful task attribution (the clock has
+  ## no owning user scope) and would bloat the journal anyway. The
+  ## terminal animation frame should still go through `set` so the
+  ## settled value is journaled.
+  s.setCore(newVal, journal = false)
 
 # --- Computations -----------------------------------------------------------
 

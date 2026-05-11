@@ -215,3 +215,27 @@ suite "receive: after timeout":
       if outcome == "":
         outcome = "key-discarded"
     check got == "key-discarded"
+
+  test "stream close mid-wait propagates rather than firing after":
+    # Regression for round-3 C1: receive's after-clause used to fall
+    # into the timer branch when keyFut.failed (e.g. stream closed),
+    # silently treating the closure as a timeout.
+    proc inner(): Future[string] {.async: (raises: [Exception]).} =
+      let (master, slave) = openPtyPair()
+      let stream = newInputStream(slave)
+      fresco_input.start(stream)
+      defer:
+        discard close(master); discard close(slave)
+      var outcome = "unset"
+      proc closer() {.async: (raises: [Exception]).} =
+        await sleepAsync(20.milliseconds)
+        fresco_input.stop(stream)
+      asyncSpawn closer()
+      try:
+        receive stream:
+          Char(c):                 outcome = "char:" & $c
+          after 500.milliseconds:  outcome = "timeout"
+      except InputStreamClosedError:
+        outcome = "closed"
+      return outcome
+    check waitFor(inner()) == "closed"

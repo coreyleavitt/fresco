@@ -179,7 +179,13 @@ proc run*(s: Supervisor) {.task, async: (raises: [CatchableError]).} =
         if not c.mount.future.finished: c.mount.cancel()
       raise err
 
-    if not shouldRestart(child.spec.lifecycle, failed):
+    # A user `onError` policy returning `eaRestart` overrides the
+    # lifecycle default. Without this gate, an `lcTemporary` child
+    # whose policy says "restart me" would still be terminated
+    # because shouldRestart(lcTemporary, _) is always false.
+    let policyForcesRestart = policyFired and policyAction == eaRestart
+    if not policyForcesRestart and
+       not shouldRestart(child.spec.lifecycle, failed):
       if globalJournal != nil:
         let tid = if currentScope != nil: currentScope.taskId else: jev.RootTask
         let p   = if currentScope != nil: currentScope.lastEventId else: jev.NoEvent
@@ -243,6 +249,10 @@ proc run*(s: Supervisor) {.task, async: (raises: [CatchableError]).} =
     for i in cascade:
       if i != idx:
         try: await s.children[i].mount.future
+        except CancelledError:
+          # We just called cancel() on this sibling above — its
+          # CancelledError is expected, not a concurrent failure.
+          discard
         except CatchableError as siblingErr:
           # A sibling that crashed simultaneously with the winner —
           # journal it so the failure isn't silently lost. The

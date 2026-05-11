@@ -84,15 +84,16 @@ template speculative*(body: untyped): SpeculativeScope =
       frame.reverts.setLen(0)
     template discardSpeculative() {.inject, used.} =
       rollback(frame)
-    var raised = false
+    # Rollback + threadvar restore unified in a `finally` so any exit
+    # path — normal return without commit, CatchableError, or Defect —
+    # leaves the world consistent: either committed (writes stick) or
+    # rolled back (writes undone). Without this, a Defect would
+    # bypass rollback, leaving half-modified state, AND leak
+    # `currentSpeculative` pointing at a dead frame.
     try:
       body
-    except CatchableError:
-      raised = true
-      rollback(frame)
+    finally:
+      if not frame.committed:
+        rollback(frame)
       currentSpeculative = prevSpec
-      raise
-    if not raised and not frame.committed:
-      rollback(frame)
-    currentSpeculative = prevSpec
     frame

@@ -109,7 +109,28 @@ macro task*(prc: untyped): untyped =
   ## rewrite is transparent for both `await voidFut` and
   ## `let x = await valFut`. The `finally` ensures context is restored
   ## on CancelledError or any other exception path.
-  expectKind(prc, {nnkProcDef, nnkFuncDef, nnkLambda, nnkDo})
+  expectKind(prc, {nnkProcDef, nnkLambda})
+
+  # Order check: `task` is meaningful only when chronos's `async`
+  # hasn't yet transformed the body. Nim processes pragmas left-to-
+  # right and strips each one before invoking its macro, so by the
+  # time `task` runs, the remaining pragmas are visible at prc[4].
+  # If `async` isn't among them, the user either combined them in
+  # the wrong order (`{.async, task.}`) or applied `task` without
+  # `async` (which is meaningless — nothing to wrap).
+  var hasAsync = false
+  if prc[4].kind != nnkEmpty:
+    for p in prc[4]:
+      let head = if p.kind == nnkExprColonExpr: p[0] else: p
+      if head.kind == nnkIdent and head.eqIdent("async"):
+        hasAsync = true
+        break
+  if not hasAsync:
+    error("task: must be combined with `{.async.}` and must appear " &
+          "*before* it in the pragma list. Nim processes pragmas " &
+          "left-to-right; if `async` runs first, it state-machines " &
+          "the body and `task` has nothing to rewrite. Use " &
+          "`{.task, async.}` (not `{.async, task.}`).", prc)
 
   proc rewrite(n: NimNode): NimNode =
     if n.kind in {nnkCommand, nnkCall} and n.len >= 2 and
@@ -128,5 +149,5 @@ macro task*(prc: untyped): untyped =
       for child in n:
         result.add rewrite(child)
 
-  prc[6] = rewrite(prc[6])   # body is index 6 on proc/func defs
+  prc.body = rewrite(prc.body)
   result = prc

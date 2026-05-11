@@ -15,11 +15,12 @@
 ##
 ## A typical amoxtli-flavored app:
 ##
+##   {.experimental: "callOperator".}    # enable count() read sugar
 ##   import fresco
 ##   import chronos
 ##
-##   proc app(stream: InputStream, screen: Screen) {.async.} =
-##     state:
+##   proc app(stream: InputStream, screen: Screen) {.task, async.} =
+##     signals:
 ##       count = 0
 ##       title = "demo"
 ##
@@ -35,6 +36,12 @@
 ##         Char('+'): count := count() + 1
 ##         Char('-'): count := count() - 1
 ##         after 1.seconds: discard          # idle tick
+##
+## The `{.task, async.}` pragma combination is load-bearing: `task`
+## must run *before* `async` (pragmas are processed left-to-right),
+## so the CLS substrate gets to rewrite every `await` in the body
+## before chronos transforms it into a state machine. Without `task`
+## the reactive `currentScope` is silently lost across every suspend.
 ##
 ## Re-exports the T4 reactive + task surface plus the underlying
 ## T1-T3 primitives needed at user code: KeyEvent constructors,

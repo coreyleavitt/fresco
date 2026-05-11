@@ -196,8 +196,15 @@ proc stateAtTime*(j: Journal, wall: Time,
                   taskId: TaskId = RootTask): Table[string, string] =
   ## Like `stateAt` but cuts at wall-clock `wall` instead of an event id.
   ## Unlabeled writes are excluded (see `lastWritesByLabel`).
+  ##
+  ## Full-scan rather than early-break on `ev.wall > wall`: wall-clock
+  ## time isn't monotone (NTP adjustments, DST, leap seconds can cause
+  ## `getTime()` to go backwards), so a single regressed event in the
+  ## middle of the log would silently truncate projection. The last-
+  ## write-wins semantics still rely on monotone event-id append order,
+  ## which we have unconditionally.
   for ev in j.events:
-    if ev.wall > wall: break
+    if ev.wall > wall: continue
     if ev.kind != ekStateWrite: continue
     if ev.signalLabel.len == 0: continue
     if taskId == RootTask or ev.taskId == taskId:
@@ -207,8 +214,15 @@ proc ancestors*(j: Journal, id: EventId): seq[Event] =
   ## Walk the causal chain from `id` back to its root. The returned
   ## sequence is innermost-first (start, then parent, then grandparent…)
   ## and ends when an event with parentId == NoEvent is reached.
+  ##
+  ## Stops gracefully if a parent event is missing — this happens when
+  ## a persistent journal load skipped schema-mismatched lines whose
+  ## ids are referenced by surviving events' parentIds. Walking is
+  ## best-effort in that scenario rather than crashing on KeyError.
   var cursor = id
   while cursor != NoEvent:
-    let e = j.find(cursor)
+    var e: Event
+    try: e = j.find(cursor)
+    except KeyError: break
     result.add e
     cursor = e.parentId

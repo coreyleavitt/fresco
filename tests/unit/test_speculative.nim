@@ -103,6 +103,27 @@ suite "speculative":
     check a() == 0
     check b() == 0
 
+  test "currentSpeculative restored even when body raises a Defect":
+    # Regression for round-3 H8: previously the threadvar restore
+    # lived after the try/except CatchableError, so a Defect would
+    # bypass it and leak `currentSpeculative` pointing at a dead
+    # frame. After the fix the restore is in a `finally`.
+    let x = signal(0)
+    var caught = false
+    try:
+      discard speculative:
+        x := 5
+        raise newException(Defect, "synthetic")
+    except Defect:
+      caught = true
+    check caught
+    # Threadvar must be back to its pre-block value (nil at top level).
+    check currentSpeculative == nil
+    # A subsequent speculative block must work normally.
+    discard speculative:
+      x := 10
+    check x() == 0  # rolled back cleanly
+
   test "nested: outer rollback undoes inner commit even with no outer writes":
     # Regression for review #12: previously inner commit cleared its
     # own reverts without promoting them. If the outer made no writes

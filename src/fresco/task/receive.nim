@@ -21,6 +21,7 @@ import std/[macros, sets, tables, unicode]
 import chronos
 import ../events
 import ../input
+import ./cls
 
 const atomMap = {
   "Enter":      "kEnter",
@@ -247,16 +248,34 @@ macro receive*(stream: untyped, body: untyped): untyped =
   else:
     # Race the next-key wait against a sleepAsync; dispatch on which
     # fires first.
+    #
+    # Two subtleties handled here:
+    #
+    # 1) **CLS save/restore around the race.** The receive macro emits
+    #    this `await race(...)` AFTER `{.task.}` has already walked the
+    #    enclosing proc body, so task's rewriter doesn't see this
+    #    suspension point. We inject the same save/restore explicitly.
+    #
+    # 2) **Stream-close failures aren't timeouts.** If `nextKey` fails
+    #    (e.g. `InputStreamClosedError`), the failure must propagate
+    #    rather than being mistaken for a timeout. We use `.read` on
+    #    a finished keyFut, which re-raises on failure.
     let keyFutSym = genSym(nskLet, "keyFut")
     let timerSym  = genSym(nskLet, "timerFut")
+    let ctxSym    = genSym(nskLet, "frescoCtx")
     result = quote do:
       let `keyFutSym` = `stream`.nextKey()
       let `timerSym`  = sleepAsync(`afterDur`)
-      discard await race(FutureBase(`keyFutSym`), FutureBase(`timerSym`))
-      if `keyFutSym`.finished and not `keyFutSym`.failed:
+      let `ctxSym` = captureContext()
+      try:
+        discard await race(FutureBase(`keyFutSym`), FutureBase(`timerSym`))
+      finally:
+        restoreContext(`ctxSym`)
+      if `keyFutSym`.finished:
         if not `timerSym`.finished: `timerSym`.cancelSoon()
-        let `evSym` = `keyFutSym`.read
+        let `evSym` = `keyFutSym`.read   # re-raises on failure
         `chain`
       else:
         if not `keyFutSym`.finished: `keyFutSym`.cancelSoon()
+        if not `timerSym`.finished: `timerSym`.cancelSoon()
         `afterBody`

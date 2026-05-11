@@ -1,9 +1,11 @@
 ## sOneForAll + sRestForOne strategies.
 
-import std/unittest
+import std/[unittest, strutils]
 import chronos
 import fresco/task/core
 import fresco/task/supervisor
+import fresco/journal/events
+import fresco/journal/log
 
 proc tick(): Future[void] {.async: (raises: [CancelledError]).} =
   await sleepAsync(0.milliseconds)
@@ -136,6 +138,58 @@ suite "supervisor strategies":
       # only A's counter was tracked.
       check startsA <= 5
       check startsB <= 5
+    waitFor body()
+
+  test "cascade does not journal cancelled siblings as failures":
+    # Regression for round-3 C4: the L3 fix that journaled
+    # CatchableError from cascaded await calls accidentally swallowed
+    # the cancellation case. Every sOneForAll cascade emitted N-1
+    # spurious "concurrent failure" entries.
+    proc body() {.async: (raises: [Exception]).} =
+      discard useJournal()
+      proc childA(): Future[void] {.async.} =
+        await sleepAsync(2.milliseconds)
+        raise newException(IOError, "boom")
+      proc childB(): Future[void] {.async.} =
+        await sleepAsync(500.milliseconds)
+      proc childC(): Future[void] {.async.} =
+        await sleepAsync(500.milliseconds)
+      let sup = newSupervisor(strategy = sOneForAll,
+                              maxRestarts = 5, within = 1.seconds)
+      sup.addChild("a", lcTransient, childA)
+      sup.addChild("b", lcTransient, childB)
+      sup.addChild("c", lcTransient, childC)
+      let m = spawn sup.run()
+      await sleepAsync(30.milliseconds)
+      m.cancel()
+      # No "concurrent failure" entries for b or c — they were
+      # deliberately cancelled, not concurrently failed.
+      var bogusEntries = 0
+      for ev in globalJournal.byKind(ekSupervisorEscalate):
+        if ev.escalateReason.contains("concurrent failure"):
+          inc bogusEntries
+      check bogusEntries == 0
+    waitFor body()
+
+  test "onError eaRestart overrides lcTemporary lifecycle":
+    # Regression for round-3 H1: previously eaRestart from onError
+    # was silently dropped for lcTemporary children because
+    # shouldRestart(lcTemporary, _) returned false, terminating the
+    # child despite the policy saying restart.
+    proc body() {.async: (raises: [Exception]).} =
+      var starts = 0
+      proc child(): Future[void] {.async.} =
+        inc starts
+        await sleepAsync(2.milliseconds)
+        if starts < 3: raise newException(IOError, "boom")
+      let sup = newSupervisor(maxRestarts = 10, within = 1.seconds)
+      proc policy(e: ref Exception): ErrorAction {.gcsafe, raises: [].} =
+        eaRestart  # always restart, regardless of lifecycle
+      sup.addChild("c", lcTemporary, child, onError = policy)
+      let m = spawn sup.run()
+      await sleepAsync(40.milliseconds)
+      m.cancel()
+      check starts >= 3   # restarted past the first failure
     waitFor body()
 
   test "sOneForOne (default) does not cascade":
