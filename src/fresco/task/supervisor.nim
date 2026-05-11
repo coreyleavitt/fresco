@@ -153,13 +153,7 @@ proc run*(s: Supervisor) {.task, async: (raises: [CatchableError]).} =
           discard
 
     if policyFired and policyAction == eaTerminate:
-      if globalJournal != nil:
-        let tid = if currentScope != nil: currentScope.taskId else: jev.RootTask
-        let p   = if currentScope != nil: currentScope.lastEventId else: jev.NoEvent
-        try:
-          let id = globalJournal.logSupervisorTerminate(tid, p, child.spec.name)
-          if currentScope != nil: currentScope.lastEventId = id
-        except CatchableError: discard
+      journalEvent: j.logSupervisorTerminate(tid, p, child.spec.name)
       s.children.delete(idx)
       continue
 
@@ -167,14 +161,8 @@ proc run*(s: Supervisor) {.task, async: (raises: [CatchableError]).} =
       var err = newException(SupervisorEscalation,
         "child '" & child.spec.name & "' onError requested escalation")
       err.childName = child.spec.name
-      if globalJournal != nil:
-        let tid = if currentScope != nil: currentScope.taskId else: jev.RootTask
-        let p   = if currentScope != nil: currentScope.lastEventId else: jev.NoEvent
-        try:
-          let id = globalJournal.logSupervisorEscalate(tid, p,
-            child.spec.name, err.msg)
-          if currentScope != nil: currentScope.lastEventId = id
-        except CatchableError: discard
+      journalEvent:
+        j.logSupervisorEscalate(tid, p, child.spec.name, err.msg)
       for c in s.children:
         if not c.mount.future.finished: c.mount.cancel()
       raise err
@@ -186,13 +174,7 @@ proc run*(s: Supervisor) {.task, async: (raises: [CatchableError]).} =
     let policyForcesRestart = policyFired and policyAction == eaRestart
     if not policyForcesRestart and
        not shouldRestart(child.spec.lifecycle, failed):
-      if globalJournal != nil:
-        let tid = if currentScope != nil: currentScope.taskId else: jev.RootTask
-        let p   = if currentScope != nil: currentScope.lastEventId else: jev.NoEvent
-        try:
-          let id = globalJournal.logSupervisorTerminate(tid, p, child.spec.name)
-          if currentScope != nil: currentScope.lastEventId = id
-        except CatchableError: discard
+      journalEvent: j.logSupervisorTerminate(tid, p, child.spec.name)
       s.children.delete(idx)
       continue
 
@@ -229,14 +211,7 @@ proc run*(s: Supervisor) {.task, async: (raises: [CatchableError]).} =
         "child '" & offendingName & "' exceeded " &
         $s.maxRestarts & " restarts in " & $s.within)
       err.childName = offendingName
-      if globalJournal != nil:
-        let tid = if currentScope != nil: currentScope.taskId else: jev.RootTask
-        let p   = if currentScope != nil: currentScope.lastEventId else: jev.NoEvent
-        try:
-          let id = globalJournal.logSupervisorEscalate(tid, p,
-            offendingName, err.msg)
-          if currentScope != nil: currentScope.lastEventId = id
-        except CatchableError: discard
+      journalEvent: j.logSupervisorEscalate(tid, p, offendingName, err.msg)
       for c in s.children:
         if not c.mount.future.finished: c.mount.cancel()
       raise err
@@ -257,31 +232,17 @@ proc run*(s: Supervisor) {.task, async: (raises: [CatchableError]).} =
           # A sibling that crashed simultaneously with the winner —
           # journal it so the failure isn't silently lost. The
           # original racing winner still drives the cascade decision.
-          if globalJournal != nil and siblingErr != nil:
-            let tid = if currentScope != nil: currentScope.taskId else: jev.RootTask
-            let p   = if currentScope != nil: currentScope.lastEventId else: jev.NoEvent
-            try:
-              let id = globalJournal.logSupervisorEscalate(tid, p,
-                s.children[i].spec.name,
-                "concurrent failure during cascade: " & siblingErr.msg)
-              if currentScope != nil: currentScope.lastEventId = id
-            except CatchableError: discard
+          let siblingName = s.children[i].spec.name
+          let reason = "concurrent failure during cascade: " & siblingErr.msg
+          journalEvent: j.logSupervisorEscalate(tid, p, siblingName, reason)
 
     # Re-spawn every cascaded child. Logging + onRestart handlers fire
     # per child so the journal records the full cascade.
     for i in cascade:
       let target = s.children[i]
-      if globalJournal != nil:
-        let tid = if currentScope != nil: currentScope.taskId else: jev.RootTask
-        let p   = if currentScope != nil: currentScope.lastEventId else: jev.NoEvent
-        try:
-          let id = globalJournal.logSupervisorRestart(tid, p,
-            target.spec.name, target.restartTimes.len)
-          if currentScope != nil: currentScope.lastEventId = id
-        except Exception: discard
-          # Journal append wrapped in Exception because we're inside
-          # an `{.async: (raises: ...)}` body — any wider effect would
-          # leak through chronos's strict raises analysis.
+      let targetName = target.spec.name
+      let targetGen = target.restartTimes.len
+      journalEvent: j.logSupervisorRestart(tid, p, targetName, targetGen)
 
       if target.spec.onRestart != nil and globalJournal != nil and
          target.mount != nil and target.mount.scope != nil:

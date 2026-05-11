@@ -45,7 +45,7 @@ proc main() {.async: (raises: [Exception]).} =
         summary &= " " & e.spawnedName
       of ekSupervisorRestart, ekSupervisorTerminate, ekSupervisorEscalate:
         summary &= " " & (if e.kind == ekSupervisorRestart: e.restartName
-                          elif e.kind == ekSupervisorTerminate: e.termName
+                          elif e.kind == ekSupervisorTerminate: e.terminateName
                           else: e.escalateName)
       else: discard
       stderr.writeLine fmt"[{e.id}] {summary}"

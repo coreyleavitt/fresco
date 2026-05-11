@@ -34,6 +34,12 @@ type
     duration: Duration
     easing: Easing
     cancelled: bool
+    originScope: Scope
+      ## Scope current when `tween` was called. Restored around the
+      ## terminal frame's `set` so its journal entry attributes to
+      ## the task that originated the animation, not to whichever
+      ## coroutine the dispatcher last left in `currentScope` when
+      ## the frame clock ticked.
 
 const DefaultFPS* = 30
 
@@ -68,17 +74,20 @@ proc applyEasing*(t: float, easing: Easing): float =
 proc step(a: Animation, now: Moment): bool =
   ## Advance one frame. Returns true when the animation completes.
   ##
-  ## Intermediate frames use `setUntracked` to skip the journal —
-  ## the frame clock has no owning user scope, so journaled writes
-  ## would attribute to whichever coroutine the dispatcher last ran
-  ## (typically nil or stale). The terminal frame uses `set` so the
-  ## settled value IS recorded under whatever scope happens to be
-  ## current when the animation completes; for accurate attribution,
-  ## callers can write the final value themselves before tweening.
+  ## Intermediate frames use `setUntracked` (no journal entry) — they
+  ## are interpolation noise that would bloat the log without semantic
+  ## value. The **terminal frame** uses `set` wrapped in
+  ## `withScope(a.originScope)` so the settled value journals under
+  ## the task that originated the tween, not under whichever coroutine
+  ## the dispatcher last left in `currentScope` when the clock ticked.
   if a.cancelled: return true
   let elapsed = now - a.startMono
   if elapsed >= a.duration:
-    a.target.set(a.endVal)
+    if a.originScope != nil:
+      withScope(a.originScope):
+        a.target.set(a.endVal)
+    else:
+      a.target.set(a.endVal)
     return true
   let t = elapsed.nanoseconds.float / a.duration.nanoseconds.float
   let eased = applyEasing(t, a.easing)
@@ -141,7 +150,8 @@ proc tween*(s: Signal[float], target: float,
     endVal: target,
     startMono: Moment.now(),
     duration: duration,
-    easing: easing)
+    easing: easing,
+    originScope: currentScope)
   frameAnimations.add result
   # Tie lifetime to the registering scope: a scope dispose mid-tween
   # cancels the animation so it stops writing to a signal whose

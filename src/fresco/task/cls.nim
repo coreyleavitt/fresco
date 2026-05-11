@@ -57,7 +57,7 @@ type
     ## Cheap to capture (pointer-sized fields) and trivially copyable.
     scope*: Scope
     speculative*: SpeculativeScope
-    parallelCollector*: ptr seq[Mount]
+    parallelCollector*: MountCollector
 
 proc captureContext*(): TaskContext {.gcsafe.} =
   {.cast(gcsafe).}:

@@ -220,11 +220,5 @@ proc nextKey*(s: InputStream): Future[KeyEvent] {.task, async.} =
     getFut.cancelSoon()
     raise newException(InputStreamClosedError, "stream closed mid-wait")
   let ev = getFut.read
-  if globalJournal != nil:
-    let tid = if currentScope != nil: currentScope.taskId else: jev.RootTask
-    let parent = if currentScope != nil: currentScope.lastEventId else: jev.NoEvent
-    try:
-      let id = globalJournal.logKeyReceived(tid, parent, ev.summary)
-      if currentScope != nil: currentScope.lastEventId = id
-    except CatchableError: discard
+  journalEvent: j.logKeyReceived(tid, p, ev.summary)
   return ev

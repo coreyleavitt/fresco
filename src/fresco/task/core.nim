@@ -24,9 +24,16 @@ type
     scope*: Scope
     future*: Future[void]
 
-var parallelCollector* {.threadvar.}: ptr seq[Mount]
-  ## When set, any `spawn` adds its Mount to the pointed-to seq so a
-  ## `parallel:` block can await them as a group. Lifetime-scoped by
+type MountCollector* = ref object
+  ## Heap-allocated collector for `parallel:` blocks. Holding it as a
+  ## ref (not a raw pointer to a stack-allocated seq) means we can
+  ## safely carry it through CLS save/restore around awaits without
+  ## the pointer dangling if the surrounding stack frame moves.
+  mounts*: seq[Mount]
+
+var parallelCollector* {.threadvar.}: MountCollector
+  ## When non-nil, any `spawn` adds its Mount to `collector.mounts` so
+  ## a `parallel:` block can await them as a group. Lifetime-scoped by
   ## the `parallel` template; do not touch directly.
 
 proc cancel*(m: Mount) {.gcsafe, raises: [].} =
@@ -72,6 +79,10 @@ proc wireLifecycle(m: Mount) =
   m.future.addCallback proc(udata: pointer) {.gcsafe, raises: [].} =
     {.cast(gcsafe).}:
       try:
+        # Direct logging here rather than journalEvent — the journal
+        # attribution must use `captured.scope` (the *task's* scope),
+        # not whatever `currentScope` happens to be when the dispatcher
+        # fires this callback.
         if globalJournal != nil:
           let parent = captured.scope.lastEventId
           let tid    = captured.scope.taskId
@@ -147,7 +158,13 @@ template spawn*(call: untyped): Mount =
     withScope(childScope):
       fut = call
     let m = Mount(scope: childScope, future: fut)
-    wireLifecycle(m)
+    # Register with the parallel collector BEFORE wiring lifecycle.
+    # `wireLifecycle.addCallback` fires synchronously when the future
+    # is already finished (a fully-sync async body), and the callback
+    # disposes the scope. If we wired lifecycle first, a same-tick-
+    # completing task would be disposed before we got to add it to
+    # the collector — silently dropped from the parallel join group.
     if parallelCollector != nil:
-      parallelCollector[].add m
+      parallelCollector.mounts.add m
+    wireLifecycle(m)
     m

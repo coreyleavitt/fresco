@@ -108,18 +108,11 @@ proc setCore[T](s: Signal[T], newVal: T, journal: bool)
   s.val = newVal
   if journal:
     {.cast(gcsafe).}:
-      try:
-        if globalJournal != nil:
-          let tid = if currentScope != nil: currentScope.taskId else: RootTask
-          let parent = if currentScope != nil: currentScope.lastEventId else: NoEvent
-          let valRepr =
-            when compiles($newVal): $newVal
-            else: ""
-          let id = globalJournal.logStateWrite(tid, parent, s.label, valRepr)
-          if currentScope != nil:
-            currentScope.lastEventId = id
-      except CatchableError:
-        discard
+      let valRepr =
+        when compiles($newVal): $newVal
+        else: ""
+      journalEvent:
+        j.logStateWrite(tid, p, s.label, valRepr)
   notify(s)
 
 proc set*[T](s: Signal[T], newVal: T) {.gcsafe, raises: [].} =

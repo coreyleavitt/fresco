@@ -60,6 +60,25 @@ suite "parallel:":
       check siblingCancelled
     waitFor body()
 
+  test "synchronously-completing task is not dropped from parallel join":
+    # Regression for round-4 H5: previously spawn called wireLifecycle
+    # BEFORE adding the Mount to parallelCollector. wireLifecycle's
+    # future-completion callback fires synchronously for an async proc
+    # with no awaits, disposing the scope before the parallelCollector
+    # add happened — the task was silently dropped from the join group.
+    # Fix: add to parallelCollector first.
+    proc body() {.async: (raises: [Exception]).} =
+      var ran = 0
+      proc immediate() {.async: (raises: [Exception]).} =
+        # No await — runs to completion synchronously when called.
+        inc ran
+      parallel:
+        discard spawn immediate()
+        discard spawn immediate()
+        discard spawn immediate()
+      check ran == 3
+    waitFor body()
+
   test "children inherit the parallel block's scope":
     proc body() {.async: (raises: [Exception]).} =
       let outer = newScope()

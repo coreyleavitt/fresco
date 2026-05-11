@@ -36,13 +36,7 @@ template hotkey*(stream: InputStream, key: KeyEvent, body: untyped): untyped =
   let handle = stream.addFilter(proc(ev: KeyEvent): bool =
     if ev == key:
       withContext(hotkeyCtx):
-        if globalJournal != nil:
-          let tid = if currentScope != nil: currentScope.taskId else: jev.RootTask
-          let parent = if currentScope != nil: currentScope.lastEventId else: jev.NoEvent
-          try:
-            let id = globalJournal.logKeyConsumed(tid, parent, ev.summary)
-            if currentScope != nil: currentScope.lastEventId = id
-          except CatchableError: discard
+        journalEvent: j.logKeyConsumed(tid, p, ev.summary)
         body
       return true
     return false)

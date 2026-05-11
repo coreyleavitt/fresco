@@ -13,6 +13,7 @@
 import std/[tables, times, sequtils]
 import chronos
 import ./events
+import ../reactive/scope
 
 type
   Journal* = ref object of RootObj
@@ -33,6 +34,34 @@ var globalJournal* {.threadvar.}: Journal
   ## reference rather than this variable.
 
 proc newJournal*(): Journal = Journal(events: @[])
+
+template journalEvent*(body: untyped) =
+  ## Write a journal event under the active scope's identity, then
+  ## advance `currentScope.lastEventId` to the new event id. Silent
+  ## no-op when no journal is installed. Failures during append are
+  ## swallowed — the journal is an audit trail, not a critical path.
+  ##
+  ## Inside `body`, three names are injected:
+  ##   `j`   — the active journal (non-nil)
+  ##   `tid` — current scope's TaskId, or RootTask if no scope
+  ##   `p`   — current scope's lastEventId, or NoEvent if no scope
+  ##
+  ## `body` must evaluate to an `EventId` (typically a `j.logXxx`
+  ## call). Usage:
+  ##
+  ##   journalEvent:
+  ##     j.logTaskSpawned(tid, p, name, "")
+  ##
+  ## Replaces the 5-line `if globalJournal != nil: ...` boilerplate
+  ## previously hand-rolled at every journal call site.
+  if globalJournal != nil:
+    let j {.inject.} = globalJournal
+    let tid {.inject.} = if currentScope != nil: currentScope.taskId else: RootTask
+    let p {.inject.} = if currentScope != nil: currentScope.lastEventId else: NoEvent
+    try:
+      let id = body
+      if currentScope != nil: currentScope.lastEventId = id
+    except CatchableError: discard
 
 proc useJournal*(j: Journal = nil): Journal =
   ## Install `j` as the process-wide journal (creating one if nil).

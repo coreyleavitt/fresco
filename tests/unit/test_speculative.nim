@@ -103,6 +103,26 @@ suite "speculative":
     check a() == 0
     check b() == 0
 
+  test "currentSpeculative restored even when a revert closure raises Defect":
+    # Regression for round-4 H3: previously a Defect propagating out of
+    # `rollback` (e.g. from a buggy revert closure) bypassed the
+    # `currentSpeculative = prevSpec` restore. Now rollback runs inside
+    # an inner finally; the outer finally unconditionally restores.
+    let touched = signal(0)
+    var caught = false
+    try:
+      discard speculative:
+        touched := 1
+        # Synthesize a revert closure that raises a Defect when fired.
+        # `recordRevert` is the internal API used by signal.set; emulate
+        # by writing a signal whose revert path will produce a Defect.
+        # Simpler: write through a closure that we know raises on rollback.
+        recordRevert proc() = raise newException(Defect, "boom-in-revert")
+    except Defect:
+      caught = true
+    check caught
+    check currentSpeculative == nil   # restored even with Defect
+
   test "currentSpeculative restored even when body raises a Defect":
     # Regression for round-3 H8: previously the threadvar restore
     # lived after the try/except CatchableError, so a Defect would

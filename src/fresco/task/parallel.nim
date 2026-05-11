@@ -63,12 +63,12 @@ template parallel*(body: untyped): untyped =
   ## enclosing proc, an interleaved `spawn` from another coroutine
   ## would incorrectly land in our collector.
   block:
-    var mounts: seq[Mount] = @[]
+    let collector = MountCollector()
     let prev = parallelCollector
-    parallelCollector = addr mounts
+    parallelCollector = collector
     try:
       body
     finally:
       parallelCollector = prev
-    if mounts.len > 0:
-      await awaitParallel(mounts)
+    if collector.mounts.len > 0:
+      await awaitParallel(collector.mounts)
