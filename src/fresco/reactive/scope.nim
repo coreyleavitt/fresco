@@ -11,10 +11,18 @@
 ## common case of opening a fresh root.
 
 type
+  ProviderEntry* = object
+    typeName*: string
+    fetch*: proc(): pointer {.closure.}
+      ## Closure that returns the stored value as a pointer. The
+      ## closure captures the original ref, which keeps it alive
+      ## as long as this entry exists.
+
   Scope* = ref object
     parent*: Scope
     children: seq[Scope]
     cleanups: seq[proc() {.closure.}]
+    providers*: seq[ProviderEntry]
     disposed*: bool
 
 var currentScope* {.threadvar.}: Scope
