@@ -80,6 +80,16 @@ proc markDirty*(r: Region) =
   ## hasn't changed (e.g. after the renderer was invalidated externally).
   r.pending = true
 
+proc setRow*(r: Region, idx: int, line: string) =
+  ## Replace a single row in the region's target. Idx is region-local
+  ## (0 == top of region). Out-of-bounds is silently dropped — the
+  ## renderer's row clipping handles regions that have shrunk.
+  if idx < 0 or idx >= r.height: return
+  while r.target.len <= idx: r.target.add ""
+  if r.target[idx] != line:
+    r.target[idx] = line
+    r.pending = true
+
 proc flush*(s: Screen): string =
   ## Returns the ANSI bytes needed to bring the screen to the target
   ## state defined by all currently-pending regions. Idempotent: a
