@@ -32,6 +32,7 @@ task test, "run all tests":
   let integrationTests = @[
     "tests/integration/test_termios_pty.nim",
     "tests/integration/test_input_pty.nim",
+    "tests/integration/test_select_pty.nim",
   ]
   for t in unitTests & integrationTests:
     exec "nim r --hints:off --warnings:off --path:src " & t
