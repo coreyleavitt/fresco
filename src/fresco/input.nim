@@ -14,6 +14,9 @@ import std/posix
 import chronos
 import ./terminal/termios
 import ./events
+import ./reactive/scope
+import ./journal/events as jev
+import ./journal/log
 
 const DefaultEscTimeout* = 50.milliseconds
 
@@ -151,4 +154,12 @@ proc stop*(s: InputStream) =
   restoreTermios(s.snapshot)
 
 proc nextKey*(s: InputStream): Future[KeyEvent] {.async.} =
-  return await s.queue.get()
+  let ev = await s.queue.get()
+  if globalJournal != nil:
+    let tid = if currentScope != nil: currentScope.taskId else: jev.RootTask
+    let parent = if currentScope != nil: currentScope.lastEventId else: jev.NoEvent
+    try:
+      let id = globalJournal.logKeyReceived(tid, parent, ev.summary)
+      if currentScope != nil: currentScope.lastEventId = id
+    except Exception: discard
+  return ev

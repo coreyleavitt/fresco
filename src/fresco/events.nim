@@ -42,6 +42,15 @@ proc ctrlKey*(c: char): KeyEvent  = KeyEvent(kind: kCtrl, ch: c)
 proc altKey*(c: char): KeyEvent   = KeyEvent(kind: kAlt, ch: c)
 proc charKey*(r: Rune): KeyEvent  = KeyEvent(kind: kChar, rune: r)
 
+proc summary*(ev: KeyEvent): string =
+  ## Compact human-readable rendering of a KeyEvent. Used by the
+  ## journal to label key-delivery events.
+  case ev.kind
+  of kChar: "Char(" & $ev.rune & ")"
+  of kCtrl: "Ctrl-" & $ev.ch
+  of kAlt:  "Alt-"  & $ev.ch
+  else:     $ev.kind
+
 proc `==`*(a, b: KeyEvent): bool =
   if a.kind != b.kind: return false
   case a.kind

@@ -18,6 +18,9 @@
 import std/sequtils
 import chronos
 import ./core
+import ../reactive/scope
+import ../journal/events as jev
+import ../journal/log
 
 type
   Lifecycle* = enum
@@ -101,6 +104,13 @@ proc run*(s: Supervisor) {.async: (raises: [CatchableError]).} =
     let failed = child.mount.future.failed
 
     if not shouldRestart(child.spec.lifecycle, failed):
+      if globalJournal != nil:
+        let tid = if currentScope != nil: currentScope.taskId else: jev.RootTask
+        let p   = if currentScope != nil: currentScope.lastEventId else: jev.NoEvent
+        try:
+          let id = globalJournal.logSupervisorTerminate(tid, p, child.spec.name)
+          if currentScope != nil: currentScope.lastEventId = id
+        except Exception: discard
       s.children.del idx
       continue
 
@@ -112,8 +122,24 @@ proc run*(s: Supervisor) {.async: (raises: [CatchableError]).} =
         "child '" & child.spec.name & "' exceeded " &
         $s.maxRestarts & " restarts in " & $s.within)
       err.childName = child.spec.name
+      if globalJournal != nil:
+        let tid = if currentScope != nil: currentScope.taskId else: jev.RootTask
+        let p   = if currentScope != nil: currentScope.lastEventId else: jev.NoEvent
+        try:
+          let id = globalJournal.logSupervisorEscalate(tid, p,
+            child.spec.name, err.msg)
+          if currentScope != nil: currentScope.lastEventId = id
+        except Exception: discard
       for c in s.children:
         if not c.mount.future.finished: c.mount.cancel()
       raise err
 
+    if globalJournal != nil:
+      let tid = if currentScope != nil: currentScope.taskId else: jev.RootTask
+      let p   = if currentScope != nil: currentScope.lastEventId else: jev.NoEvent
+      try:
+        let id = globalJournal.logSupervisorRestart(tid, p,
+          child.spec.name, child.restartTimes.len)
+        if currentScope != nil: currentScope.lastEventId = id
+      except Exception: discard
     child.mount = spawn child.spec.factory()
