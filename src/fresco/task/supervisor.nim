@@ -30,7 +30,9 @@ type
 
   Strategy* = enum
     sOneForOne      ## restart only the failing child
-    # sOneForAll  / sRestForOne land in v2.3
+    sOneForAll      ## any failure → cancel all siblings, restart all
+    sRestForOne     ## any failure → cancel this child + all *later* siblings
+                    ## (declaration order), restart that group
 
   ChildFactory* = proc(): Future[void] {.closure, gcsafe, raises: [].}
     ## Must not raise synchronously and must be gcsafe. An `{.async.}`
@@ -198,24 +200,49 @@ proc run*(s: Supervisor) {.async: (raises: [CatchableError]).} =
         if not c.mount.future.finished: c.mount.cancel()
       raise err
 
-    if globalJournal != nil:
-      let tid = if currentScope != nil: currentScope.taskId else: jev.RootTask
-      let p   = if currentScope != nil: currentScope.lastEventId else: jev.NoEvent
-      try:
-        let id = globalJournal.logSupervisorRestart(tid, p,
-          child.spec.name, child.restartTimes.len)
-        if currentScope != nil: currentScope.lastEventId = id
-      except Exception: discard
+    # Determine the cascade group based on supervisor strategy.
+    #   sOneForOne:  just the failing child.
+    #   sRestForOne: failing child + every child declared after it.
+    #   sOneForAll:  every child.
+    var cascade: seq[int] = @[]
+    case s.strategy
+    of sOneForOne:
+      cascade.add idx
+    of sRestForOne:
+      for i in idx ..< s.children.len: cascade.add i
+    of sOneForAll:
+      for i in 0 ..< s.children.len: cascade.add i
 
-    # Invoke the restart handler with the previous taskId + journal,
-    # giving user code a chance to restore state before re-spawning.
-    if child.spec.onRestart != nil and globalJournal != nil and
-       child.mount != nil and child.mount.scope != nil:
-      let prevTid = child.mount.scope.taskId
-      try: child.spec.onRestart(globalJournal, prevTid)
-      except Exception: discard
+    # Cancel siblings in the cascade (the triggering child is already
+    # finished). Then wait for cancellation cascades to settle.
+    for i in cascade:
+      if i != idx and not s.children[i].mount.future.finished:
+        s.children[i].mount.cancel()
+    for i in cascade:
+      if i != idx:
+        try: await s.children[i].mount.future
+        except CatchableError: discard
 
-    child.mount = spawn child.spec.factory()
+    # Re-spawn every cascaded child. Logging + onRestart handlers fire
+    # per child so the journal records the full cascade.
+    for i in cascade:
+      let target = s.children[i]
+      if globalJournal != nil:
+        let tid = if currentScope != nil: currentScope.taskId else: jev.RootTask
+        let p   = if currentScope != nil: currentScope.lastEventId else: jev.NoEvent
+        try:
+          let id = globalJournal.logSupervisorRestart(tid, p,
+            target.spec.name, target.restartTimes.len)
+          if currentScope != nil: currentScope.lastEventId = id
+        except Exception: discard
+
+      if target.spec.onRestart != nil and globalJournal != nil and
+         target.mount != nil and target.mount.scope != nil:
+        let prevTid = target.mount.scope.taskId
+        try: target.spec.onRestart(globalJournal, prevTid)
+        except Exception: discard
+
+      target.mount = spawn target.spec.factory()
 
 # --- Declarative supervisor: block ---------------------------------------
 

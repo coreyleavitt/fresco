@@ -53,6 +53,7 @@ task test, "run all tests":
     "tests/integration/test_journal_input_sup.nim",
     "tests/integration/test_supervisor_onerror.nim",
     "tests/integration/test_supervisor_restart.nim",
+    "tests/integration/test_supervisor_strategies.nim",
   ]
   for t in unitTests & integrationTests:
     exec "nim r --hints:off --warnings:off --path:src " & t
