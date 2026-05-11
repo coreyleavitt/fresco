@@ -90,6 +90,14 @@ proc flush*(s: Screen): string =
     result &= s.renderer.render(r.row, r.col, r.target)
     r.pending = false
 
+proc paint*(s: Screen) =
+  ## Convenience: flush + write the resulting bytes to `s.fd`. Most
+  ## widgets call this after mutating their region's target; tests
+  ## that want to inspect the rendered bytes call `flush()` instead.
+  let bytes = s.flush()
+  if bytes.len > 0:
+    discard posix.write(s.fd, unsafeAddr bytes[0], bytes.len)
+
 # --- SIGWINCH -------------------------------------------------------------
 
 var resizePending*: bool
