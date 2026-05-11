@@ -85,3 +85,11 @@ suite "provide / use":
   test "use outside any scope raises":
     expect MissingProviderError:
       discard use ModelClient
+
+  test "typeMarker produces distinct keys for distinct types":
+    # Regression for review #18: previously providers were keyed on
+    # `$T` (the type name as a string), so two `Config` types declared
+    # in different modules would silently collide. typeMarker gives
+    # one {.global.} ref per type instantiation, so the keys differ.
+    check typeMarker(ModelClient) != typeMarker(Theme)
+    check typeMarker(ModelClient) == typeMarker(ModelClient)   # stable

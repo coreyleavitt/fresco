@@ -50,28 +50,45 @@ proc enterCbreak*(fd: cint = STDIN_FILENO): TermiosSnapshot =
 
 # --- signal-safe restore --------------------------------------------------
 
-var activeSnapshot: TermiosSnapshot
-var snapshotActive: bool
+# Stack of snapshots so nested cbreak scopes (e.g. a confirm prompt
+# inside an already-raw program) each get their *original* termios
+# back if a signal fires before they cleanly exit. The fatal-signal
+# handler walks the stack top-down restoring each saved state.
+
+const MaxSignalSnapshots = 16
+var snapshotStack: array[MaxSignalSnapshots, TermiosSnapshot]
+var snapshotDepth: int
 
 proc termiosSignalHandler(sig: cint) {.noconv.} =
-  if snapshotActive:
-    restoreTermios(activeSnapshot)
+  # Restore innermost-first: each scope undoes its own change so the
+  # final state is the termios as of process startup.
+  for i in countdown(snapshotDepth - 1, 0):
+    restoreTermios(snapshotStack[i])
   signal(sig, SIG_DFL)
   discard kill(getpid(), sig)
 
 proc installSignalHandlers*(s: TermiosSnapshot) =
   ## Register restore-on-fatal-signal hooks for SIGINT/SIGTERM/SIGSEGV.
-  activeSnapshot = s
-  snapshotActive = true
-  discard signal(SIGINT,  termiosSignalHandler)
-  discard signal(SIGTERM, termiosSignalHandler)
-  discard signal(SIGSEGV, termiosSignalHandler)
+  ## Nested install calls push onto a stack so the original termios
+  ## of each scope is preserved through fatal-signal restore. Silently
+  ## drops snapshots beyond MaxSignalSnapshots (16) — deeply-nested
+  ## cbreak is not a real workload.
+  if snapshotDepth < MaxSignalSnapshots:
+    snapshotStack[snapshotDepth] = s
+    inc snapshotDepth
+  if snapshotDepth == 1:
+    discard signal(SIGINT,  termiosSignalHandler)
+    discard signal(SIGTERM, termiosSignalHandler)
+    discard signal(SIGSEGV, termiosSignalHandler)
 
 proc uninstallSignalHandlers*() =
-  snapshotActive = false
-  discard signal(SIGINT,  SIG_DFL)
-  discard signal(SIGTERM, SIG_DFL)
-  discard signal(SIGSEGV, SIG_DFL)
+  ## Pop one snapshot from the stack; restore default handlers only
+  ## when the stack is empty.
+  if snapshotDepth > 0: dec snapshotDepth
+  if snapshotDepth == 0:
+    discard signal(SIGINT,  SIG_DFL)
+    discard signal(SIGTERM, SIG_DFL)
+    discard signal(SIGSEGV, SIG_DFL)
 
 template withCbreak*(fd: cint, body: untyped) =
   let snap = enterCbreak(fd)

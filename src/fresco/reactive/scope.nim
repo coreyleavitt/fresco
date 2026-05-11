@@ -14,7 +14,10 @@ import ../journal/events
 
 type
   ProviderEntry* = object
-    typeName*: string
+    typeKey*: pointer
+      ## Unique identity per type. Two `Config` types in different
+      ## modules have distinct keys even though `$T` would produce
+      ## the same string. See `context.typeMarker`.
     fetch*: proc(): pointer {.closure.}
       ## Closure that returns the stored value as a pointer. The
       ## closure captures the original ref, which keeps it alive
