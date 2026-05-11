@@ -24,7 +24,7 @@ suite "aggregate import":
     discard signal(0)
     discard newScreen(5, 10)
     discard charKey(Rune('x'))
-    discard simple(kEnter)
+    discard atomKey(kEnter)
     discard ctrlKey('c')
     discard newSupervisor()
     discard newJournal()

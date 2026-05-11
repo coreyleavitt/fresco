@@ -128,7 +128,7 @@ suite "hotkey":
     withRig:
       hotkey stream, ctrlKey('q'):
         firedQ = true
-      hotkey stream, simple(kF1):
+      hotkey stream, atomKey(kF1):
         firedH = true
     do:
       writeAll(master, "\x1bOP")   # F1

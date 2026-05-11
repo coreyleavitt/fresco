@@ -3,7 +3,7 @@
 ##   hotkey stream, ctrlKey('q'):
 ##     app.shutdown()
 ##
-##   hotkey stream, simple(kF1):
+##   hotkey stream, atomKey(kF1):
 ##     showHelp()
 ##
 ## Hotkeys register a pre-filter on the InputStream — they see every
@@ -13,7 +13,7 @@
 ##
 ## Pattern matching is intentionally simpler than `receive:` — exact
 ## KeyEvent comparison. Use helper constructors (`ctrlKey('c')`,
-## `simple(kF1)`, `charKey(Rune('?'))`) to build the matcher.
+## `atomKey(kF1)`, `charKey(Rune('?'))`) to build the matcher.
 
 import ../events
 import ../input

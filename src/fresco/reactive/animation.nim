@@ -102,6 +102,13 @@ proc tween*(s: Signal[float], target: float,
   ## Animate `s` from its current value to `target` over `duration`.
   ## If another tween is already in flight against `s`, it's cancelled
   ## and replaced with this one (last-write-wins).
+  ##
+  ## Cancelled animations stay in `frameAnimations` until the next
+  ## frame-clock tick discovers their `cancelled = true` flag and
+  ## removes them. Rapid back-to-back `tween` calls on the same
+  ## signal within one dispatcher iteration can therefore accumulate
+  ## entries in the list — bounded by frame interval (~33ms at 30fps)
+  ## and self-corrects on the next tick.
   for a in frameAnimations:
     if a.target == s: a.cancelled = true
   result = Animation(

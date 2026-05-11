@@ -54,6 +54,14 @@ proc finished*(m: Mount): bool =
 proc wireLifecycle(m: Mount) =
   ## Install both directions of the scope ↔ future bond plus the
   ## journal completion / failure / cancellation hooks.
+  ##
+  ## The future-completion callback runs from the chronos dispatcher,
+  ## not from within any task's body — `currentScope` is whatever the
+  ## dispatcher left there (typically nil). All journal writes here
+  ## explicitly use `captured.scope` so they're correctly attributed
+  ## regardless. Any `dispose`-triggered onCleanup closures that
+  ## themselves want a scope-relative side effect (rare) must use
+  ## `withScope(captured.scope): ...` internally.
   let captured = m
   # Direction 1: scope dispose → cancel future.
   withScope(m.scope):

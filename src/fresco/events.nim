@@ -37,7 +37,10 @@ type
     of kCtrl, kAlt: ch*:   char
     else: discard
 
-proc simple*(k: KeyKind): KeyEvent = KeyEvent(kind: k)
+proc atomKey*(k: KeyKind): KeyEvent = KeyEvent(kind: k)
+  ## Constructor for a kind-only KeyEvent (no payload — Enter, Tab,
+  ## arrows, F-keys, etc.). Matches `charKey` / `ctrlKey` / `altKey`
+  ## naming so the four KeyEvent constructors form a coherent set.
 proc ctrlKey*(c: char): KeyEvent  = KeyEvent(kind: kCtrl, ch: c)
 proc altKey*(c: char): KeyEvent   = KeyEvent(kind: kAlt, ch: c)
 proc charKey*(r: Rune): KeyEvent  = KeyEvent(kind: kChar, rune: r)
@@ -79,46 +82,46 @@ proc parseLeadingInt(s: string): int =
 
 proc tildeKey(n: int): KeyEvent =
   case n
-  of 1, 7: simple(kHome)
-  of 2:    simple(kInsert)
-  of 3:    simple(kDelete)
-  of 4, 8: simple(kEnd)
-  of 5:    simple(kPageUp)
-  of 6:    simple(kPageDown)
-  of 11:   simple(kF1)
-  of 12:   simple(kF2)
-  of 13:   simple(kF3)
-  of 14:   simple(kF4)
-  of 15:   simple(kF5)
-  of 17:   simple(kF6)
-  of 18:   simple(kF7)
-  of 19:   simple(kF8)
-  of 20:   simple(kF9)
-  of 21:   simple(kF10)
-  of 23:   simple(kF11)
-  of 24:   simple(kF12)
-  else:    simple(kEscape)
+  of 1, 7: atomKey(kHome)
+  of 2:    atomKey(kInsert)
+  of 3:    atomKey(kDelete)
+  of 4, 8: atomKey(kEnd)
+  of 5:    atomKey(kPageUp)
+  of 6:    atomKey(kPageDown)
+  of 11:   atomKey(kF1)
+  of 12:   atomKey(kF2)
+  of 13:   atomKey(kF3)
+  of 14:   atomKey(kF4)
+  of 15:   atomKey(kF5)
+  of 17:   atomKey(kF6)
+  of 18:   atomKey(kF7)
+  of 19:   atomKey(kF8)
+  of 20:   atomKey(kF9)
+  of 21:   atomKey(kF10)
+  of 23:   atomKey(kF11)
+  of 24:   atomKey(kF12)
+  else:    atomKey(kEscape)
 
 proc parseCsi(params: string, final: char): KeyEvent =
   case final
-  of 'A': simple(kArrowUp)
-  of 'B': simple(kArrowDown)
-  of 'C': simple(kArrowRight)
-  of 'D': simple(kArrowLeft)
-  of 'H': simple(kHome)
-  of 'F': simple(kEnd)
+  of 'A': atomKey(kArrowUp)
+  of 'B': atomKey(kArrowDown)
+  of 'C': atomKey(kArrowRight)
+  of 'D': atomKey(kArrowLeft)
+  of 'H': atomKey(kHome)
+  of 'F': atomKey(kEnd)
   of '~': tildeKey(parseLeadingInt(params))
-  else:   simple(kEscape)
+  else:   atomKey(kEscape)
 
 proc parseSs3(c: char): KeyEvent =
   case c
-  of 'P': simple(kF1)
-  of 'Q': simple(kF2)
-  of 'R': simple(kF3)
-  of 'S': simple(kF4)
-  of 'H': simple(kHome)
-  of 'F': simple(kEnd)
-  else:   simple(kEscape)
+  of 'P': atomKey(kF1)
+  of 'Q': atomKey(kF2)
+  of 'R': atomKey(kF3)
+  of 'S': atomKey(kF4)
+  of 'H': atomKey(kHome)
+  of 'F': atomKey(kEnd)
+  else:   atomKey(kEscape)
 
 # --- Main decoder ----------------------------------------------------------
 
@@ -135,7 +138,7 @@ proc decode*(buf: string, finalize: bool = false):
       # ESC introducer.
       if i + 1 >= buf.len:
         if finalize:
-          result.events.add simple(kEscape)
+          result.events.add atomKey(kEscape)
           inc i
         else:
           break
@@ -147,7 +150,7 @@ proc decode*(buf: string, finalize: bool = false):
         while j < buf.len and buf[j].ord notin {0x40..0x7E}: inc j
         if j >= buf.len:
           if finalize:
-            result.events.add simple(kEscape); inc i; continue
+            result.events.add atomKey(kEscape); inc i; continue
           else: break
         result.events.add parseCsi(buf[i + 2 ..< j], buf[j])
         i = j + 1
@@ -155,13 +158,13 @@ proc decode*(buf: string, finalize: bool = false):
         # SS3: ESC O <c>
         if i + 2 >= buf.len:
           if finalize:
-            result.events.add simple(kEscape); inc i; continue
+            result.events.add atomKey(kEscape); inc i; continue
           else: break
         result.events.add parseSs3(buf[i + 2])
         i += 3
       elif nxt == '\x1B':
         # ESC ESC ... — emit a standalone Escape, re-process the rest.
-        result.events.add simple(kEscape)
+        result.events.add atomKey(kEscape)
         inc i
       elif nxt.ord in 0x20..0x7E:
         # ESC + printable = Alt+<char>.
@@ -170,14 +173,14 @@ proc decode*(buf: string, finalize: bool = false):
       else:
         # ESC + control byte (or unknown 8-bit): treat ESC as bare and
         # let the next iteration handle the trailing byte on its own.
-        result.events.add simple(kEscape)
+        result.events.add atomKey(kEscape)
         inc i
     of 0x0D, 0x0A:
-      result.events.add simple(kEnter); inc i
+      result.events.add atomKey(kEnter); inc i
     of 0x09:
-      result.events.add simple(kTab); inc i
+      result.events.add atomKey(kTab); inc i
     of 0x08, 0x7F:
-      result.events.add simple(kBackspace); inc i
+      result.events.add atomKey(kBackspace); inc i
     of 0x00:
       result.events.add ctrlKey('@'); inc i
     of 0x01..0x07, 0x0B, 0x0C, 0x0E..0x1A:

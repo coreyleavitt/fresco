@@ -16,15 +16,15 @@ suite "single-byte keys":
     oneEvent " ", charKey(Rune(' '))
 
   test "CR and LF both decode as Enter":
-    oneEvent "\r", simple(kEnter)
-    oneEvent "\n", simple(kEnter)
+    oneEvent "\r", atomKey(kEnter)
+    oneEvent "\n", atomKey(kEnter)
 
   test "Tab":
-    oneEvent "\t", simple(kTab)
+    oneEvent "\t", atomKey(kTab)
 
   test "Backspace via BS (0x08) and DEL (0x7F)":
-    oneEvent "\x08", simple(kBackspace)
-    oneEvent "\x7F", simple(kBackspace)
+    oneEvent "\x08", atomKey(kBackspace)
+    oneEvent "\x7F", atomKey(kBackspace)
 
   test "Ctrl+letter maps to lowercase":
     oneEvent "\x01", ctrlKey('a')
@@ -43,7 +43,7 @@ suite "Escape and Alt disambiguation":
 
   test "bare ESC with finalize emits kEscape":
     let (evs, consumed) = decode("\x1b", finalize = true)
-    check evs == @[simple(kEscape)]
+    check evs == @[atomKey(kEscape)]
     check consumed == 1
 
   test "ESC + printable is Alt+char":
@@ -52,50 +52,50 @@ suite "Escape and Alt disambiguation":
 
   test "ESC ESC emits Escape then re-parses":
     let (evs, consumed) = decode("\x1b\x1ba")
-    check evs == @[simple(kEscape), altKey('a')]
+    check evs == @[atomKey(kEscape), altKey('a')]
     check consumed == 3
 
 suite "CSI sequences":
 
   test "arrow keys":
-    oneEvent "\x1b[A", simple(kArrowUp)
-    oneEvent "\x1b[B", simple(kArrowDown)
-    oneEvent "\x1b[C", simple(kArrowRight)
-    oneEvent "\x1b[D", simple(kArrowLeft)
+    oneEvent "\x1b[A", atomKey(kArrowUp)
+    oneEvent "\x1b[B", atomKey(kArrowDown)
+    oneEvent "\x1b[C", atomKey(kArrowRight)
+    oneEvent "\x1b[D", atomKey(kArrowLeft)
 
   test "Home / End — short form":
-    oneEvent "\x1b[H", simple(kHome)
-    oneEvent "\x1b[F", simple(kEnd)
+    oneEvent "\x1b[H", atomKey(kHome)
+    oneEvent "\x1b[F", atomKey(kEnd)
 
   test "tilde-terminated keys":
-    oneEvent "\x1b[1~", simple(kHome)
-    oneEvent "\x1b[2~", simple(kInsert)
-    oneEvent "\x1b[3~", simple(kDelete)
-    oneEvent "\x1b[4~", simple(kEnd)
-    oneEvent "\x1b[5~", simple(kPageUp)
-    oneEvent "\x1b[6~", simple(kPageDown)
-    oneEvent "\x1b[7~", simple(kHome)
-    oneEvent "\x1b[8~", simple(kEnd)
+    oneEvent "\x1b[1~", atomKey(kHome)
+    oneEvent "\x1b[2~", atomKey(kInsert)
+    oneEvent "\x1b[3~", atomKey(kDelete)
+    oneEvent "\x1b[4~", atomKey(kEnd)
+    oneEvent "\x1b[5~", atomKey(kPageUp)
+    oneEvent "\x1b[6~", atomKey(kPageDown)
+    oneEvent "\x1b[7~", atomKey(kHome)
+    oneEvent "\x1b[8~", atomKey(kEnd)
 
   test "F5..F12 use tilde form":
-    oneEvent "\x1b[15~", simple(kF5)
-    oneEvent "\x1b[17~", simple(kF6)
-    oneEvent "\x1b[24~", simple(kF12)
+    oneEvent "\x1b[15~", atomKey(kF5)
+    oneEvent "\x1b[17~", atomKey(kF6)
+    oneEvent "\x1b[24~", atomKey(kF12)
 
   test "tilde sequence with modifier params still decodes base key":
-    oneEvent "\x1b[5;2~", simple(kPageUp)
+    oneEvent "\x1b[5;2~", atomKey(kPageUp)
 
 suite "SS3 (F1..F4)":
 
   test "ESC O P/Q/R/S → F1..F4":
-    oneEvent "\x1bOP", simple(kF1)
-    oneEvent "\x1bOQ", simple(kF2)
-    oneEvent "\x1bOR", simple(kF3)
-    oneEvent "\x1bOS", simple(kF4)
+    oneEvent "\x1bOP", atomKey(kF1)
+    oneEvent "\x1bOQ", atomKey(kF2)
+    oneEvent "\x1bOR", atomKey(kF3)
+    oneEvent "\x1bOS", atomKey(kF4)
 
   test "SS3 Home / End":
-    oneEvent "\x1bOH", simple(kHome)
-    oneEvent "\x1bOF", simple(kEnd)
+    oneEvent "\x1bOH", atomKey(kHome)
+    oneEvent "\x1bOF", atomKey(kEnd)
 
 suite "partial-sequence carryover":
 
@@ -120,7 +120,7 @@ suite "partial-sequence carryover":
     check c1 == 0
     let part2 = part1 & "A"
     let (evs2, c2) = decode(part2)
-    check evs2 == @[simple(kArrowUp)]
+    check evs2 == @[atomKey(kArrowUp)]
     check c2 == part2.len
 
 suite "UTF-8":

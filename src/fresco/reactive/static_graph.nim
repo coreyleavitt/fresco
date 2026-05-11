@@ -37,10 +37,22 @@ proc isSignalRead(n: NimNode): bool =
   if t == nil or t.kind != nnkBracketExpr or t.len < 1: return false
   t[0].kind == nnkSym and $t[0] == "Signal"
 
+const SyntheticKinds = {
+  nnkHiddenCallConv,
+  nnkHiddenStdConv,
+  nnkHiddenSubConv,
+  nnkHiddenDeref,
+  nnkHiddenAddr,
+  nnkConv,
+}
+
 macro tracked*(body: typed): untyped =
   ## See module docstring.
   var sigs: seq[NimNode] = @[]
   proc walk(n: NimNode) =
+    # Skip compiler-synthesized nodes whose contents would otherwise
+    # produce spurious Signal[T] matches on inserted conversions.
+    if n.kind in SyntheticKinds: return
     if isSignalRead(n):
       sigs.add n[1]
     for child in n:

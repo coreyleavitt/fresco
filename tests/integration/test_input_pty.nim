@@ -79,7 +79,7 @@ suite "InputStream over PTY":
       withStream:
         writeAll(master, "\x1b[A")
         let evs = await collect(stream, 1)
-        check evs == @[simple(kArrowUp)]
+        check evs == @[atomKey(kArrowUp)]
     waitFor body()
 
   test "bare ESC flushes via timeout":
@@ -87,7 +87,7 @@ suite "InputStream over PTY":
       withStream:
         writeAll(master, "\x1b")
         let evs = await collect(stream, 1, timeout = 500.milliseconds)
-        check evs == @[simple(kEscape)]
+        check evs == @[atomKey(kEscape)]
     waitFor body()
 
   test "stop() wakes pending nextKey awaiters with InputStreamClosedError":
@@ -116,5 +116,5 @@ suite "InputStream over PTY":
         await sleepAsync(10.milliseconds)
         writeAll(master, "[B")
         let evs = await collect(stream, 1)
-        check evs == @[simple(kArrowDown)]
+        check evs == @[atomKey(kArrowDown)]
     waitFor body()

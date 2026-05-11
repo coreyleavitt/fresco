@@ -24,8 +24,13 @@ method onPersist*(j: Journal, e: Event) {.base, gcsafe, raises: [].} = discard
   ## flush the event to disk.
 
 var globalJournal* {.threadvar.}: Journal
-  ## Process-wide journal. `useJournal()` opens / installs one; tasks
-  ## append to it via the helpers below.
+  ## **Thread-local** active journal. Installed via `useJournal(j)`
+  ## or by direct assignment. fresco is currently single-threaded
+  ## (one chronos dispatcher per thread), so a thread-local is the
+  ## natural fit; if you spawn additional threads they each get
+  ## their own `globalJournal` slot (initially nil). For multi-thread
+  ## journal sharing, route appends through an explicit Journal
+  ## reference rather than this variable.
 
 proc newJournal*(): Journal = Journal(events: @[])
 
@@ -141,8 +146,16 @@ proc lastWritesByLabel*(j: Journal, taskId: TaskId): Table[string, Event] =
   ## signal label. Useful for state restoration: walk this table and
   ## re-apply each entry's `writeRepr` to a freshly-declared signal of
   ## the same label.
-  for ev in j.events:
-    if ev.taskId == taskId and ev.kind == ekStateWrite:
+  ##
+  ## O(N) over the journal in the worst case, but a reverse scan with
+  ## a seen-set short-circuits per label so the common case (where
+  ## the task wrote each label only a handful of times near the end
+  ## of the log) is effectively O(labels). For very long sessions
+  ## that matter, consider the per-task index work tracked at #34.
+  for i in countdown(j.events.high, 0):
+    let ev = j.events[i]
+    if ev.taskId == taskId and ev.kind == ekStateWrite and
+       ev.signalLabel notin result:
       result[ev.signalLabel] = ev
 
 # --- Bitemporal queries --------------------------------------------------
