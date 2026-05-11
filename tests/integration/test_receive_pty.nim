@@ -147,3 +147,27 @@ suite "receive: core patterns":
         Char('a'): outcome = "literal-a"
         Char(c):   outcome = "fallback-" & $c
     check got2 == "fallback-b"
+
+suite "receive: after timeout":
+
+  test "after fires when no key arrives in time":
+    proc inner(): Future[string] {.async: (raises: [Exception]).} =
+      let (master, slave) = openPtyPair()
+      let stream = newInputStream(slave)
+      fresco_input.start(stream)
+      defer:
+        fresco_input.stop(stream)
+        discard close(master); discard close(slave)
+      var outcome = "unset"
+      receive stream:
+        Char(c): outcome = "char:" & $c
+        after 50.milliseconds: outcome = "timeout"
+      return outcome
+    check waitFor(inner()) == "timeout"
+
+  test "key arm wins when input precedes the timeout":
+    let got = rig("z"):
+      receive stream:
+        Char(c):                 outcome = "char:" & $c
+        after 500.milliseconds:  outcome = "timeout"
+    check got == "char:z"

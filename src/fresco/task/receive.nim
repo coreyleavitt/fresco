@@ -20,6 +20,7 @@ import std/tables
 ## land in a follow-up commit together with exhaustiveness checking.
 
 import std/[macros, unicode]
+import chronos
 import ../events
 import ../input
 
@@ -122,22 +123,37 @@ proc compileArm(evSym, arm: NimNode): tuple[cond, body: NimNode] =
 
   error("receive: unrecognized arm shape\n" & arm.treeRepr, arm)
 
+proc isAfterArm(arm: NimNode): bool =
+  ## Detect `after <Duration>: body`. AST: Command(after, durExpr, StmtList(body))
+  ## or Call(after, durExpr, StmtList(body)).
+  if arm.kind notin {nnkCall, nnkCommand}: return false
+  if arm.len < 2: return false
+  let head = arm[0]
+  head.kind == nnkIdent and $head == "after"
+
 macro receive*(stream: untyped, body: untyped): untyped =
   ## Block until the next KeyEvent arrives on `stream`; dispatch to
   ## the first matching arm. Returns the value of the arm's body
-  ## expression, so `receive` can be used both as a statement and as
-  ## an expression yielding a result.
+  ## expression. With an `after Duration:` arm, races the key wait
+  ## against a chronos timer; if the timer fires first, runs the
+  ## timeout body instead.
   expectKind(body, nnkStmtList)
 
   let evSym = genSym(nskLet, "ev")
   var chain: NimNode = nil
   var elseBody: NimNode = nil
+  var afterDur: NimNode = nil
+  var afterBody: NimNode = nil
 
   for arm in body:
+    if isAfterArm(arm):
+      if afterDur != nil:
+        error("receive: at most one `after` clause", arm)
+      afterDur = arm[1]
+      afterBody = arm[^1]
+      continue
     let (cond, armBody) = compileArm(evSym, arm)
     if cond.kind == nnkIntLit and cond.intVal != 0:
-      # Wildcard arm — keep as `else` for the chain. If multiple
-      # wildcards appear, the last wins; warn at compile time later.
       elseBody = armBody
     else:
       if chain == nil:
@@ -149,11 +165,25 @@ macro receive*(stream: untyped, body: untyped): untyped =
   if elseBody != nil:
     chain.add newTree(nnkElse, elseBody)
   else:
-    # No wildcard. Use `discard` as the fall-through to keep the
-    # expression total. Future commit upgrades this to a compile
-    # warning when exhaustiveness isn't satisfied otherwise.
     chain.add newTree(nnkElse, quote do: discard)
 
-  result = quote do:
-    let `evSym` = await `stream`.nextKey()
-    `chain`
+  if afterDur == nil:
+    result = quote do:
+      let `evSym` = await `stream`.nextKey()
+      `chain`
+  else:
+    # Race the next-key wait against a sleepAsync; dispatch on which
+    # fires first.
+    let keyFutSym = genSym(nskLet, "keyFut")
+    let timerSym  = genSym(nskLet, "timerFut")
+    result = quote do:
+      let `keyFutSym` = `stream`.nextKey()
+      let `timerSym`  = sleepAsync(`afterDur`)
+      discard await race(FutureBase(`keyFutSym`), FutureBase(`timerSym`))
+      if `keyFutSym`.finished and not `keyFutSym`.failed:
+        if not `timerSym`.finished: `timerSym`.cancelSoon()
+        let `evSym` = `keyFutSym`.read
+        `chain`
+      else:
+        if not `keyFutSym`.finished: `keyFutSym`.cancelSoon()
+        `afterBody`
