@@ -91,3 +91,25 @@ suite "mountWhen":
       check not ran
       dispose(root)
     waitFor body()
+
+  test "mount(cond) alias has the same semantics as mountWhen":
+    proc body() {.async: (raises: [Exception]).} =
+      var active = false
+      proc child() {.async: (raises: [Exception]).} =
+        active = true
+        try:
+          await sleepAsync(500.milliseconds)
+        finally:
+          active = false
+      let show = signal(false)
+      let root = createRoot:
+        mount(show()):
+          spawn child()
+      show := true
+      await tick(); await tick()
+      check active
+      show := false
+      await tick(); await tick()
+      check not active
+      dispose(root)
+    waitFor body()

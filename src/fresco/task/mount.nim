@@ -20,6 +20,9 @@ template mountWhen*(cond: untyped, body: untyped): untyped =
   ## Reactive conditional mount. `cond` is re-evaluated whenever any
   ## signal it reads changes; `body` must yield a Mount when the
   ## condition is true.
+  ##
+  ## Also exposed as `mount(cond): body` — same semantics, terser
+  ## DSL form. Pick whichever reads better at the call site.
   var currentMount: Mount = nil
   createEffect proc() =
     let shouldMount = cond
@@ -34,3 +37,8 @@ template mountWhen*(cond: untyped, body: untyped): untyped =
     if currentMount != nil and not currentMount.future.finished:
       currentMount.cancel()
       currentMount = nil
+
+template mount*(cond: untyped, body: untyped): untyped =
+  ## DSL-form alias for `mountWhen`. `mount(cond): body` reads as
+  ## "mount this child when cond is true."
+  mountWhen(cond, body)
