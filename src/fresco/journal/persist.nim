@@ -19,6 +19,18 @@ import std/[json, options, os, times]
 import ./events
 import ./log
 
+const
+  JournalSchemaVersion* = 1
+    ## Bumped whenever the on-disk JSON shape changes incompatibly
+    ## (new variant payload field rename, EventKind reorder, etc.).
+    ## Each event line carries `v` = JournalSchemaVersion; openJournal
+    ## skips lines whose schema doesn't match.
+
+type
+  JournalSchemaMismatch* = object of CatchableError
+    foundVersion*: int
+    expectedVersion*: int
+
 # --- (Re-)bump the id generators after a load ----------------------------
 
 proc bumpAfterLoad*(j: Journal) =
@@ -37,6 +49,7 @@ proc bumpAfterLoad*(j: Journal) =
 
 proc toJson*(e: Event): JsonNode =
   result = newJObject()
+  result["v"]        = %JournalSchemaVersion
   result["id"]       = %uint64(e.id)
   result["wall"]     = %e.wall.toUnixFloat()
   result["taskId"]   = %uint32(e.taskId)
@@ -72,6 +85,15 @@ proc parseKind(s: string): Option[EventKind] =
 
 proc fromJson*(n: JsonNode): Option[Event] =
   if n.kind != JObject: return none(Event)
+  # Lines missing `v` are pre-versioning (treat as v0 — rejected).
+  let v = n{"v"}.getInt(0)
+  if v != JournalSchemaVersion:
+    var err = newException(JournalSchemaMismatch,
+      "journal entry schema v" & $v & " incompatible with current v" &
+      $JournalSchemaVersion)
+    err.foundVersion = v
+    err.expectedVersion = JournalSchemaVersion
+    raise err
   let kindStr = n{"kind"}.getStr("")
   let kindOpt = parseKind(kindStr)
   if kindOpt.isNone: return none(Event)
@@ -123,14 +145,26 @@ proc openJournal*(path: string): PersistentJournal =
   ## event to the file as well as to memory.
   result = PersistentJournal(events: @[], path: path)
   if fileExists(path):
+    var schemaMismatchCount = 0
     for raw in lines(path):
       if raw.len == 0: continue
       let parsed =
         try: parseJson(raw)
         except JsonParsingError: nil
       if parsed == nil: continue
-      let ev = fromJson(parsed)
+      let ev =
+        try: fromJson(parsed)
+        except JournalSchemaMismatch:
+          inc schemaMismatchCount
+          none(Event)
       if ev.isSome: result.events.add ev.get
+    if schemaMismatchCount > 0:
+      try:
+        stderr.writeLine("fresco: " & $schemaMismatchCount &
+                         " journal entr" &
+                         (if schemaMismatchCount == 1: "y" else: "ies") &
+                         " skipped due to schema-version mismatch")
+      except IOError: discard
     bumpAfterLoad(result)
   let parent = parentDir(path)
   if parent.len > 0: createDir(parent)

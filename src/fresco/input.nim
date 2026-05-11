@@ -40,8 +40,14 @@ type
     registered: bool
     escTimeout: Duration
     escWaiter: Future[void]
+    closing*: Future[void]
+      ## Completes when stop() is called. nextKey awaits on this in
+      ## parallel with the queue so pending awaiters wake on stream
+      ## teardown instead of blocking forever.
     filters: seq[FilterEntry]
     nextFilterId: int
+
+  InputStreamClosedError* = object of CatchableError
 
 proc setNonblocking(fd: cint): cint =
   result = fcntl(fd, F_GETFL, 0)
@@ -141,6 +147,7 @@ proc newInputStream*(fd: cint = STDIN_FILENO,
     fd: fd,
     queue: newAsyncQueue[KeyEvent](maxsize = queueSize),
     escTimeout: escTimeout,
+    closing: newFuture[void]("InputStream.closing"),
   )
 
 proc start*(s: InputStream) =
@@ -171,12 +178,16 @@ proc start*(s: InputStream) =
 
 proc stop*(s: InputStream) =
   ## Tear down: cancel pending timer, unregister reader, restore flags
-  ## and termios, uninstall signal handlers. Safe to call more than once.
+  ## and termios, uninstall signal handlers, wake any in-flight
+  ## `nextKey` awaiters with InputStreamClosedError. Safe to call
+  ## more than once.
   if s.closed: return
   s.closed = true
   if s.escWaiter != nil and not s.escWaiter.finished:
     s.escWaiter.cancelSoon()
     s.escWaiter = nil
+  if s.closing != nil and not s.closing.finished:
+    s.closing.complete()
   if s.registered:
     removeReader(AsyncFD(s.fd))
     unregister(AsyncFD(s.fd))
@@ -186,7 +197,15 @@ proc stop*(s: InputStream) =
   restoreTermios(s.snapshot)
 
 proc nextKey*(s: InputStream): Future[KeyEvent] {.async.} =
-  let ev = await s.queue.get()
+  if s.closed:
+    raise newException(InputStreamClosedError, "stream is closed")
+  let getFut = s.queue.get()
+  discard await race(FutureBase(getFut), FutureBase(s.closing))
+  if not getFut.finished:
+    # stop() fired; cancel the queue.get and raise.
+    getFut.cancelSoon()
+    raise newException(InputStreamClosedError, "stream closed mid-wait")
+  let ev = getFut.read
   if globalJournal != nil:
     let tid = if currentScope != nil: currentScope.taskId else: jev.RootTask
     let parent = if currentScope != nil: currentScope.lastEventId else: jev.NoEvent

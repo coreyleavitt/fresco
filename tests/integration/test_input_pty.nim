@@ -90,6 +90,25 @@ suite "InputStream over PTY":
         check evs == @[simple(kEscape)]
     waitFor body()
 
+  test "stop() wakes pending nextKey awaiters with InputStreamClosedError":
+    proc body() {.async: (raises: [Exception]).} =
+      withStream:
+        # Start a nextKey that has no events queued — it'll block.
+        let pending = stream.nextKey()
+        await sleepAsync(20.milliseconds)
+        check not pending.finished
+        # Close the stream; the awaiter should wake up.
+        fresco_input.stop(stream)
+        var raised = false
+        try:
+          discard await pending.wait(200.milliseconds)
+        except InputStreamClosedError:
+          raised = true
+        except CancelledError:
+          raised = true     # cancelSoon may surface as either
+        check raised
+    waitFor body()
+
   test "split arrow sequence reassembles across reads":
     proc body() {.async: (raises: [Exception]).} =
       withStream:

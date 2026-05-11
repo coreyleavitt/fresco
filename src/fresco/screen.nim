@@ -71,8 +71,14 @@ proc newRegion*(s: Screen, row, col, height, width: int): Region =
 
 proc set*(r: Region, content: openArray[string]) =
   ## Queue a new target. The flush after this call will emit only the
-  ## rows that differ from what's currently on screen.
-  r.target = @content
+  ## rows that differ from what's currently on screen. Excess rows
+  ## (content longer than `r.height`) are truncated, matching setRow's
+  ## "never push past r.height" behavior so the two writers stay
+  ## symmetric.
+  if content.len <= r.height:
+    r.target = @content
+  else:
+    r.target = @(content[0 ..< r.height])
   r.pending = true
 
 proc markDirty*(r: Region) =
@@ -128,10 +134,24 @@ proc uninstallResizeHandler*() =
 proc resize*(s: Screen) =
   ## Re-query terminal size, resize the renderer, and mark every
   ## region pending so the next flush repaints from a clean slate.
+  ##
+  ## Regions that no longer fit (their declared row+height extends past
+  ## the new screen height, or col+width past the new width) are
+  ## clamped in place so the renderer doesn't silently drop content
+  ## without anyone noticing. Callers using a layout (vstack/hstack)
+  ## should call `relayout()` after resize() to redistribute properly.
   let (h, w) = queryWinsize(s.fd)
   s.height = h
   s.width  = w
   s.renderer.resize(h, w)
   for r in s.regions:
+    if r.row >= h:
+      r.height = 0   # whole region off-screen
+    elif r.row + r.height > h:
+      r.height = h - r.row
+    if r.col >= w:
+      r.width = 0
+    elif r.col + r.width > w:
+      r.width = w - r.col
     r.pending = true
   resizePending = false

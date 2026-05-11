@@ -111,6 +111,20 @@ suite "persist: edge cases":
     close(j)
     check fileExists(tmpdir / "bare-name.log")
 
+  test "schema-version mismatch lines are skipped, not crash":
+    let path = tempPath()
+    defer: discard tryRemoveFile(path)
+
+    # Write a hand-crafted line with the wrong version.
+    let f = open(path, fmWrite)
+    f.writeLine("""{"v":999,"id":1,"wall":0,"taskId":0,"parentId":0,"kind":"ekTaskSpawned","spawnedName":"old","spawnedType":""}""")
+    f.close()
+
+    # openJournal must not raise; the mismatched entry is skipped.
+    let j = openJournal(path)
+    check j.events.len == 0
+    close(j)
+
   test "bumpAfterLoad is O(1) advance, not O(maxId)":
     # Previously: a high maxId would loop fresh() that many times,
     # potentially hanging startup. Just verify the load is fast and
