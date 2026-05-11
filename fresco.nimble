@@ -59,6 +59,7 @@ task test, "run all tests":
     "tests/integration/test_supervisor_strategies.nim",
     "tests/integration/test_animation.nim",
     "tests/integration/test_persist.nim",
+    "tests/integration/test_topology.nim",
   ]
   for t in unitTests & integrationTests:
     exec "nim r --hints:off --warnings:off --path:src " & t
@@ -66,6 +67,7 @@ task test, "run all tests":
 task examples, "compile-check every examples/*.nim":
   let examples = @[
     "examples/ex01_input_loop.nim",
+    "examples/ex02_devtools.nim",
   ]
   for e in examples:
     exec "nim check --hints:off --warnings:off --path:src " & e

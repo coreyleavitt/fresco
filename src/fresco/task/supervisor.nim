@@ -244,6 +244,32 @@ proc run*(s: Supervisor) {.async: (raises: [CatchableError]).} =
 
       target.mount = spawn target.spec.factory()
 
+# --- Topology introspection ----------------------------------------------
+
+type
+  TopologyNode* = object
+    name*: string
+    lifecycle*: Lifecycle
+    running*: bool
+    taskId*: jev.TaskId
+    restartCount*: int
+
+proc topology*(s: Supervisor): seq[TopologyNode] =
+  ## Snapshot of the supervisor's children — name, lifecycle, whether
+  ## the current mount is still running, the latest taskId, and a
+  ## count of restarts in the active sliding window. Useful for
+  ## devtools panels and external monitoring (metrics, logs).
+  for child in s.children:
+    var node = TopologyNode(
+      name: child.spec.name,
+      lifecycle: child.spec.lifecycle,
+      restartCount: child.restartTimes.len)
+    if child.mount != nil:
+      node.running = not child.mount.future.finished
+      if child.mount.scope != nil:
+        node.taskId = child.mount.scope.taskId
+    result.add node
+
 # --- Declarative supervisor: block ---------------------------------------
 
 macro supervisor*(name: untyped, body: untyped): untyped =
