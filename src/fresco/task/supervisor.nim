@@ -37,10 +37,22 @@ type
     ## proc call site satisfies this — the proc body's raises are
     ## encoded in the returned Future, not at the call.
 
+  ErrorAction* = enum
+    eaRestart       ## restart the child (subject to maxRestarts window)
+    eaEscalate      ## raise SupervisorEscalation
+    eaTerminate     ## remove the child (treat as terminal completion)
+
+  ErrorPolicy* = proc(e: ref Exception): ErrorAction
+                 {.closure, gcsafe, raises: [].}
+    ## Per-child error mapper. Inspects the failing future's exception
+    ## and decides how the supervisor should respond. nil means
+    ## "use the lifecycle default (restart for permanent/transient).
+
   ChildSpec* = object
     name*: string
     lifecycle*: Lifecycle
     factory*: ChildFactory
+    onError*: ErrorPolicy
 
   ChildState = ref object
     spec: ChildSpec
@@ -65,9 +77,11 @@ proc newSupervisor*(strategy = sOneForOne,
     within: within)
 
 proc addChild*(s: Supervisor, name: string,
-               lifecycle: Lifecycle, factory: ChildFactory) =
+               lifecycle: Lifecycle, factory: ChildFactory,
+               onError: ErrorPolicy = nil) =
   s.children.add ChildState(
-    spec: ChildSpec(name: name, lifecycle: lifecycle, factory: factory))
+    spec: ChildSpec(name: name, lifecycle: lifecycle,
+                    factory: factory, onError: onError))
 
 proc shouldRestart(lifecycle: Lifecycle, failed: bool): bool =
   case lifecycle
@@ -102,6 +116,45 @@ proc run*(s: Supervisor) {.async: (raises: [CatchableError]).} =
     if idx < 0: continue
     let child = s.children[idx]
     let failed = child.mount.future.failed
+
+    # Consult per-exception onError policy when failed and policy set.
+    var policyAction = eaRestart    # sentinel; only used if policy fires
+    var policyFired = false
+    if failed and child.spec.onError != nil:
+      let err = child.mount.future.error
+      if err != nil:
+        try:
+          policyAction = child.spec.onError(err)
+          policyFired = true
+        except Exception:
+          discard
+
+    if policyFired and policyAction == eaTerminate:
+      if globalJournal != nil:
+        let tid = if currentScope != nil: currentScope.taskId else: jev.RootTask
+        let p   = if currentScope != nil: currentScope.lastEventId else: jev.NoEvent
+        try:
+          let id = globalJournal.logSupervisorTerminate(tid, p, child.spec.name)
+          if currentScope != nil: currentScope.lastEventId = id
+        except Exception: discard
+      s.children.del idx
+      continue
+
+    if policyFired and policyAction == eaEscalate:
+      var err = newException(SupervisorEscalation,
+        "child '" & child.spec.name & "' onError requested escalation")
+      err.childName = child.spec.name
+      if globalJournal != nil:
+        let tid = if currentScope != nil: currentScope.taskId else: jev.RootTask
+        let p   = if currentScope != nil: currentScope.lastEventId else: jev.NoEvent
+        try:
+          let id = globalJournal.logSupervisorEscalate(tid, p,
+            child.spec.name, err.msg)
+          if currentScope != nil: currentScope.lastEventId = id
+        except Exception: discard
+      for c in s.children:
+        if not c.mount.future.finished: c.mount.cancel()
+      raise err
 
     if not shouldRestart(child.spec.lifecycle, failed):
       if globalJournal != nil:
