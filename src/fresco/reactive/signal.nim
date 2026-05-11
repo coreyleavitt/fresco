@@ -99,6 +99,10 @@ proc createEffect*(body: proc() {.closure.}) {.gcsafe.} =
         unsubscribeAll(comp)
     comp.run()
 
+template `:=`*[T](s: Signal[T], v: T): untyped =
+  ## DSL sugar for signal writes: `count := 5` ≡ `count.set(5)`.
+  s.set(v)
+
 proc createComputed*[T](body: proc(): T {.closure.}): Signal[T] {.gcsafe.} =
   ## A derived signal that re-evaluates when its dependencies change.
   ## Reading the returned signal both yields the current value and
