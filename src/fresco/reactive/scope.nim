@@ -34,6 +34,24 @@ type
     disposed*: bool
 
 var currentScope* {.threadvar.}: Scope
+  ## Dynamically-scoped owner that signals, effects, and child tasks
+  ## attach themselves to.
+  ##
+  ## **Constraint:** this is a thread-local — it's only reliable for
+  ## synchronous code. Chronos doesn't restore thread-locals across
+  ## coroutine suspension, so after a task awaits, `currentScope` is
+  ## whatever the last-running coroutine left behind (typically `nil`).
+  ## Code that needs the task's scope after an await should capture
+  ## the scope at task entry and re-bind explicitly:
+  ##
+  ##     proc myTask() {.async.} =
+  ##       let myScope = currentScope         # capture once
+  ##       # ... work that may await ...
+  ##       withScope(myScope):                # re-bind for any
+  ##         signal.set(x)                    # context-sensitive code
+  ##
+  ## v3 fix tracked at github issue #37: chronos async-macro extension
+  ## that saves/restores per-coroutine context at every suspension.
 
 proc newScope*(parent: Scope = nil): Scope =
   result = Scope(parent: parent)

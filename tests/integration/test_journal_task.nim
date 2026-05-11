@@ -5,6 +5,7 @@ import chronos
 import fresco/journal/events
 import fresco/journal/log
 import fresco/reactive/scope
+import fresco/reactive/signal
 import fresco/task/core
 
 proc tick(): Future[void] {.async: (raises: [CancelledError]).} =
@@ -58,6 +59,24 @@ suite "journal: task lifecycle":
       await tick(); await tick()
       let cancelled = globalJournal.byKind(ekTaskCancelled)
       check cancelled.len == 1
+    waitFor body()
+
+  test "withScope after an await re-binds context (documented v3 workaround)":
+    # Until v3 ships coroutine-context isolation (#37), user code that
+    # needs context after an await must manually re-bind via the Mount's
+    # scope. Verify that pattern produces correct journal attribution.
+    proc body() {.async: (raises: [Exception]).} =
+      proc work() {.async.} =
+        let myScope = currentScope            # capture pre-await
+        await sleepAsync(5.milliseconds)
+        withScope(myScope):                   # re-bind post-await
+          let n = signal(0, label = "n")
+          n.set(42)
+      let m = spawn work()
+      await m.wait()
+      let writes = globalJournal.byKind(ekStateWrite)
+      check writes.len == 1
+      check writes[0].taskId == m.scope.taskId   # correct attribution
     waitFor body()
 
   test "parent's spawn cause is parent's lastEventId":

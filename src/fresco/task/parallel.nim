@@ -42,6 +42,17 @@ template parallel*(body: untyped): untyped =
   ## All `spawn`s inside `body` are awaited as a group. If any raises,
   ## the remaining are cancelled and the exception propagates. Must be
   ## called from an async context.
+  ##
+  ## **Constraint:** `body` should consist of `spawn` calls without
+  ## intervening `await`s. The block uses a thread-local pointer to
+  ## collect spawned Mounts; if `body` awaits, another coroutine that
+  ## runs during the suspension and calls `spawn` will have its Mount
+  ## added to *this* group, joining its lifetime to ours and causing
+  ## cross-task cancellation on failure.
+  ##
+  ## If you need to interleave awaits with spawns, await the
+  ## individual Mounts explicitly with `m.wait()` and skip `parallel:`.
+  ## v3 fix tracked at github issue #37 (coroutine-context isolation).
   block:
     var mounts: seq[Mount] = @[]
     let prev = parallelCollector

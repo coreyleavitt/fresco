@@ -4,7 +4,7 @@
 ##     editor.text := newText
 ##     cursor     := newCursor
 ##     savedAt    := now()
-##     if await confirm("commit?"):
+##     if commitReady():
 ##       commit()
 ##     # else: auto-rollback on block exit
 ##
@@ -19,8 +19,19 @@
 ##     the reverts replay in reverse and observers re-notify, so the
 ##     world returns to its pre-block state.
 ##
-## Single-threaded chronos: no isolation needed — other coroutines
-## don't run during the speculative block.
+## **Constraint:** the body of `speculative:` should not `await`. The
+## active frame is tracked via a thread-local pointer; if the body
+## yields and another coroutine performs a `signal.set` during the
+## suspension, that coroutine's write is pushed onto our revert stack
+## and gets rolled back when we don't commit. If you need a confirm
+## prompt before committing, perform the prompt outside the block:
+##
+##     let approved = await confirm("commit?")
+##     speculative:
+##       count := newCount
+##       if approved: commit()
+##
+## v3 fix tracked at github issue #37 (coroutine-context isolation).
 
 type
   SpeculativeScope* = ref object
