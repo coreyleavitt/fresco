@@ -69,6 +69,40 @@ suite "supervisor strategies":
       check startsC >= 2
     waitFor body()
 
+  test "sRestForOne preserves declaration order after a temporary child terminates":
+    # Regression: previously `s.children.del idx` was an unordered
+    # swap-delete which silently reordered children. After any
+    # temporary/clean exit, restForOne cascades operated on the
+    # wrong "later siblings" set.
+    proc body() {.async: (raises: [Exception]).} =
+      var startsA = 0
+      var startsB = 0   # this one terminates cleanly mid-run
+      var startsC = 0
+      proc childA(): Future[void] {.async.} =
+        inc startsA
+        await sleepAsync(500.milliseconds)
+      proc childB(): Future[void] {.async.} =
+        inc startsB
+        await sleepAsync(5.milliseconds)
+      proc childC(): Future[void] {.async.} =
+        inc startsC
+        await sleepAsync(40.milliseconds)
+        if startsC == 1: raise newException(IOError, "boom")
+      let sup = newSupervisor(strategy = sRestForOne,
+                              maxRestarts = 10, within = 1.seconds)
+      sup.addChild("a", lcTransient, childA)
+      sup.addChild("b", lcTemporary, childB)   # exits cleanly → removed
+      sup.addChild("c", lcTransient, childC)   # later fails
+      let m = spawn sup.run()
+      await sleepAsync(70.milliseconds)
+      m.cancel()
+      # After b's terminate, the children seq should still be [a, c]
+      # in declaration order. When c fails, restForOne cascades from
+      # c onward — A must not be restarted.
+      check startsA == 1
+      check startsC >= 2
+    waitFor body()
+
   test "sOneForOne (default) does not cascade":
     proc body() {.async: (raises: [Exception]).} =
       var startsA = 0

@@ -150,7 +150,7 @@ proc run*(s: Supervisor) {.async: (raises: [CatchableError]).} =
           let id = globalJournal.logSupervisorTerminate(tid, p, child.spec.name)
           if currentScope != nil: currentScope.lastEventId = id
         except Exception: discard
-      s.children.del idx
+      s.children.delete(idx)
       continue
 
     if policyFired and policyAction == eaEscalate:
@@ -177,7 +177,7 @@ proc run*(s: Supervisor) {.async: (raises: [CatchableError]).} =
           let id = globalJournal.logSupervisorTerminate(tid, p, child.spec.name)
           if currentScope != nil: currentScope.lastEventId = id
         except Exception: discard
-      s.children.del idx
+      s.children.delete(idx)
       continue
 
     let now = Moment.now()
