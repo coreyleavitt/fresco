@@ -53,7 +53,8 @@ import fresco/reactive/binding
 import fresco/reactive/context
 import fresco/reactive/speculative
 import fresco/reactive/animation
-export scope, signal, binding, context, speculative, animation
+import fresco/reactive/collection
+export scope, signal, binding, context, speculative, animation, collection
 
 # T4 — task
 import fresco/task/core
