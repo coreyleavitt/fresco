@@ -38,3 +38,13 @@ task test, "run all tests":
   ]
   for t in unitTests & integrationTests:
     exec "nim r --hints:off --warnings:off --path:src " & t
+
+task examples, "compile-check every examples/*.nim":
+  let examples = @[
+    "examples/ex01_input_loop.nim",
+    "examples/ex02_select.nim",
+    "examples/ex03_status_line.nim",
+    "examples/ex04_permission_prompt.nim",
+  ]
+  for e in examples:
+    exec "nim check --hints:off --warnings:off --path:src " & e
