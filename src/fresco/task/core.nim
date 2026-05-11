@@ -66,6 +66,42 @@ proc wireLifecycle(m: Mount) =
       except Exception:
         discard
 
+template spawnRetry*(retries: int, call: untyped): Mount =
+  ## Retry the spawned task up to `retries` times on failure. Each
+  ## retry re-evaluates `call`, so the expression must be repeatable
+  ## (typically a plain proc invocation). Cancellation propagates and
+  ## stops further retries.
+  block:
+    proc retryThunk(): Future[void] {.async.} =
+      var attempts = 0
+      while true:
+        inc attempts
+        try:
+          let f = call
+          await f
+          return
+        except CancelledError:
+          raise
+        except CatchableError:
+          if attempts > retries: raise
+    spawn retryThunk()
+
+template spawnCatch*(call: untyped): Mount =
+  ## Swallow any non-cancellation failure of the spawned task and
+  ## complete the Mount successfully. Useful when the failure is
+  ## already handled out-of-band (logging, signal mutation) and the
+  ## supervisor shouldn't see it.
+  block:
+    proc catchThunk(): Future[void] {.async.} =
+      try:
+        let f = call
+        await f
+      except CancelledError:
+        raise
+      except CatchableError:
+        discard
+    spawn catchThunk()
+
 template spawn*(call: untyped): Mount =
   ## Open a child scope, run the async `call` inside it, return a Mount.
   ## The call must be an invocation of an `{.async.}` proc returning

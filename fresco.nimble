@@ -42,6 +42,7 @@ task test, "run all tests":
     "tests/integration/test_mount.nim",
     "tests/integration/test_hotkey_pty.nim",
     "tests/integration/test_supervisor.nim",
+    "tests/integration/test_spawn_modifiers.nim",
   ]
   for t in unitTests & integrationTests:
     exec "nim r --hints:off --warnings:off --path:src " & t
