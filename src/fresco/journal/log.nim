@@ -141,6 +141,41 @@ proc lastWritesByLabel*(j: Journal, taskId: TaskId): Table[string, Event] =
     if ev.taskId == taskId and ev.kind == ekStateWrite:
       result[ev.signalLabel] = ev
 
+# --- Bitemporal queries --------------------------------------------------
+
+proc eventsBefore*(j: Journal, cutoff: EventId): seq[Event] =
+  ## Every event with id <= cutoff, in original order. The cursor for
+  ## time-warp UIs: pass an event id to "see what happened up to here."
+  for e in j.events:
+    if uint64(e.id) <= uint64(cutoff): result.add e
+
+proc eventsBetween*(j: Journal, loWall, hiWall: Time): seq[Event] =
+  ## Every event whose wall-clock timestamp falls in [loWall, hiWall].
+  for e in j.events:
+    if e.wall >= loWall and e.wall <= hiWall: result.add e
+
+proc stateAt*(j: Journal, cutoff: EventId,
+              taskId: TaskId = RootTask): Table[string, string] =
+  ## Project signal state at `cutoff` for the given task. Returns
+  ## a Table[label, writeRepr] — the most-recent value of each labeled
+  ## signal among `ekStateWrite` events with id <= cutoff for taskId.
+  ##
+  ## Pass `taskId = RootTask` to include all tasks (ignoring scope).
+  for ev in j.events:
+    if uint64(ev.id) > uint64(cutoff): break
+    if ev.kind != ekStateWrite: continue
+    if taskId == RootTask or ev.taskId == taskId:
+      result[ev.signalLabel] = ev.writeRepr
+
+proc stateAtTime*(j: Journal, wall: Time,
+                  taskId: TaskId = RootTask): Table[string, string] =
+  ## Like `stateAt` but cuts at wall-clock `wall` instead of an event id.
+  for ev in j.events:
+    if ev.wall > wall: break
+    if ev.kind != ekStateWrite: continue
+    if taskId == RootTask or ev.taskId == taskId:
+      result[ev.signalLabel] = ev.writeRepr
+
 proc ancestors*(j: Journal, id: EventId): seq[Event] =
   ## Walk the causal chain from `id` back to its root. The returned
   ## sequence is innermost-first (start, then parent, then grandparent…)

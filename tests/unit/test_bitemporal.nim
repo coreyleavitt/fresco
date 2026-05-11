@@ -1,0 +1,83 @@
+import std/[unittest, tables, times]
+import chronos
+import fresco/journal/events
+import fresco/journal/log
+
+suite "bitemporal: eventsBefore + stateAt":
+
+  test "eventsBefore returns prefix up to cutoff inclusive":
+    let j = newJournal()
+    let t = TaskId.fresh()
+    let a = j.logTaskSpawned(t, NoEvent, "boot", "")
+    let b = j.logStateWrite(t, a, "x", "1")
+    let c = j.logStateWrite(t, b, "x", "2")
+    let d = j.logTaskCompleted(t, c)
+    check j.eventsBefore(a).len == 1
+    check j.eventsBefore(b).len == 2
+    check j.eventsBefore(c).len == 3
+    check j.eventsBefore(d).len == 4
+
+  test "stateAt returns last-known value per label up to cutoff":
+    let j = newJournal()
+    let t = TaskId.fresh()
+    discard j.logTaskSpawned(t, NoEvent, "boot", "")
+    discard j.logStateWrite(t, NoEvent, "cursor", "0")
+    discard j.logStateWrite(t, NoEvent, "title",  "hello")
+    let mid = j.logStateWrite(t, NoEvent, "cursor", "5")
+    discard j.logStateWrite(t, NoEvent, "title",  "world")
+    let final = j.logStateWrite(t, NoEvent, "cursor", "9")
+
+    # Scrub to mid: cursor was just set to 5, title still "hello".
+    let snapMid = j.stateAt(mid, t)
+    check snapMid["cursor"] == "5"
+    check snapMid["title"]  == "hello"
+
+    # Scrub to final: cursor=9, title=world.
+    let snapFinal = j.stateAt(final, t)
+    check snapFinal["cursor"] == "9"
+    check snapFinal["title"]  == "world"
+
+  test "stateAt with RootTask collects every task's writes":
+    let j = newJournal()
+    let tA = TaskId.fresh()
+    let tB = TaskId.fresh()
+    discard j.logStateWrite(tA, NoEvent, "x", "1")
+    let last = j.logStateWrite(tB, NoEvent, "y", "2")
+    let snap = j.stateAt(last)
+    check "x" in snap and "y" in snap
+
+  test "stateAt filtered by task ignores other tasks":
+    let j = newJournal()
+    let tA = TaskId.fresh()
+    let tB = TaskId.fresh()
+    discard j.logStateWrite(tA, NoEvent, "x", "from-A")
+    let last = j.logStateWrite(tB, NoEvent, "x", "from-B")
+    check j.stateAt(last, tA)["x"] == "from-A"
+    check j.stateAt(last, tB)["x"] == "from-B"
+
+suite "bitemporal: eventsBetween (wall clock)":
+
+  test "filters to events in [lo, hi]":
+    let j = newJournal()
+    let t = TaskId.fresh()
+    let mid0 = getTime()
+    discard j.logStateWrite(t, NoEvent, "x", "before")
+    let cut = getTime()
+    discard j.logStateWrite(t, NoEvent, "x", "after")
+    let later = getTime()
+    let inRange = j.eventsBetween(mid0, cut)
+    # Some events fall in [mid0, cut]; the one written after `cut`
+    # should be excluded.
+    var seenBefore = false
+    var seenAfter = false
+    for e in inRange:
+      if e.writeRepr == "before": seenBefore = true
+      if e.writeRepr == "after":  seenAfter = true
+    check seenBefore
+    check not seenAfter
+    # Sanity: extend range to `later` and "after" reappears.
+    let widerInRange = j.eventsBetween(mid0, later)
+    var anyAfter = false
+    for e in widerInRange:
+      if e.writeRepr == "after": anyAfter = true
+    check anyAfter
