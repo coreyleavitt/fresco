@@ -36,7 +36,14 @@ proc awaitParallel(mounts: seq[Mount]) {.task, async: (raises: [CatchableError])
     let completed = pending[idx]
     pending.del(idx)
     if completed.future.failed:
-      let err = completed.future.error
+      let rawErr = completed.future.error
+      # chronos rarely marks a Future failed before attaching its
+      # error ref. `raise nil` would crash without a useful trace —
+      # synthesize a placeholder so the cascade still propagates.
+      let err =
+        if rawErr != nil: rawErr
+        else: (ref CatchableError)(msg: "task failed without error",
+                                    name: "CatchableError")
       for p in pending:
         if not p.future.finished: p.cancel()
       for p in pending:

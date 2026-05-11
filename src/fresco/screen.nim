@@ -153,5 +153,10 @@ proc resize*(s: Screen) =
       r.width = 0
     elif r.col + r.width > w:
       r.width = w - r.col
+    # Trim any rows of the previous target that no longer fit. Without
+    # this the next flush would emit rows past the new region bottom,
+    # painting over whatever sits below (typically another region).
+    if r.target.len > r.height:
+      r.target.setLen(r.height)
     r.pending = true
   resizePending = false

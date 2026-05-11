@@ -147,6 +147,11 @@ proc lastWritesByLabel*(j: Journal, taskId: TaskId): Table[string, Event] =
   ## re-apply each entry's `writeRepr` to a freshly-declared signal of
   ## the same label.
   ##
+  ## Signals declared without a label all share the empty-string key,
+  ## so they're excluded from projection — restoring them would just
+  ## clobber each other on every replay. Label your signals if you
+  ## want them restorable.
+  ##
   ## O(N) over the journal in the worst case, but a reverse scan with
   ## a seen-set short-circuits per label so the common case (where
   ## the task wrote each label only a handful of times near the end
@@ -155,7 +160,7 @@ proc lastWritesByLabel*(j: Journal, taskId: TaskId): Table[string, Event] =
   for i in countdown(j.events.high, 0):
     let ev = j.events[i]
     if ev.taskId == taskId and ev.kind == ekStateWrite and
-       ev.signalLabel notin result:
+       ev.signalLabel.len > 0 and ev.signalLabel notin result:
       result[ev.signalLabel] = ev
 
 # --- Bitemporal queries --------------------------------------------------
@@ -176,20 +181,25 @@ proc stateAt*(j: Journal, cutoff: EventId,
   ## Project signal state at `cutoff` for the given task. Returns
   ## a Table[label, writeRepr] — the most-recent value of each labeled
   ## signal among `ekStateWrite` events with id <= cutoff for taskId.
+  ## Unlabeled writes (`signalLabel == ""`) are excluded — see
+  ## `lastWritesByLabel` for the rationale.
   ##
   ## Pass `taskId = RootTask` to include all tasks (ignoring scope).
   for ev in j.events:
     if uint64(ev.id) > uint64(cutoff): break
     if ev.kind != ekStateWrite: continue
+    if ev.signalLabel.len == 0: continue
     if taskId == RootTask or ev.taskId == taskId:
       result[ev.signalLabel] = ev.writeRepr
 
 proc stateAtTime*(j: Journal, wall: Time,
                   taskId: TaskId = RootTask): Table[string, string] =
   ## Like `stateAt` but cuts at wall-clock `wall` instead of an event id.
+  ## Unlabeled writes are excluded (see `lastWritesByLabel`).
   for ev in j.events:
     if ev.wall > wall: break
     if ev.kind != ekStateWrite: continue
+    if ev.signalLabel.len == 0: continue
     if taskId == RootTask or ev.taskId == taskId:
       result[ev.signalLabel] = ev.writeRepr
 

@@ -15,6 +15,7 @@
 import std/math
 import chronos
 import ./signal
+import ./scope
 
 type
   Easing* = enum
@@ -91,10 +92,16 @@ proc startFrameClock*(fps: int = DefaultFPS) =
 proc stopFrameClock*() =
   ## Cancel the frame clock. Animations in flight stop advancing
   ## immediately. Useful in tests to keep teardown deterministic.
+  ##
+  ## Resets `frameInterval` so a subsequent `startFrameClock(fps = X)`
+  ## actually picks up the new rate — without this, the lazy-init
+  ## guard in startFrameClock would see a non-default Duration and
+  ## silently keep the previous interval.
   if frameClockTask != nil and not frameClockTask.finished:
     frameClockTask.cancelSoon()
   frameClockTask = nil
   frameAnimations.setLen(0)
+  frameInterval = default(Duration)
 
 proc tween*(s: Signal[float], target: float,
             duration: Duration, easing = eLinear): Animation
@@ -119,4 +126,9 @@ proc tween*(s: Signal[float], target: float,
     duration: duration,
     easing: easing)
   frameAnimations.add result
+  # Tie lifetime to the registering scope: a scope dispose mid-tween
+  # cancels the animation so it stops writing to a signal whose
+  # observers may already be gone.
+  let captured = result
+  onCleanup proc() = captured.cancelled = true
   startFrameClock()

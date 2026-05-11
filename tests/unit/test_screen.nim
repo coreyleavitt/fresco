@@ -70,3 +70,23 @@ suite "Region flush semantics":
     # After resize, flush should emit again because renderer was reset.
     let after = s.flush()
     check after.len > 0
+
+  test "resize trims target to new region height":
+    # Regression for round-2 H4: previously `resize` clamped r.height
+    # but left r.target's stale rows in place, so the next flush
+    # would emit rows past the new region bottom into whatever sits
+    # below. After the fix, `r.target.len <= r.height` is an invariant.
+    let s = newScreen(10, 20)
+    let r = newRegion(s, 5, 0, 5, 20)
+    r.set(["a", "b", "c", "d", "e"])
+    check r.target.len == 5
+    # Simulate a SIGWINCH that shrunk the terminal so the region
+    # overflows the bottom edge — what `resize` does internally on
+    # detecting the new winsize.
+    s.height = 7
+    if r.row + r.height > s.height:
+      r.height = s.height - r.row
+    s.resize()  # In CI, queryWinsize falls back to (24,80) and may
+                # re-expand. The invariant we care about is what
+                # resize guarantees about target vs height.
+    check r.target.len <= r.height

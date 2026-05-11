@@ -55,6 +55,23 @@ suite "bitemporal: eventsBefore + stateAt":
     check j.stateAt(last, tA)["x"] == "from-A"
     check j.stateAt(last, tB)["x"] == "from-B"
 
+  test "empty-label writes are excluded from projection":
+    # Regression for round-2 H3: every unlabeled signal used to share
+    # the empty-string key, so restoration would clobber them with the
+    # last-written value of *any* unlabeled signal. They're now
+    # excluded from lastWritesByLabel / stateAt / stateAtTime entirely.
+    let j = newJournal()
+    let t = TaskId.fresh()
+    discard j.logStateWrite(t, NoEvent, "",      "unlabeled-a")
+    discard j.logStateWrite(t, NoEvent, "named", "value")
+    let last = j.logStateWrite(t, NoEvent, "",   "unlabeled-b")
+    let snap = j.stateAt(last, t)
+    check "" notin snap
+    check snap["named"] == "value"
+    let lwbl = j.lastWritesByLabel(t)
+    check "" notin lwbl
+    check "named" in lwbl
+
 suite "bitemporal: eventsBetween (wall clock)":
 
   test "filters to events in [lo, hi]":

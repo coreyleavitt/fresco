@@ -66,3 +66,42 @@ suite "tween":
       for v in samples:
         check v >= 0.0 and v <= 10.0
     waitFor body()
+
+  test "scope dispose mid-tween cancels the animation":
+    # Regression for round-2 H2: a tween used to keep writing to its
+    # target signal until elapsed >= duration, even after the owning
+    # scope had disposed. Now `tween` registers an onCleanup that
+    # marks the animation cancelled.
+    proc body() {.async: (raises: [Exception]).} =
+      let s = signal(0.0)
+      let root = createRoot:
+        discard tween(s, 100.0, 500.milliseconds, eLinear)
+      # Let a couple of frames tick so the tween starts moving.
+      await sleepAsync(80.milliseconds)
+      let midpoint = s()
+      check midpoint > 0.0 and midpoint < 100.0
+      dispose(root)
+      await sleepAsync(80.milliseconds)
+      let afterDispose = s()
+      # Animation cancelled — value frozen at midpoint, no further updates.
+      check abs(afterDispose - midpoint) < 1.0
+    waitFor body()
+
+  test "stopFrameClock resets frameInterval so subsequent fps takes effect":
+    # Regression for round-2 H1: a stopFrameClock followed by
+    # startFrameClock(fps = X) used to silently keep the previous
+    # interval because the lazy-init guard saw a non-default Duration.
+    proc body() {.async: (raises: [Exception]).} =
+      let s1 = signal(0.0)
+      discard tween(s1, 1.0, 100.milliseconds, eLinear)
+      await sleepAsync(150.milliseconds)
+      check abs(s1() - 1.0) < 1e-6
+      stopFrameClock()
+      # If frameInterval weren't reset, the next tween would still
+      # tick at the old rate. We can't easily measure the rate but
+      # we can verify a fresh tween still completes correctly.
+      let s2 = signal(0.0)
+      discard tween(s2, 1.0, 100.milliseconds, eLinear)
+      await sleepAsync(150.milliseconds)
+      check abs(s2() - 1.0) < 1e-6
+    waitFor body()

@@ -65,6 +65,14 @@ var snapshotDepth: int
   ## decrement on uninstall when no push happened — would require
   ## tracking which calls pushed, which is more fragile).
 
+# Caller-installed signal handlers we displaced on first install.
+# Restored on the matching last uninstall so we're a good citizen for
+# embedding hosts that had their own SIGINT/TERM/SEGV traps.
+type SigHandler = proc(sig: cint) {.noconv.}
+var prevSigInt:  SigHandler
+var prevSigTerm: SigHandler
+var prevSigSegv: SigHandler
+
 proc termiosSignalHandler(sig: cint) {.noconv.} =
   # Restore innermost-first: each stored scope undoes its own change
   # so the final state is the termios as of process startup. When
@@ -89,20 +97,27 @@ proc installSignalHandlers*(s: TermiosSnapshot) =
     snapshotStack[snapshotDepth] = s
   inc snapshotDepth
   if snapshotDepth == 1:
-    discard signal(SIGINT,  termiosSignalHandler)
-    discard signal(SIGTERM, termiosSignalHandler)
-    discard signal(SIGSEGV, termiosSignalHandler)
+    # `signal()` returns the prior handler; capture so uninstall can
+    # restore the caller's original disposition instead of SIG_DFL.
+    prevSigInt  = cast[SigHandler](signal(SIGINT,  termiosSignalHandler))
+    prevSigTerm = cast[SigHandler](signal(SIGTERM, termiosSignalHandler))
+    prevSigSegv = cast[SigHandler](signal(SIGSEGV, termiosSignalHandler))
 
 proc uninstallSignalHandlers*() =
-  ## Pop one nest level; restore default handlers only when the stack
+  ## Pop one nest level; restore the caller's prior handlers (or
+  ## SIG_DFL if none were installed before us) only when the stack
   ## is empty. Mirrors `installSignalHandlers` exactly so the pairing
   ## stays correct whether or not the corresponding install actually
   ## stored its snapshot in the bounded array.
   if snapshotDepth > 0: dec snapshotDepth
   if snapshotDepth == 0:
-    discard signal(SIGINT,  SIG_DFL)
-    discard signal(SIGTERM, SIG_DFL)
-    discard signal(SIGSEGV, SIG_DFL)
+    discard signal(SIGINT,
+      if prevSigInt  != nil: prevSigInt  else: SIG_DFL)
+    discard signal(SIGTERM,
+      if prevSigTerm != nil: prevSigTerm else: SIG_DFL)
+    discard signal(SIGSEGV,
+      if prevSigSegv != nil: prevSigSegv else: SIG_DFL)
+    prevSigInt = nil; prevSigTerm = nil; prevSigSegv = nil
 
 template withCbreak*(fd: cint, body: untyped) =
   let snap = enterCbreak(fd)
