@@ -103,3 +103,28 @@ suite "DSL: region block":
     check r.target[2] == "end"
     footer := "stop"
     check r.target[2] == "stop"
+
+  test "^N from-end indexing":
+    let s = newScreen(10, 20)
+    let r = newRegion(s, 0, 0, 5, 20)
+    let title = signal("top")
+    let status = signal("bot")
+    discard createRoot:
+      region(r):
+        row 0: title()
+        row ^1: status()             # last row of region (index 4)
+    check r.target[0] == "top"
+    check r.target[4] == "bot"
+
+  test "rows A..^N slice with from-end end":
+    let s = newScreen(10, 20)
+    let r = newRegion(s, 0, 0, 5, 20)
+    let items = signal(@["a", "b", "c", "d"])
+    discard createRoot:
+      region(r):
+        row 0: "header"
+        rows 1..^1: items()          # rows 1..4
+        # nothing at the bottom
+    check r.target == @["header", "a", "b", "c", "d"]
+    items := @["x"]
+    check r.target == @["header", "x", "", "", ""]
