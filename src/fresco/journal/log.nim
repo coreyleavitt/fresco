@@ -15,8 +15,13 @@ import chronos
 import ./events
 
 type
-  Journal* = ref object
+  Journal* = ref object of RootObj
     events*: seq[Event]
+
+method onPersist*(j: Journal, e: Event) {.base, gcsafe, raises: [].} = discard
+  ## Persistence hook fired after an event is appended. Default
+  ## implementation does nothing; PersistentJournal overrides it to
+  ## flush the event to disk.
 
 var globalJournal* {.threadvar.}: Journal
   ## Process-wide journal. `useJournal()` opens / installs one; tasks
@@ -47,6 +52,7 @@ proc append*(j: Journal, ev: sink Event): EventId =
   ## event's `parentId`).
   j.events.add ev
   result = j.events[^1].id
+  j.onPersist(j.events[^1])
 
 proc logTaskSpawned*(j: Journal, taskId: TaskId, parentId: EventId,
                     name = "", typeName = ""): EventId =
