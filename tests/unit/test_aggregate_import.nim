@@ -25,7 +25,7 @@ suite "aggregate import":
     discard newSupervisor()
 
   test "DSL exports compile":
-    state:
+    signals:
       count = 0
     count := 1
     check count() == 1

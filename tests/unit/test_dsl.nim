@@ -11,7 +11,7 @@ import fresco/reactive/binding
 suite "DSL: state block":
 
   test "declares multiple signals in one block":
-    state:
+    signals:
       count = 0
       title = "hello"
       ratio = 3.14
@@ -20,7 +20,7 @@ suite "DSL: state block":
     check ratio() == 3.14
 
   test "declared signals participate in effects normally":
-    state:
+    signals:
       a = 1
       b = 2
     var sums: seq[int] = @[]

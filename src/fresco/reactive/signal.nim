@@ -21,6 +21,8 @@
 {.experimental: "callOperator".}
 
 import ./scope
+import ../journal/events
+import ../journal/log
 
 type
   Computation* = ref object
@@ -35,13 +37,14 @@ type
 
   Signal*[T] = ref object of Subscribable
     val: T
+    label*: string
 
 var currentComputation* {.threadvar.}: Computation
 
 # --- Signal -----------------------------------------------------------------
 
-proc signal*[T](initial: T): Signal[T] =
-  Signal[T](val: initial)
+proc signal*[T](initial: T, label = ""): Signal[T] =
+  Signal[T](val: initial, label: label)
 
 proc trackRead(s: Subscribable) {.gcsafe.} =
   {.cast(gcsafe).}:
@@ -57,17 +60,32 @@ proc get*[T](s: Signal[T]): T {.gcsafe.} =
 proc `()`*[T](s: Signal[T]): T {.gcsafe.} = s.get()
   ## Sugar — `count()` reads + tracks; same as `count.get()`.
 
-proc notify(s: Subscribable) {.gcsafe.} =
+proc notify(s: Subscribable) {.gcsafe, raises: [].} =
   ## Snapshot observers first; a re-run may mutate the list.
   {.cast(gcsafe).}:
     let snap = s.observers
     for c in snap:
-      if not c.disposed: c.run()
+      if not c.disposed:
+        try: c.run()
+        except Exception: discard
 
-proc set*[T](s: Signal[T], newVal: T) {.gcsafe.} =
+proc set*[T](s: Signal[T], newVal: T) {.gcsafe, raises: [].} =
   when compiles(s.val == newVal):
     if s.val == newVal: return
   s.val = newVal
+  {.cast(gcsafe).}:
+    try:
+      if globalJournal != nil:
+        let tid = if currentScope != nil: currentScope.taskId else: RootTask
+        let parent = if currentScope != nil: currentScope.lastEventId else: NoEvent
+        let valRepr =
+          when compiles($newVal): $newVal
+          else: ""
+        let id = globalJournal.logStateWrite(tid, parent, s.label, valRepr)
+        if currentScope != nil:
+          currentScope.lastEventId = id
+    except Exception:
+      discard
   notify(s)
 
 # --- Computations -----------------------------------------------------------
@@ -105,16 +123,18 @@ template `:=`*[T](s: Signal[T], v: T): untyped =
 
 import std/macros
 
-macro state*(body: untyped): untyped =
+macro signals*(body: untyped): untyped =
   ## Declare one or more signals in a colon block:
   ##
-  ##   state:
+  ##   signals:
   ##     count = 0
   ##     title = "hello"
-  ##     items: seq[Item]                  # zero-initialized form
   ##
-  ## Single-line `state x = 0` is not supported — Nim's parser claims
-  ## that shape as a named-arg call before any macro can intercept it.
+  ## Named `signals` rather than `state` because chronos exports
+  ## `state*(future)` returning FutureState — overload resolution
+  ## would shadow our macro any time `import chronos` is in scope.
+  ## Single-line `signals x = 0` is not supported — Nim's parser
+  ## claims that shape as a named-arg call.
   expectKind(body, nnkStmtList)
   result = newStmtList()
   for stmt in body:
@@ -122,8 +142,9 @@ macro state*(body: untyped): untyped =
     of nnkAsgn:
       let name = stmt[0]
       let value = stmt[1]
+      let labelLit = newLit($name)
       result.add quote do:
-        let `name` = signal(`value`)
+        let `name` = signal(`value`, label = `labelLit`)
     else:
       error("state: arm must be `name = value` or `name: Type`; got " &
             stmt.repr, stmt)
