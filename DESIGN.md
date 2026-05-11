@@ -187,11 +187,27 @@ Invisible upgrades on the existing surface — code written against v2.0 just ge
 
 Production-grade tier.
 
-- **Capability inference** at compile time; `use T` checked against static supervisor topology
-- **On-disk journal** in `$XDG_STATE_HOME/<app>/`; cross-process crash recovery
-- Snapshot + tier-based compaction
-- **Devtools panel** (built using fresco itself) — task tree, journal events, causal graph, dep graph
+- **Capability markers** + runtime-checked `requires` annotation using existing `provide`/`use`
+- **On-disk journal** (append-only JSONL) in `$XDG_STATE_HOME/<app>/`; cross-process crash recovery
 - Topology query API for external monitoring
+- **Devtools example** demonstrating the introspection surface
+
+---
+
+## v3 stretch items
+
+v2.x ships every acceptance criterion from the original five tiers. Items genuinely deferred — either because the v2.4 minimum-viable shape doesn't satisfy the headline ambition (compile-time capability discharge), or because the feature naturally wants amoxtli's real usage to drive design decisions (devtools UI, animation breadth) — are tracked as v3 issues:
+
+- Differential `bindRows` over `CollectionSignal[T]` — incremental row updates
+- Animation: `Signal[int]` / `Signal[string]` interpolation + `spring` physics
+- Dynamic supervisor pools (`simple_one_for_one`)
+- Live time-warp: `rewindTo` / `resumeLive` runtime
+- Auto state restoration via `orReplayJournal` policy
+- On-disk snapshot + tier compaction + schema versioning
+- **Compile-time capability inference** — typed macro walking task bodies, auto-emitting `requires`, discharging against static supervisor topology
+- **Reactive devtools panel** built using fresco itself
+
+Not tier-bundled — each lands when there's reason to pull it.
 
 ---
 
