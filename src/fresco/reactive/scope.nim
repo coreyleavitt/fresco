@@ -24,26 +24,28 @@ proc newScope*(parent: Scope = nil): Scope =
   if parent != nil:
     parent.children.add result
 
-proc onCleanup*(body: proc() {.closure.}) =
+proc onCleanup*(body: proc() {.closure.}) {.gcsafe.} =
   ## Register `body` to run when the current scope is disposed.
   ## No-op outside any scope.
-  if currentScope == nil or currentScope.disposed: return
-  currentScope.cleanups.add body
+  {.cast(gcsafe).}:
+    if currentScope == nil or currentScope.disposed: return
+    currentScope.cleanups.add body
 
-proc dispose*(s: Scope) =
+proc dispose*(s: Scope) {.gcsafe.} =
   ## Idempotent. Dispose children first (LIFO), then run cleanups
   ## (reverse registration order), then detach from parent.
   if s == nil or s.disposed: return
   s.disposed = true
-  for i in countdown(s.children.high, 0):
-    dispose(s.children[i])
-  s.children.setLen(0)
-  for i in countdown(s.cleanups.high, 0):
-    s.cleanups[i]()
-  s.cleanups.setLen(0)
-  if s.parent != nil:
-    let idx = s.parent.children.find(s)
-    if idx >= 0: s.parent.children.del(idx)
+  {.cast(gcsafe).}:
+    for i in countdown(s.children.high, 0):
+      dispose(s.children[i])
+    s.children.setLen(0)
+    for i in countdown(s.cleanups.high, 0):
+      s.cleanups[i]()
+    s.cleanups.setLen(0)
+    if s.parent != nil:
+      let idx = s.parent.children.find(s)
+      if idx >= 0: s.parent.children.del(idx)
 
 template withScope*(scope: Scope, body: untyped) =
   ## Install `scope` as `currentScope` for the duration of `body`.
