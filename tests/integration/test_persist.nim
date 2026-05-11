@@ -1,6 +1,6 @@
 ## On-disk journal persistence + crash recovery.
 
-import std/[unittest, os, times]
+import std/[unittest, os, times, json]
 import fresco/journal/events
 import fresco/journal/log
 import fresco/journal/persist
@@ -124,6 +124,22 @@ suite "persist: edge cases":
     let j = openJournal(path)
     check j.events.len == 0
     close(j)
+
+  test "fromJson directly raises JournalSchemaMismatch on bad version":
+    # Round-7 L5: assert the exception type and field values rather
+    # than only the "didn't crash" outcome of the openJournal path.
+    let badNode = %* {"v": 999, "id": 1, "wall": 0, "taskId": 0,
+                      "parentId": 0, "kind": "ekTaskSpawned",
+                      "spawnedName": "x", "spawnedType": ""}
+    var raised = false
+    var foundV = 0
+    try:
+      discard fromJson(badNode)
+    except JournalSchemaMismatch as e:
+      raised = true
+      foundV = e.foundVersion
+    check raised
+    check foundV == 999
 
   test "bumpAfterLoad is O(1) advance, not O(maxId)":
     # Previously: a high maxId would loop fresh() that many times,

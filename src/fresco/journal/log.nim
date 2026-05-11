@@ -42,30 +42,30 @@ template journalEvent*(body: untyped) =
   ## swallowed — the journal is an audit trail, not a critical path.
   ##
   ## Inside `body`, three names are `{.inject.}`'d into scope:
-  ##   `j`         — the active journal (non-nil)
-  ##   `tid`       — current scope's TaskId, or RootTask if no scope
+  ##   `jrnl`      — the active journal (non-nil)
+  ##   `taskTid`   — current scope's TaskId, or RootTask if no scope
   ##   `parentEvt` — current scope's lastEventId, or NoEvent if no scope
   ##
   ## (An internal `id` let-binding holds the returned EventId for the
   ## post-body lastEventId advancement. It's scoped to the template
   ## body and not visible to callers.)
   ##
-  ## The injected name `parentEvt` (rather than the more obvious `p`)
-  ## reduces shadow risk with common loop-variable names. `j` and
-  ## `tid` are kept short — they're idiomatic in the call-site code
-  ## (`j.logFooEvent(tid, parentEvt, ...)`).
+  ## All three names are chosen to be collision-resistant: `jrnl` and
+  ## `taskTid` rather than the obvious `j` and `tid` because the latter
+  ## are common throwaway / loop-variable names. `parentEvt` rather
+  ## than `p` for the same reason.
   ##
-  ## `body` must evaluate to an `EventId` (typically a `j.logXxx`
+  ## `body` must evaluate to an `EventId` (typically a `jrnl.logXxx`
   ## call). Usage:
   ##
   ##   journalEvent:
-  ##     j.logTaskSpawned(tid, parentEvt, name, "")
+  ##     jrnl.logTaskSpawned(taskTid, parentEvt, name, "")
   ##
   ## Replaces the 5-line `if globalJournal != nil: ...` boilerplate
   ## previously hand-rolled at every journal call site.
   if globalJournal != nil:
-    let j {.inject.} = globalJournal
-    let tid {.inject.} = if currentScope != nil: currentScope.taskId else: RootTask
+    let jrnl {.inject.} = globalJournal
+    let taskTid {.inject.} = if currentScope != nil: currentScope.taskId else: RootTask
     let parentEvt {.inject.} = if currentScope != nil: currentScope.lastEventId else: NoEvent
     try:
       let id = body
@@ -91,9 +91,12 @@ proc useJournal*(j: Journal = nil): Journal =
   result = globalJournal
 
 proc resetJournal*() =
-  ## Clear the active journal. Tests call this between cases so events
-  ## from a prior test don't bleed into the next when subsequent code
-  ## calls `useJournal()` with no arg.
+  ## Clear the active journal (`globalJournal = nil`). Tests call this
+  ## between cases so events from a prior test don't bleed into the
+  ## next when subsequent code calls `useJournal()` with no arg. Also
+  ## useful for embedding hosts that want to discard accumulated
+  ## history and start fresh — calling `useJournal(newJournal())` is
+  ## equivalent and more explicit when you want a specific instance.
   globalJournal = nil
 
 # --- Append helpers ------------------------------------------------------
@@ -192,6 +195,10 @@ proc byKind*(j: Journal, kind: EventKind): seq[Event] =
   j.events.filterIt(it.kind == kind)
 
 proc find*(j: Journal, id: EventId): Event =
+  ## Linear scan for the event with the given id. Raises `KeyError`
+  ## if no event matches — callers walking a known-valid chain (e.g.
+  ## `ancestors`) catch this to terminate gracefully when a parent
+  ## event has been skipped during persistent-journal load.
   for e in j.events:
     if e.id == id: return e
   raise newException(KeyError, "no event with id " & $id)

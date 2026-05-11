@@ -98,3 +98,34 @@ suite "journal: timestamps":
     discard j.logTaskSpawned(TaskId.fresh(), NoEvent)
     # Wall clock is non-zero (set to getTime() which is always meaningful).
     check $j[0].wall != ""
+
+suite "journal: useJournal / resetJournal":
+
+  test "useJournal(j) always replaces an existing journal":
+    # Regression for round-6 H3 / round-7 M3: useJournal(j) had been
+    # idempotent (silently kept the first-installed journal). The new
+    # contract is "always replaces."
+    resetJournal()
+    let j1 = newJournal()
+    discard useJournal(j1)
+    check globalJournal == j1
+    let j2 = newJournal()
+    discard useJournal(j2)
+    check globalJournal == j2
+    check globalJournal != j1
+    resetJournal()
+
+  test "useJournal() with no arg reuses existing or creates fresh":
+    resetJournal()
+    let j1 = useJournal()         # creates fresh
+    check j1 != nil
+    let j2 = useJournal()         # reuses
+    check j1 == j2
+    resetJournal()
+
+  test "resetJournal clears the active journal":
+    let j = newJournal()
+    discard useJournal(j)
+    check globalJournal != nil
+    resetJournal()
+    check globalJournal == nil

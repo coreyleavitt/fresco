@@ -12,6 +12,13 @@
 ## apply incremental updates. Plain `notify` still fires too, so
 ## non-delta-aware observers keep working.
 ##
+## **Speculative scope support:** mutations inside a `speculative:`
+## block snapshot the prior items seq and record a revert closure, the
+## same way `Signal[T].set` does. Falling out of the block without
+## commit replays the reverts in reverse, restoring the collection's
+## pre-block state and firing a `dkReplace` delta so observers
+## re-render.
+##
 ## **v2.3 limitation — no journal integration:** unlike `Signal[T].set`
 ## which emits `ekSignalWrite` events, CollectionSignal mutations are
 ## not journaled. This means bitemporal projection (`stateAt` /
@@ -22,6 +29,7 @@
 
 import ./signal
 import ./scope
+import ./speculative
 
 type
   DeltaKind* = enum
@@ -106,40 +114,72 @@ proc len*[T](c: CollectionSignal[T]): int =
 
 # --- Delta-emitting ops --------------------------------------------------
 
+proc recordCollectionRevert[T](c: CollectionSignal[T],
+                               prior: sink seq[T]) =
+  ## Push a revert that restores the collection's full prior items
+  ## seq. Only fires inside a `speculative:` block; otherwise no-op.
+  ## We snapshot the whole seq rather than the inverse-delta because:
+  ## (a) revert closures already execute as a stack on block exit, so
+  ## the cost is one snapshot per mutation, not one inverse-op
+  ## reconstruction; (b) `dkReplace` and `dkClear` would need full
+  ## snapshots anyway; uniform snapshotting keeps the code simple and
+  ## the semantics obvious.
+  if currentSpeculative == nil or currentSpeculative.committed: return
+  let captured = c
+  let priorItems = prior
+  recordRevert proc() =
+    captured.items = priorItems
+    emit(captured, Delta[T](kind: dkReplace, replaceVal: priorItems))
+
 proc push*[T](c: CollectionSignal[T], v: T) =
+  ## Append `v`. Emits `dkInsert` with the appended index.
+  recordCollectionRevert(c, c.items)
   let idx = c.items.len
   c.items.add v
   emit(c, Delta[T](kind: dkInsert, insertIdx: idx, insertVal: v))
 
 proc pop*[T](c: CollectionSignal[T]): T {.discardable.} =
+  ## Remove and return the last element. **Asserts on empty.**
   doAssert c.items.len > 0, "pop on empty collection"
+  recordCollectionRevert(c, c.items)
   let idx = c.items.high
   result = c.items[idx]
   c.items.setLen(idx)
   emit(c, Delta[T](kind: dkRemove, removeIdx: idx))
 
 proc insert*[T](c: CollectionSignal[T], idx: int, v: T) =
+  ## Insert `v` at `idx` (valid range: `0 .. len`, inclusive — `len`
+  ## inserts at the end). **Asserts on out-of-bounds.**
   doAssert idx in 0 .. c.items.len, "insert index out of bounds"
+  recordCollectionRevert(c, c.items)
   c.items.insert(v, idx)
   emit(c, Delta[T](kind: dkInsert, insertIdx: idx, insertVal: v))
 
 proc remove*[T](c: CollectionSignal[T], idx: int) =
+  ## Remove the element at `idx`. **Asserts on out-of-bounds.**
   doAssert idx in 0 ..< c.items.len, "remove index out of bounds"
+  recordCollectionRevert(c, c.items)
   c.items.delete(idx)
   emit(c, Delta[T](kind: dkRemove, removeIdx: idx))
 
 proc setAt*[T](c: CollectionSignal[T], idx: int, v: T) =
+  ## Replace the element at `idx`. **Asserts on out-of-bounds.**
   doAssert idx in 0 ..< c.items.len, "setAt index out of bounds"
+  recordCollectionRevert(c, c.items)
   c.items[idx] = v
   emit(c, Delta[T](kind: dkUpdate, updateIdx: idx, updateVal: v))
 
 proc clear*[T](c: CollectionSignal[T]) =
+  ## Remove all elements. No-op on an already-empty collection
+  ## (no delta emitted in that case).
   if c.items.len == 0: return
+  recordCollectionRevert(c, c.items)
   c.items.setLen(0)
   emit(c, Delta[T](kind: dkClear))
 
 proc set*[T](c: CollectionSignal[T], newItems: seq[T]) =
   ## Wholesale replacement. Emits a dkReplace delta — handlers that
   ## want incremental updates should treat this as "redo from scratch."
+  recordCollectionRevert(c, c.items)
   c.items = newItems
   emit(c, Delta[T](kind: dkReplace, replaceVal: newItems))

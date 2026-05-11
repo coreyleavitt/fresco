@@ -16,10 +16,16 @@
 import chronos
 import ./core
 import ../cls
+import ../journal/events as jev
+import ../journal/log
 
 proc awaitParallel(mounts: seq[Mount]) {.task, async: (raises: [CatchableError]).} =
   ## Wait for every Mount. On first failure: cancel siblings, drain
   ## their cancellation cascades, re-raise the original error.
+  ##
+  ## `{.task.}` is required: the sibling-failure journaling inside the
+  ## drain loop reads `currentScope` via `journalEvent`, and that
+  ## must survive the `await race(futs)` suspensions.
   var pending = mounts
   while pending.len > 0:
     var futs: seq[FutureBase] = @[]
@@ -47,7 +53,18 @@ proc awaitParallel(mounts: seq[Mount]) {.task, async: (raises: [CatchableError])
         if not p.future.finished: p.cancel()
       for p in pending:
         try: await p.future
-        except CatchableError: discard
+        except CancelledError:
+          # We just cancelled this sibling — expected, not a failure.
+          discard
+        except CatchableError as siblingErr:
+          # Sibling crashed concurrently with the winner. Journal it
+          # so the failure isn't silently lost. Mirrors supervisor's
+          # cascade-drain handling (supervisor.nim) — without this,
+          # parallel: would silently swallow simultaneous failures.
+          if siblingErr != nil:
+            let siblingName = "parallel-sibling"
+            let reason = "concurrent failure during parallel cascade: " & siblingErr.msg
+            journalEvent: jrnl.logSupervisorEscalate(taskTid, parentEvt, siblingName, reason)
       raise err
 
 template parallel*(body: untyped): untyped =

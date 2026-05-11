@@ -131,15 +131,24 @@ proc paint*(s: Screen) =
 
 # --- SIGWINCH -------------------------------------------------------------
 
-var resizePending*: bool
+var resizePending: bool
+  ## Process-wide flag set by the SIGWINCH handler. Not exported as
+  ## a mutable var — callers read it via `isResizePending()` and reset
+  ## it by calling `resize()` (which clears the flag as part of its
+  ## work). Unconditional write access from user code would let callers
+  ## silently suppress a pending resize.
+
+proc isResizePending*(): bool = resizePending
+  ## Read-only check: returns true if a SIGWINCH arrived since the
+  ## last `resize()` call. Use to drive a poll loop.
 
 proc winchHandler(sig: cint) {.noconv.} =
   resizePending = true
 
 proc installResizeHandler*() =
-  ## Installs a SIGWINCH handler that sets `resizePending`. Callers
-  ## poll the flag (e.g. once per event-loop tick) and call `resize()`
-  ## when it's true; signal handlers can't safely mutate Nim seqs.
+  ## Installs a SIGWINCH handler that sets the resize-pending flag.
+  ## Callers poll via `isResizePending()` and call `resize()` when
+  ## it's true; signal handlers can't safely mutate Nim seqs.
   discard signal(SIGWINCH, winchHandler)
 
 proc uninstallResizeHandler*() =

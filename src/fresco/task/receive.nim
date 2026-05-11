@@ -63,9 +63,9 @@ proc compileArm(evSym, arm: NimNode): tuple[cond, body: NimNode] =
   ## AST than `elif true:`.
   let armBody = arm[^1]
 
-  # Wildcard: `_: body`
-  if arm.kind == nnkCall and arm.len == 2 and
-     arm[0].kind == nnkIdent and $arm[0] == "_":
+  # Wildcard: `_: body`. eqIdent (not nnkIdent + string compare) so
+  # hygiene wrapping inside a template doesn't silently miss the match.
+  if arm.kind == nnkCall and arm.len == 2 and arm[0].eqIdent("_"):
     return (nil, armBody)
 
   # Atom: `Enter: body`, `ArrowUp: body`, `F1: body` …
@@ -136,11 +136,11 @@ proc compileArm(evSym, arm: NimNode): tuple[cond, body: NimNode] =
 
 proc isAfterArm(arm: NimNode): bool =
   ## Detect `after <Duration>: body`. AST: Command(after, durExpr, StmtList(body))
-  ## or Call(after, durExpr, StmtList(body)).
+  ## or Call(after, durExpr, StmtList(body)). eqIdent so hygiene
+  ## wrapping in a containing template doesn't miss the match.
   if arm.kind notin {nnkCall, nnkCommand}: return false
   if arm.len < 2: return false
-  let head = arm[0]
-  head.kind == nnkIdent and $head == "after"
+  arm[0].eqIdent("after")
 
 const allKeyKinds = block:
   ## Derived from the `KeyKind` enum so adding a new key in events.nim

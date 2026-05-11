@@ -247,5 +247,5 @@ proc nextKey*(s: InputStream): Future[KeyEvent] {.task, async.} =
     getFut.cancelSoon()
     raise newException(InputStreamClosedError, "stream closed mid-wait")
   let ev = getFut.read
-  journalEvent: j.logKeyReceived(tid, parentEvt, ev.summary)
+  journalEvent: jrnl.logKeyReceived(taskTid, parentEvt, ev.summary)
   return ev

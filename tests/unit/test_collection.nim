@@ -4,6 +4,7 @@ import std/unittest
 import fresco/reactive/scope
 import fresco/reactive/signal
 import fresco/reactive/collection
+import fresco/reactive/speculative
 
 suite "CollectionSignal":
 
@@ -140,3 +141,38 @@ suite "CollectionSignal":
     c.remove(0);    check runs == baseline + 4
     c.set(@[1, 2]); check runs == baseline + 5
     c.clear();      check runs == baseline + 6
+
+suite "CollectionSignal: speculative scope":
+
+  test "mutations roll back when block falls off without commit":
+    # Regression for round-7 H5: previously CollectionSignal mutations
+    # inside `speculative:` would silently stick on rollback, violating
+    # DESIGN.md R11. Now they snapshot prior state and record a revert.
+    let c = collection(@[1, 2, 3])
+    discard speculative:
+      c.push(4)
+      c.push(5)
+      check c.len == 5      # mutations visible inside block
+    check c.get() == @[1, 2, 3]   # rolled back on block exit
+
+  test "mutations stick when commit is called":
+    let c = collection(@[1, 2, 3])
+    discard speculative:
+      c.push(4)
+      c.setAt(0, 99)
+      commit()
+    check c.get() == @[99, 2, 3, 4]
+
+  test "clear rolls back via dkReplace snapshot":
+    let c = collection(@["a", "b", "c"])
+    discard speculative:
+      c.clear()
+      check c.len == 0
+    check c.get() == @["a", "b", "c"]
+
+  test "set (wholesale replace) rolls back":
+    let c = collection(@[1, 2, 3])
+    discard speculative:
+      c.set(@[10, 20, 30])
+      check c.get() == @[10, 20, 30]
+    check c.get() == @[1, 2, 3]

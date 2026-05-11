@@ -68,6 +68,16 @@ const MaxSignalSnapshots* {.intdefine.} = 16
 # inference treats threadvars as gcsafe, which lets install/uninstall
 # (and therefore `stop()` in input.nim) be genuinely gcsafe without
 # `{.cast(gcsafe).}` escape hatches at the call site.
+#
+# **Multi-thread caveat for embedders:** POSIX delivers fatal signals
+# to *some* thread in the process, not necessarily the one that called
+# `installSignalHandlers`. If embedded in a multi-threaded host and a
+# signal arrives on a thread that never installed handlers, that
+# thread's `snapshotStack` is empty and the handler skips termios
+# restore — leaving the user's terminal in raw mode. Single-thread
+# apps (fresco's design target) are unaffected. Proper multi-thread
+# safety would require a shared restore stack with its own lock,
+# which conflicts with the signal-safe (no-alloc) invariant.
 var snapshotStack {.threadvar.}: array[MaxSignalSnapshots, TermiosSnapshot]
 var snapshotDepth {.threadvar.}: int
 
@@ -79,9 +89,9 @@ var prevSigSegv {.threadvar.}: SigHandler
 proc termiosSignalHandler(sig: cint) {.noconv.} =
   # Restore innermost-first: each stored scope undoes its own change
   # so the final state is the termios as of process startup. When
-  # depth exceeded MaxSignalSnapshots, we restore from the first 16
-  # only — better than reading uninitialized array slots, and the
-  # outermost original termios is always stored.
+  # depth exceeded MaxSignalSnapshots, we restore from the first
+  # `MaxSignalSnapshots` only — better than reading uninitialized
+  # array slots, and the outermost original termios is always stored.
   let top = min(snapshotDepth, MaxSignalSnapshots) - 1
   for i in countdown(top, 0):
     restoreTermios(snapshotStack[i])

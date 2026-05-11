@@ -121,6 +121,10 @@ proc startFrameClock*(fps: int = DefaultFPS) =
   ## Idempotent. Starts the module-global frame clock if it isn't
   ## already running. Most callers don't need to call this directly —
   ## `tween` triggers it lazily.
+  ##
+  ## **If the clock is already running, `fps` is ignored.** To change
+  ## the rate of a running clock, call `stopFrameClock()` first (which
+  ## resets `frameInterval`) and then `startFrameClock(newFps)`.
   if frameClockTask != nil and not frameClockTask.finished: return
   if frameInterval == default(Duration):
     frameInterval = max(1, 1000 div fps).milliseconds

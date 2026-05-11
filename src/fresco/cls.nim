@@ -155,8 +155,12 @@ macro task*(prc: untyped): untyped =
           "`{.task, async.}` (not `{.async, task.}`).", prc)
 
   proc rewrite(n: NimNode): NimNode =
+    # eqIdent matches nnkIdent, nnkSym, and nnkOpenSymChoice — needed
+    # because if a `{.task, async.}` proc is defined inside a template,
+    # hygiene may wrap `await` as a symbol. The same generalization the
+    # pragma-order check above does for `async`.
     if n.kind in {nnkCommand, nnkCall} and n.len >= 2 and
-       n[0].kind == nnkIdent and n[0].eqIdent("await"):
+       n[0].eqIdent("await"):
       let inner = rewrite(n[1])
       let ctxSym = genSym(nskLet, "frescoCtx")
       result = quote do:

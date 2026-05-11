@@ -190,6 +190,10 @@ proc close*(j: PersistentJournal) =
 # --- Append hook ---------------------------------------------------------
 
 method onPersist*(j: PersistentJournal, e: Event) {.gcsafe, raises: [].} =
+  # cast(gcsafe): `File.write` and `flushFile` aren't proven gcsafe by
+  # Nim's checker (they touch process-wide stdio state via the FILE*).
+  # The cast is local to the write; fresco is single-dispatcher so
+  # there's no real shared-state race.
   {.cast(gcsafe).}:
     if j.file == nil: return
     try:

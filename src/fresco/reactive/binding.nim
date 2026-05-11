@@ -47,8 +47,7 @@ proc resolveBackIndex(rIdent, expr: NimNode): NimNode =
   ## like `(^1 + 1)` aren't rewritten. The common cases (`row ^1:`,
   ## `rows 0..^2:`) cover the v0 surface; reach for an explicit
   ## `r.height - N - 1` if you need arithmetic.
-  if expr.kind == nnkPrefix and expr.len == 2 and
-     expr[0].kind == nnkIdent and $expr[0] == "^":
+  if expr.kind == nnkPrefix and expr.len == 2 and expr[0].eqIdent("^"):
     let inner = expr[1]
     return quote do: `rIdent`.height - `inner`
   expr
