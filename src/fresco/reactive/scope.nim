@@ -10,6 +10,8 @@
 ## install a scope as current for a block; use `createRoot` for the
 ## common case of opening a fresh root.
 
+import ../journal/events
+
 type
   ProviderEntry* = object
     typeName*: string
@@ -23,6 +25,12 @@ type
     children: seq[Scope]
     cleanups: seq[proc() {.closure.}]
     providers*: seq[ProviderEntry]
+    taskId*: TaskId
+      ## Journal task identity. RootTask (0) for scopes created
+      ## outside any spawn. Spawn assigns a fresh TaskId per child.
+    lastEventId*: EventId
+      ## The most recent event this task emitted into the journal.
+      ## Used as the parentId for subsequent events from this scope.
     disposed*: bool
 
 var currentScope* {.threadvar.}: Scope

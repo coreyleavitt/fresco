@@ -16,6 +16,8 @@
 
 import chronos
 import ../reactive/scope
+import ../journal/events
+import ../journal/log
 
 type
   Mount* = ref object
@@ -50,17 +52,32 @@ proc finished*(m: Mount): bool =
   m != nil and m.future.finished
 
 proc wireLifecycle(m: Mount) =
-  ## Install both directions of the scope ↔ future bond.
+  ## Install both directions of the scope ↔ future bond plus the
+  ## journal completion / failure / cancellation hooks.
   let captured = m
   # Direction 1: scope dispose → cancel future.
   withScope(m.scope):
     onCleanup proc() =
       if not captured.future.finished:
         captured.future.cancelSoon()
-  # Direction 2: future complete / cancel → dispose scope.
+  # Direction 2: future complete / cancel → log + dispose scope.
   m.future.addCallback proc(udata: pointer) {.gcsafe, raises: [].} =
     {.cast(gcsafe).}:
       try:
+        if globalJournal != nil:
+          let parent = captured.scope.lastEventId
+          let tid    = captured.scope.taskId
+          let id =
+            if captured.future.cancelled:
+              globalJournal.logTaskCancelled(tid, parent, "")
+            elif captured.future.failed:
+              let e = captured.future.error
+              globalJournal.logTaskFailed(tid, parent,
+                if e == nil: "" else: e.msg,
+                if e == nil: "" else: $e.name)
+            else:
+              globalJournal.logTaskCompleted(tid, parent)
+          captured.scope.lastEventId = id
         if not captured.scope.disposed:
           dispose(captured.scope)
       except Exception:
@@ -109,6 +126,15 @@ template spawn*(call: untyped): Mount =
   ## also added to the block's collector for group-await.
   block:
     let childScope = newScope(currentScope)
+    childScope.taskId = TaskId.fresh()
+    if globalJournal != nil:
+      let parent =
+        if currentScope != nil: currentScope.lastEventId else: NoEvent
+      let id = globalJournal.logTaskSpawned(
+        childScope.taskId, parent, astToStr(call), "")
+      childScope.lastEventId = id
+      if currentScope != nil:
+        currentScope.lastEventId = id
     var fut: Future[void]
     withScope(childScope):
       fut = call
