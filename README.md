@@ -16,4 +16,4 @@ A fresco is composed in panels — multiple painters can work on different secti
 
 ## License
 
-MIT. The whole point of building it as a sibling library to [recall](https://github.com/coreyleavitt/recall) is that it should also be useful to other projects.
+MIT. The whole point of building it as a sibling library to [amoxtli](https://github.com/coreyleavitt/amoxtli) is that it should also be useful to other projects.

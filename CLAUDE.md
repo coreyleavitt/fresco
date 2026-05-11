@@ -6,12 +6,12 @@ This project follows the [AGENTS.md](AGENTS.md) convention — read it for conve
 
 ## Big picture
 
-`fresco` is a Nim 2.x terminal-UI **kernel** (not a framework) — async on chronos, ANSI-only (no curses), region-based rendering (no VDOM in v0). Library-only Nimble package; sibling to [recall](https://github.com/coreyleavitt/recall), which is the primary downstream consumer. The whole design is shaped by being a library: no `main`-owning runtime, no stdout writes (stdout belongs to the caller's pipe — UI renders to stderr), no second async runtime.
+`fresco` is a Nim 2.x terminal-UI **kernel** (not a framework) — async on chronos, ANSI-only (no curses), region-based rendering (no VDOM in v0). Library-only Nimble package; sibling to [amoxtli](https://github.com/coreyleavitt/amoxtli), which is the primary downstream consumer. The whole design is shaped by being a library: no `main`-owning runtime, no stdout writes (stdout belongs to the caller's pipe — UI renders to stderr), no second async runtime.
 
 Work is sliced into tiers, each independently shippable:
 
 - **T1** — `terminal/{termios,ansi,signals}` + `input.nim` + `events.nim`. Raw stdin → `AsyncQueue[KeyEvent]`. Crash-safe restore on every exit path including signals. This is the hard part.
-- **T2** — `screen.nim` + `region.nim` + `render.nim` (smart line-update diff) + `widgets/{select,input,status}`. The v0 release target: enough to power recall's permission prompt + live status while streaming output above the widget without clobbering it.
+- **T2** — `screen.nim` + `region.nim` + `render.nim` (smart line-update diff) + `widgets/{select,input,status}`. The v0 release target: enough to power amoxtli's permission prompt + live status while streaming output above the widget without clobbering it.
 - **T3** — vertical layout, scrollback, diff/review/progress widgets.
 - **T4** — reactive/VDOM-style components. **Do not pre-build.** Only when a real caller needs it.
 
@@ -29,7 +29,7 @@ These are the failure modes the design exists to prevent — violating any of th
 
 ## Dev workflow
 
-All toolchain ops run in Docker (openSUSE Tumbleweed base, mirrors recall). Build the image once, then use the wrapper:
+All toolchain ops run in Docker (openSUSE Tumbleweed base, mirrors amoxtli). Build the image once, then use the wrapper:
 
 ```
 ./dev image          # (re)build dev image — run once or after Dockerfile changes
