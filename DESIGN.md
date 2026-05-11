@@ -71,25 +71,23 @@ The wedge is **kernel-plus-one-API**: solve the hard parts (raw-mode TTY, render
 ```
 src/fresco/
 ├── terminal/
-│   ├── termios.nim     # save/restore + cbreak/raw mode + signal-safe restore
-│   ├── ansi.nim        # cursor positioning, line clear, color, styles
-│   └── signals.nim     # SIGWINCH, SIGTERM/INT cleanup hooks
+│   ├── termios.nim     # save/restore + cbreak/raw mode + signal-safe restore (incl. signal hooks)
+│   └── ansi.nim        # cursor positioning, line clear, color, styles
 ├── input.nim           # raw stdin → chronos AsyncQueue[KeyEvent]
 └── events.nim          # KeyEvent type + decode (escape sequences → semantic keys)
 ```
 
-Pure infrastructure. No user-facing API. Re-exported only as primitives for T2-T4.
+Pure infrastructure. No user-facing API. Re-exported only as primitives for T2-T4. (Signal-handler helpers live alongside termios save/restore — there's no separate `signals.nim`.)
 
 ### Tier 2: Region + render
 
 ```
 src/fresco/
-├── screen.nim          # Screen abstraction: width/height, cursor, region tracking
-├── region.nim          # Region: bounded surface
+├── screen.nim          # Screen + Region: geometry, bounds checking, SIGWINCH plumbing
 └── render.nim          # Smart line-update: diff intended vs current, emit minimal ANSI
 ```
 
-Pure infrastructure. T4 sits directly on `Region` and `Screen`. No imperative widget surface ships here.
+Pure infrastructure. T4 sits directly on `Region` and `Screen`. No imperative widget surface ships here. (`Region` is co-located with `Screen` in `screen.nim` rather than in a separate file.)
 
 ### Tier 3: Layout
 
@@ -105,34 +103,39 @@ Pure infrastructure. T4's `vstack:` / `hstack:` DSL blocks compile down to these
 ```
 src/fresco/
 ├── reactive/
-│   ├── signal.nim          # Signal[T], Computed[T], CollectionSignal[T]
 │   ├── scope.nim           # reactive scopes, owner graph, cleanup chains
-│   ├── graph.nim           # topological scheduler over the dep DAG
-│   ├── frame.nim           # frame clock + animated signal evaluation
-│   └── deltas.nim          # differential operations on CollectionSignal
+│   ├── signal.nim          # Signal[T], Computation, signals: macro, := operator, createEffect/Computed
+│   ├── binding.nim         # bindRow / bindRows / region: macro
+│   ├── context.nim         # provide T: v / use T (DI + capability values)
+│   ├── speculative.nim     # MVCC speculative scopes (signal.nim depends on this for revert hooks)
+│   ├── animation.nim       # Easing + tween + frame clock
+│   ├── collection.nim      # CollectionSignal[T] + Delta[T]
+│   ├── static_graph.nim    # `tracked:` typed macro — compile-time dep extraction
+│   └── capabilities.nim    # capability markers + `requires` macro
 ├── task/
-│   ├── core.nim            # task primitive, mount handle, spawn/await
-│   ├── receive.nim         # mailbox + selective receive runtime
-│   ├── supervisor.nim      # OTP-flavored supervisor with novel additions
-│   └── speculative.nim     # MVCC speculative scopes
+│   ├── core.nim            # task primitive, Mount handle, spawn / spawnRetry / spawnCatch
+│   ├── cls.nim             # continuation-local storage — TaskContext + {.task.} pragma
+│   ├── receive.nim         # selective receive runtime — pattern arms + after timeout
+│   ├── parallel.nim        # parallel: block — structured-concurrency group await
+│   ├── mount.nim           # mountWhen / mount(cond) — reactive conditional spawn
+│   ├── hotkey.nim          # scope-bound input filter
+│   └── supervisor.nim      # OTP-flavored supervisor (one_for_one/all/rest_for_one)
 ├── journal/
-│   ├── events.nim          # event variant types, schema versions
-│   ├── log.nim             # in-memory log + projection machinery
-│   ├── time.nim            # bitemporal cursor, time-warp, scrub
-│   └── persist.nim         # on-disk format + compaction (v2.4)
-├── context/
-│   └── provide.nim         # provide/use, capability inference
-├── macros/
-│   ├── component.nim       # `task:` body transformation
-│   ├── region.nim          # `region:` / `row N:` / `rows A..B:`
-│   ├── receive.nim         # `receive:` pattern compilation + exhaustiveness
-│   ├── supervisor.nim      # `supervisor:` block + child declarations
-│   ├── reactive.nim        # static dep-graph extraction from typed AST
-│   └── capability.nim      # capability set inference + discharge along supervisor paths
+│   ├── events.nim          # Event variant + EventId / TaskId distinct types
+│   ├── log.nim             # in-memory log + projection (lastWritesByLabel / stateAt / stateAtTime)
+│   └── persist.nim         # on-disk JSONL + schema versioning
 └── fresco.nim              # public API entry: re-exports the T4 surface
 ```
 
 This is the only surface a caller imports. T1-T3 modules are reachable but unstable — their public APIs may change between v2.x releases as T4's needs evolve.
+
+Notes on collapsed modules vs the original sketch:
+- `terminal/signals.nim` → folded into `terminal/termios.nim` (signal hooks share the snapshot stack with termios save/restore).
+- `screen.nim` + `region.nim` → merged: `Region` is a small type and lives next to `Screen` for one-file geometry handling.
+- `reactive/graph.nim`, `frame.nim`, `deltas.nim` → became `static_graph.nim`, `animation.nim`, `collection.nim` respectively, with clearer concrete-feature names.
+- `journal/time.nim` → bitemporal projection lives directly in `journal/log.nim`.
+- `context/provide.nim` → `reactive/context.nim`.
+- `macros/*` → each DSL macro is co-located with the runtime module it expands to (`receive` macro in `task/receive.nim`, `region` macro in `reactive/binding.nim`, `supervisor` macro in `task/supervisor.nim`, etc.). No separate macros directory.
 
 ---
 

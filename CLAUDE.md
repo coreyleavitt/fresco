@@ -10,10 +10,10 @@ This project follows the [AGENTS.md](AGENTS.md) convention — read it for conve
 
 Work is sliced into tiers, each independently shippable:
 
-- **T1** — `terminal/{termios,ansi,signals}` + `input.nim` + `events.nim`. Raw stdin → `AsyncQueue[KeyEvent]`. Crash-safe restore on every exit path including signals. This is the hard part.
-- **T2** — `screen.nim` + `region.nim` + `render.nim` (smart line-update diff) + `widgets/{select,input,status}`. The v0 release target: enough to power amoxtli's permission prompt + live status while streaming output above the widget without clobbering it.
-- **T3** — vertical layout, scrollback, diff/review/progress widgets.
-- **T4** — reactive/VDOM-style components. **Do not pre-build.** Only when a real caller needs it.
+- **T1** — `terminal/{termios,ansi}` (signal hooks live in termios.nim) + `input.nim` + `events.nim`. Raw stdin → `AsyncQueue[KeyEvent]`. Crash-safe restore on every exit path including signals. This is the hard part.
+- **T2** — `screen.nim` (Screen + Region, geometry, bounds, SIGWINCH) + `render.nim` (smart line-update diff). The v0 release target: enough to power amoxtli's permission prompt + live status while streaming output above the widget without clobbering it.
+- **T3** — `layout.nim` (vstack/hstack) and supporting widget primitives.
+- **T4** — reactive task system: `reactive/` (signals, scope, bindings, speculative MVCC, animation, collection, static graph, context, capabilities) + `task/` (core, cls, receive, parallel, mount, hotkey, supervisor) + `journal/` (events, log, persist).
 
 Issues are tracked on GitHub under three milestones (v0/v1/v2) matching T1+T2 / T3 / T4.
 
@@ -21,7 +21,8 @@ Issues are tracked on GitHub under three milestones (v0/v1/v2) matching T1+T2 / 
 
 These are the failure modes the design exists to prevent — violating any of them defeats the point of the library:
 
-- **Crash-safe termios restore.** Any code that mutates terminal state must restore on every exit path (normal return, exception, SIGTERM/INT/SEGV). The worst defect class is "left the user's terminal in raw mode." Use `defer` + the signal hooks in `src/fresco/terminal/signals.nim`.
+- **Crash-safe termios restore.** Any code that mutates terminal state must restore on every exit path (normal return, exception, SIGTERM/INT/SEGV). The worst defect class is "left the user's terminal in raw mode." Use `defer` + the signal hooks in `src/fresco/terminal/termios.nim` (`installSignalHandlers` / `uninstallSignalHandlers`).
+- **Context across await.** `currentScope`, `currentSpeculative`, and `parallelCollector` are thread-locals that chronos doesn't restore on resume. Annotate any async proc that depends on them with `{.task, async.}` — the `task` pragma in `src/fresco/task/cls.nim` rewrites every `await` in the body to inline save/restore. For callback-style code (effect bodies, input filters) that fires from the dispatcher, wrap the body in `withContext(capturedCtx):`.
 - **No stdout writes from library code.** stdout is reserved for the caller's piped output. Render to stderr.
 - **One async runtime: chronos.** No `std/asyncdispatch` anywhere. Never `raise` across an async boundary without converting.
 - **No curses, no termcap.** Pure ANSI emission. We accept the ~98% terminal-compat tradeoff.

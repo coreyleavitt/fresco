@@ -15,7 +15,7 @@ Conventions for AI coding agents working on this repository (we dogfood `amoxtli
 
 - **Async**: chronos `{.async.}` for any I/O. Cancellation via `CancellationToken`; respect it.
 - **No `echo`** in library code — caller controls output. Tests can echo for diagnostics.
-- **Crash safety**: any code that mutates terminal state (termios, cursor, alt-screen) must restore on every exit path including panics. Use `defer` + signal hooks; prefer the signal-hook helpers in `src/fresco/terminal/signals.nim`.
+- **Crash safety**: any code that mutates terminal state (termios, cursor, alt-screen) must restore on every exit path including panics. Use `defer` + signal hooks; prefer the signal-hook helpers in `src/fresco/terminal/termios.nim` (`installSignalHandlers` / `uninstallSignalHandlers`).
 - **No vendored C**: prefer `{.importc, header.}` over `{.compile.}` for syscalls.
 - **State machines**: object variants + exhaustive `case`. Don't reach for tagged Tables unless open extension is genuinely needed.
 - **Errors**: results-style for expected failures (`Result[T, E]` or sum types), exceptions for genuinely-exceptional. Never `raise` across an async boundary without converting.
