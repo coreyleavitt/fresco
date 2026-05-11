@@ -97,6 +97,33 @@ suite "supervisor: restart-rate window":
       m.cancel()
     waitFor body()
 
+suite "supervisor: declarative block":
+
+  test "supervisor: macro builds a Supervisor with config and children":
+    proc body() {.async: (raises: [Exception]).} =
+      var startsA = 0
+      var startsB = 0
+      proc childA(): Future[void] {.async.} =
+        inc startsA
+        await sleepAsync(2.milliseconds)
+      proc childB(): Future[void] {.async.} =
+        inc startsB
+        await sleepAsync(2.milliseconds)
+
+      supervisor mySup:
+        maxRestarts = 10
+        within = 1.seconds
+        child("a", lcPermanent, childA)
+        child("b", lcTemporary, childB)
+
+      check mySup is Supervisor
+      let m = spawn mySup.run()
+      await sleepAsync(30.milliseconds)
+      m.cancel()
+      check startsA >= 2     # permanent → restarted
+      check startsB == 1     # temporary → one shot
+    waitFor body()
+
 suite "supervisor: cancellation":
 
   test "cancelling the supervisor cancels all children":

@@ -15,7 +15,7 @@
 ## proc invocation. The supervisor calls the factory each time it
 ## (re)starts the child.
 
-import std/sequtils
+import std/[macros, sequtils]
 import chronos
 import ./core
 import ../reactive/scope
@@ -143,3 +143,48 @@ proc run*(s: Supervisor) {.async: (raises: [CatchableError]).} =
         if currentScope != nil: currentScope.lastEventId = id
       except Exception: discard
     child.mount = spawn child.spec.factory()
+
+# --- Declarative supervisor: block ---------------------------------------
+
+macro supervisor*(name: untyped, body: untyped): untyped =
+  ## Declarative supervisor topology:
+  ##
+  ##   supervisor appSup:
+  ##     maxRestarts = 5
+  ##     within = 10.seconds
+  ##     strategy = sOneForOne
+  ##
+  ##     child("heartbeat", lcPermanent, heartbeatTask)
+  ##     child("agent",     lcTransient, agentLoop)
+  ##
+  ##   await appSup.run()                # later
+  ##
+  ## Config assignments (`name = value`) become named arguments on
+  ## `newSupervisor()`. `child(...)` calls become `addChild` calls.
+  expectKind(body, nnkStmtList)
+
+  var supInit = newCall(bindSym"newSupervisor")
+  var addCalls: seq[NimNode] = @[]
+
+  for stmt in body:
+    case stmt.kind
+    of nnkAsgn:
+      let key = stmt[0]
+      let val = stmt[1]
+      supInit.add newTree(nnkExprEqExpr, key, val)
+    of nnkCall:
+      if stmt[0].kind == nnkIdent and $stmt[0] == "child":
+        let addCall = newCall(newDotExpr(name, ident("addChild")))
+        for i in 1 ..< stmt.len:
+          addCall.add stmt[i]
+        addCalls.add addCall
+      else:
+        error("supervisor: unknown statement `" & stmt.repr &
+              "` (expected config assignment or child(...) call)", stmt)
+    else:
+      error("supervisor: body must be config assignments or " &
+            "child(name, lifecycle, factory) calls", stmt)
+
+  result = newStmtList()
+  result.add newLetStmt(name, supInit)
+  for ac in addCalls: result.add ac
