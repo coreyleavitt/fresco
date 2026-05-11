@@ -30,6 +30,8 @@ task test, "run all tests":
     "tests/unit/test_screen.nim",
     "tests/unit/test_layout.nim",
     "tests/unit/test_scrollback.nim",
+    "tests/unit/test_diff.nim",
+    "tests/unit/test_progress.nim",
   ]
   let integrationTests = @[
     "tests/integration/test_termios_pty.nim",
@@ -37,6 +39,7 @@ task test, "run all tests":
     "tests/integration/test_select_pty.nim",
     "tests/integration/test_input_widget_pty.nim",
     "tests/integration/test_status_pty.nim",
+    "tests/integration/test_review_pty.nim",
   ]
   for t in unitTests & integrationTests:
     exec "nim r --hints:off --warnings:off --path:src " & t
