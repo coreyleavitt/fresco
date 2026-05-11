@@ -30,10 +30,13 @@ suite "parallel:":
       check doneA and doneB and doneC
     waitFor body()
 
-  test "empty block is a no-op":
+  test "empty block is a no-op and restores collector":
     proc body() {.async: (raises: [Exception]).} =
+      let before = parallelCollector
       parallel: discard
-      check true   # didn't hang
+      # The collector threadvar must be back to its pre-block value
+      # even when the block did nothing.
+      check parallelCollector == before
     waitFor body()
 
   test "one child raising cancels its siblings and re-raises":

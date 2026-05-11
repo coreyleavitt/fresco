@@ -47,9 +47,9 @@
 ## captured `TaskContext`.
 
 import std/macros
-import ../reactive/scope
-import ../reactive/speculative
-import ./core
+import ./reactive/scope
+import ./reactive/speculative
+import ./task/core
 
 type
   TaskContext* = object

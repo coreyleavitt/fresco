@@ -64,7 +64,7 @@ proc toJson*(e: Event): JsonNode =
   of ekTaskFailed:
     result["failureMsg"]  = %e.failureMsg
     result["failureType"] = %e.failureType
-  of ekStateWrite:
+  of ekSignalWrite:
     result["signalLabel"] = %e.signalLabel
     result["writeRepr"]   = %e.writeRepr
   of ekKeyReceived, ekKeyConsumed:
@@ -113,7 +113,7 @@ proc fromJson*(n: JsonNode): Option[Event] =
   of ekTaskFailed:
     e.failureMsg  = n{"failureMsg"}.getStr("")
     e.failureType = n{"failureType"}.getStr("")
-  of ekStateWrite:
+  of ekSignalWrite:
     e.signalLabel = n{"signalLabel"}.getStr("")
     e.writeRepr   = n{"writeRepr"}.getStr("")
   of ekKeyReceived, ekKeyConsumed:
@@ -133,8 +133,8 @@ proc fromJson*(n: JsonNode): Option[Event] =
 type
   PersistentJournal* = ref object of Journal
     path*: string
-    file*: File
-    warnedWriteFailure*: bool
+    file: File
+    warnedWriteFailure: bool
       ## Set true after the first write failure so the stderr
       ## diagnostic doesn't spam every subsequent appended event.
 

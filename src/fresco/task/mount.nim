@@ -15,7 +15,7 @@
 import ../reactive/scope
 import ../reactive/signal
 import ./core
-import ./cls
+import ../cls
 
 template mountWhen*(cond: untyped, body: untyped): untyped =
   ## Reactive conditional mount. `cond` is re-evaluated whenever any

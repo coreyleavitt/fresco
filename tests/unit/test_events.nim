@@ -34,6 +34,14 @@ suite "single-byte keys":
   test "Ctrl+@ from NUL":
     oneEvent "\x00", ctrlKey('@')
 
+  test "Ctrl-\\ Ctrl-] Ctrl-^ Ctrl-_ from 0x1C..0x1F":
+    # Regression for round-4 M1: previously these bytes fell through to
+    # the printable path and decoded as kChar(28..31) instead of kCtrl.
+    oneEvent "\x1C", ctrlKey('\\')
+    oneEvent "\x1D", ctrlKey(']')
+    oneEvent "\x1E", ctrlKey('^')
+    oneEvent "\x1F", ctrlKey('_')
+
 suite "Escape and Alt disambiguation":
 
   test "bare ESC without finalize is held as partial":

@@ -39,7 +39,7 @@ proc main() {.async: (raises: [Exception]).} =
       let e = globalJournal[lastSeen]
       var summary = $e.kind & " task=" & $e.taskId
       case e.kind
-      of ekStateWrite:
+      of ekSignalWrite:
         summary &= " " & e.signalLabel & "=" & e.writeRepr
       of ekTaskSpawned:
         summary &= " " & e.spawnedName

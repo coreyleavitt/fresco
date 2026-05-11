@@ -43,7 +43,7 @@ suite "journal: append + query":
     discard j.logStateWrite(t, NoEvent, "x", "1")
     discard j.logStateWrite(t, NoEvent, "y", "2")
     discard j.logTaskCompleted(t, NoEvent)
-    check j.byKind(ekStateWrite).len == 2
+    check j.byKind(ekSignalWrite).len == 2
     check j.byKind(ekTaskSpawned).len == 1
 
   test "find by EventId":
@@ -52,7 +52,7 @@ suite "journal: append + query":
     let id = j.logStateWrite(t, NoEvent, "x", "42")
     let ev = j.find(id)
     check ev.id == id
-    check ev.kind == ekStateWrite
+    check ev.kind == ekSignalWrite
     check ev.writeRepr == "42"
 
   test "find raises KeyError on missing id":

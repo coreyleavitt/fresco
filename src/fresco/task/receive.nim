@@ -31,7 +31,7 @@ import std/[macros, sets, tables, unicode]
 import chronos
 import ../events
 import ../input
-import ./cls
+import ../cls
 
 const atomMap = {
   "Enter":      "kEnter",

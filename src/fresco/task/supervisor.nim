@@ -18,7 +18,7 @@
 import std/macros
 import chronos
 import ./core
-import ./cls
+import ../cls
 import ../reactive/scope
 import ../journal/events as jev
 import ../journal/log
@@ -30,9 +30,9 @@ type
     lcTemporary     ## never restart
 
   Strategy* = enum
-    sOneForOne      ## restart only the failing child
-    sOneForAll      ## any failure → cancel all siblings, restart all
-    sRestForOne     ## any failure → cancel this child + all *later* siblings
+    ssOneForOne      ## restart only the failing child
+    ssOneForAll      ## any failure → cancel all siblings, restart all
+    ssRestForOne     ## any failure → cancel this child + all *later* siblings
                     ## (declaration order), restart that group
 
   ChildFactory* = proc(): Future[void] {.closure, gcsafe, raises: [].}
@@ -56,7 +56,7 @@ type
     ## Fires before each *restart* (not the initial spawn) with the
     ## journal and the previous taskId. Typical use: walk
     ## `journal.lastWritesByLabel(previousTaskId)` and restore state
-    ## from `ekStateWrite` events. Restoration happens out of band —
+    ## from `ekSignalWrite` events. Restoration happens out of band —
     ## the factory will still be called fresh after the handler.
     ##
     ## **Prerequisite:** the handler only fires when `globalJournal`
@@ -87,7 +87,7 @@ type
   SupervisorEscalation* = object of CatchableError
     childName*: string
 
-proc newSupervisor*(strategy = sOneForOne,
+proc newSupervisor*(strategy = ssOneForOne,
                     maxRestarts = 5,
                     within = 10.seconds): Supervisor =
   Supervisor(
@@ -111,8 +111,13 @@ proc shouldRestart(lifecycle: Lifecycle, failed: bool): bool =
   of lcTemporary: false
 
 proc trimWindow(times: var seq[Moment], now: Moment, window: Duration) =
-  while times.len > 0 and now - times[0] > window:
-    times.delete(0)
+  ## Drop entries older than `window` from the front. Uses a single
+  ## scan + one slice instead of repeated O(N) `delete(0)` left-shifts.
+  var keep = 0
+  while keep < times.len and now - times[keep] > window:
+    inc keep
+  if keep > 0:
+    times = times[keep ..< times.len]
 
 proc run*(s: Supervisor) {.task, async: (raises: [CatchableError]).} =
   ## Run the supervisor loop. Returns when every child has reached a
@@ -179,16 +184,16 @@ proc run*(s: Supervisor) {.task, async: (raises: [CatchableError]).} =
       continue
 
     # Determine the cascade group based on supervisor strategy.
-    #   sOneForOne:  just the failing child.
-    #   sRestForOne: failing child + every child declared after it.
-    #   sOneForAll:  every child.
+    #   ssOneForOne:  just the failing child.
+    #   ssRestForOne: failing child + every child declared after it.
+    #   ssOneForAll:  every child.
     var cascade: seq[int] = @[]
     case s.strategy
-    of sOneForOne:
+    of ssOneForOne:
       cascade.add idx
-    of sRestForOne:
+    of ssRestForOne:
       for i in idx ..< s.children.len: cascade.add i
-    of sOneForAll:
+    of ssOneForAll:
       for i in 0 ..< s.children.len: cascade.add i
 
     # Rate-window every cascaded child, not just the originating one.
@@ -196,6 +201,13 @@ proc run*(s: Supervisor) {.task, async: (raises: [CatchableError]).} =
     # member: if any has exceeded its window, escalate. Otherwise an
     # all-children-fail-on-init loop would bypass the limit because
     # only the unlucky triggering child gets counted each round.
+    #
+    # Timing semantic: `now` is captured at the failure moment, not at
+    # restart-spawn time. The rate window measures "failures per
+    # interval" — if cascade drain takes long, the window starts
+    # ticking before the new instance spawns. This is the desired
+    # behaviour for catching tight crash loops; if you want per-
+    # restart-spawn timing instead, you want a different supervisor.
     let now = Moment.now()
     for i in cascade:
       s.children[i].restartTimes.add now
@@ -286,7 +298,7 @@ macro supervisor*(name: untyped, body: untyped): untyped =
   ##   supervisor appSup:
   ##     maxRestarts = 5
   ##     within = 10.seconds
-  ##     strategy = sOneForOne
+  ##     strategy = ssOneForOne
   ##
   ##     child("heartbeat", lcPermanent, heartbeatTask)
   ##     child("agent",     lcTransient, agentLoop)

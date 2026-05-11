@@ -15,7 +15,7 @@ import chronos
 import ./terminal/termios
 import ./events
 import ./reactive/scope
-import ./task/cls
+import ./cls
 import ./journal/events as jev
 import ./journal/log
 
@@ -47,12 +47,17 @@ type
       ## at entry and only enqueues if it still matches at exit — this
       ## prevents a phantom kEscape when sleepAsync wins the cancel
       ## race against fresh disambiguating bytes.
-    closing*: Future[void]
+    closing: Future[void]
       ## Completes when stop() is called. nextKey awaits on this in
       ## parallel with the queue so pending awaiters wake on stream
       ## teardown instead of blocking forever.
     filters: seq[FilterEntry]
     nextFilterId: int
+    droppedEvents*: int
+      ## Number of decoded KeyEvents that the queue rejected as full.
+      ## Always 0 for the default (unbounded) queue. Bounded callers
+      ## can poll this between reads to detect input loss instead of
+      ## getting silent drops.
 
   InputStreamClosedError* = object of CatchableError
 
@@ -95,7 +100,11 @@ proc enqueue(s: InputStream, evs: seq[KeyEvent]) {.gcsafe.} =
   for e in evs:
     if s.runFilters(e): continue
     try: s.queue.putNoWait(e)
-    except AsyncQueueFullError: discard
+    except AsyncQueueFullError:
+      # Bounded-queue overflow. Increment a visible counter so callers
+      # using a bounded queue can detect input loss; default queues
+      # are unbounded and never hit this branch.
+      inc s.droppedEvents
 
 proc addFilter*(s: InputStream, fn: KeyFilter): int =
   ## Register a filter. Returns a handle for `removeFilter`.
@@ -200,7 +209,7 @@ proc stop*(s: InputStream) =
   if s.escWaiter != nil and not s.escWaiter.finished:
     s.escWaiter.cancelSoon()
     s.escWaiter = nil
-  if s.closing != nil and not s.closing.finished:
+  if not s.closing.finished:
     s.closing.complete()
   if s.registered:
     removeReader(AsyncFD(s.fd))

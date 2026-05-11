@@ -43,14 +43,11 @@ type
   CollectionSignal*[T] = ref object of Subscribable
     items*: seq[T]
     label*: string
-    deltaObservers*: seq[DeltaHandler[T]]
-
-proc collectionSignal*[T](initial: seq[T] = @[], label = ""): CollectionSignal[T] =
-  CollectionSignal[T](items: initial, label: label)
+    deltaObservers: seq[DeltaHandler[T]]
 
 proc collection*[T](initial: seq[T] = @[], label = ""): CollectionSignal[T] =
-  ## Alias matching the `signal(initial)` naming for plain signals.
-  collectionSignal[T](initial, label)
+  ## Constructor matching the `signal(initial)` naming for plain signals.
+  CollectionSignal[T](items: initial, label: label)
 
 # --- Subscription --------------------------------------------------------
 

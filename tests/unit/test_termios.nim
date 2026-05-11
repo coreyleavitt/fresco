@@ -38,8 +38,12 @@ suite "termios against a non-TTY fd":
       installSignalHandlers(snap)
     for _ in 0 ..< N:
       uninstallSignalHandlers()
-    # If pairing were off, this last install would re-trigger the
-    # depth-1 branch incorrectly or skip it. We exercise that path:
-    installSignalHandlers(snap)
-    uninstallSignalHandlers()
-    check true
+    # After perfect pairing, a fresh install/uninstall round must not
+    # raise (depth counter would be in a corrupt state otherwise).
+    var raised = false
+    try:
+      installSignalHandlers(snap)
+      uninstallSignalHandlers()
+    except CatchableError:
+      raised = true
+    check not raised

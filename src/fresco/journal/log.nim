@@ -114,7 +114,7 @@ proc logTaskCancelled*(j: Journal, taskId: TaskId, parentId: EventId,
 
 proc logStateWrite*(j: Journal, taskId: TaskId, parentId: EventId,
                     label, valueRepr: string): EventId =
-  var ev = baseEvent(ekStateWrite, taskId, parentId)
+  var ev = baseEvent(ekSignalWrite, taskId, parentId)
   ev.signalLabel = label
   ev.writeRepr = valueRepr
   j.append(ev)
@@ -171,7 +171,7 @@ proc find*(j: Journal, id: EventId): Event =
   raise newException(KeyError, "no event with id " & $id)
 
 proc lastWritesByLabel*(j: Journal, taskId: TaskId): Table[string, Event] =
-  ## For a given task, return the most-recent `ekStateWrite` event per
+  ## For a given task, return the most-recent `ekSignalWrite` event per
   ## signal label. Useful for state restoration: walk this table and
   ## re-apply each entry's `writeRepr` to a freshly-declared signal of
   ## the same label.
@@ -188,7 +188,7 @@ proc lastWritesByLabel*(j: Journal, taskId: TaskId): Table[string, Event] =
   ## that matter, consider the per-task index work tracked at #34.
   for i in countdown(j.events.high, 0):
     let ev = j.events[i]
-    if ev.taskId == taskId and ev.kind == ekStateWrite and
+    if ev.taskId == taskId and ev.kind == ekSignalWrite and
        ev.signalLabel.len > 0 and ev.signalLabel notin result:
       result[ev.signalLabel] = ev
 
@@ -209,14 +209,14 @@ proc stateAt*(j: Journal, cutoff: EventId,
               taskId: TaskId = RootTask): Table[string, string] =
   ## Project signal state at `cutoff` for the given task. Returns
   ## a Table[label, writeRepr] — the most-recent value of each labeled
-  ## signal among `ekStateWrite` events with id <= cutoff for taskId.
+  ## signal among `ekSignalWrite` events with id <= cutoff for taskId.
   ## Unlabeled writes (`signalLabel == ""`) are excluded — see
   ## `lastWritesByLabel` for the rationale.
   ##
   ## Pass `taskId = RootTask` to include all tasks (ignoring scope).
   for ev in j.events:
     if uint64(ev.id) > uint64(cutoff): break
-    if ev.kind != ekStateWrite: continue
+    if ev.kind != ekSignalWrite: continue
     if ev.signalLabel.len == 0: continue
     if taskId == RootTask or ev.taskId == taskId:
       result[ev.signalLabel] = ev.writeRepr
@@ -234,7 +234,7 @@ proc stateAtTime*(j: Journal, wall: Time,
   ## which we have unconditionally.
   for ev in j.events:
     if ev.wall > wall: continue
-    if ev.kind != ekStateWrite: continue
+    if ev.kind != ekSignalWrite: continue
     if ev.signalLabel.len == 0: continue
     if taskId == RootTask or ev.taskId == taskId:
       result[ev.signalLabel] = ev.writeRepr

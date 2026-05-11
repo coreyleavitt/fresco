@@ -18,7 +18,7 @@ suite "journal: signal writes":
   test "signal.set writes a StateWrite event with label and repr":
     let count = signal(0, label = "count")
     count.set(5)
-    let writes = globalJournal.byKind(ekStateWrite)
+    let writes = globalJournal.byKind(ekSignalWrite)
     check writes.len == 1
     check writes[0].signalLabel == "count"
     check writes[0].writeRepr == "5"
@@ -29,7 +29,7 @@ suite "journal: signal writes":
       titlex = "hi"
     countx := 7
     titlex := "world"
-    let writes = globalJournal.byKind(ekStateWrite)
+    let writes = globalJournal.byKind(ekSignalWrite)
     check writes.len == 2
     var labels: seq[string] = @[]
     for w in writes: labels.add w.signalLabel
@@ -41,7 +41,7 @@ suite "journal: signal writes":
     x.set(42)   # no change → no event
     x.set(7)    # change → 1 event
     x.set(7)    # no change → no event
-    check globalJournal.byKind(ekStateWrite).len == 1
+    check globalJournal.byKind(ekSignalWrite).len == 1
 
   test "writes inside a spawned task get the task's taskId":
     proc body() {.async: (raises: [Exception]).} =
@@ -51,7 +51,7 @@ suite "journal: signal writes":
         n.set(2)
       let m = spawn work()
       await m.wait()
-      let writes = globalJournal.byKind(ekStateWrite)
+      let writes = globalJournal.byKind(ekSignalWrite)
       check writes.len == 2
       for w in writes:
         check w.taskId == m.scope.taskId
@@ -66,7 +66,7 @@ suite "journal: signal writes":
         n.set(3)
       let m = spawn work()
       await m.wait()
-      let writes = globalJournal.byKind(ekStateWrite)
+      let writes = globalJournal.byKind(ekSignalWrite)
       check writes.len == 3
       check writes[1].parentId == writes[0].id
       check writes[2].parentId == writes[1].id

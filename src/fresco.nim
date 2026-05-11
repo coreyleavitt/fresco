@@ -80,7 +80,7 @@ export scope, signal, binding, context, speculative, animation, collection,
 
 # T4 — task
 import fresco/task/core
-import fresco/task/cls
+import fresco/cls
 import fresco/task/receive
 import fresco/task/parallel
 import fresco/task/mount

@@ -191,6 +191,14 @@ proc decode*(buf: string, finalize: bool = false):
       # Ctrl+letter (lowercase canonical).
       let letter = char(b.ord - 1 + ord('a'))
       result.events.add ctrlKey(letter); inc i
+    of 0x1C..0x1F:
+      # Ctrl-\ (0x1C), Ctrl-] (0x1D), Ctrl-^ (0x1E), Ctrl-_ (0x1F).
+      # ASCII convention: byte + 0x40 yields the printable character
+      # (0x1C → '\\', 0x1D → ']', 0x1E → '^', 0x1F → '_'). The earlier
+      # 0x01..0x1A range uses lowercase letters; this range uses the
+      # symbol characters per the standard control-byte mapping.
+      let symbol = char(b.ord + 0x40)
+      result.events.add ctrlKey(symbol); inc i
     else:
       # Printable / UTF-8.
       let need = utf8Len(b)

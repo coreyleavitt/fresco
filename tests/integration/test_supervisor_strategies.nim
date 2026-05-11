@@ -1,4 +1,4 @@
-## sOneForAll + sRestForOne strategies.
+## ssOneForAll + ssRestForOne strategies.
 
 import std/[unittest, strutils]
 import chronos
@@ -12,7 +12,7 @@ proc tick(): Future[void] {.async: (raises: [CancelledError]).} =
 
 suite "supervisor strategies":
 
-  test "sOneForAll: a single failure restarts every child":
+  test "ssOneForAll: a single failure restarts every child":
     proc body() {.async: (raises: [Exception]).} =
       var startsA = 0
       var startsB = 0
@@ -27,7 +27,7 @@ suite "supervisor strategies":
       proc childC(): Future[void] {.async.} =
         inc startsC
         await sleepAsync(500.milliseconds)
-      let sup = newSupervisor(strategy = sOneForAll,
+      let sup = newSupervisor(strategy = ssOneForAll,
                               maxRestarts = 10, within = 1.seconds)
       sup.addChild("a", lcTransient, childA)
       sup.addChild("b", lcTransient, childB)
@@ -42,7 +42,7 @@ suite "supervisor strategies":
       check startsC >= 2
     waitFor body()
 
-  test "sRestForOne: only the failing child and later siblings restart":
+  test "ssRestForOne: only the failing child and later siblings restart":
     proc body() {.async: (raises: [Exception]).} =
       var startsA = 0
       var startsB = 0
@@ -57,7 +57,7 @@ suite "supervisor strategies":
       proc childC(): Future[void] {.async.} =
         inc startsC
         await sleepAsync(500.milliseconds)
-      let sup = newSupervisor(strategy = sRestForOne,
+      let sup = newSupervisor(strategy = ssRestForOne,
                               maxRestarts = 10, within = 1.seconds)
       sup.addChild("a", lcTransient, childA)
       sup.addChild("b", lcTransient, childB)
@@ -71,7 +71,7 @@ suite "supervisor strategies":
       check startsC >= 2
     waitFor body()
 
-  test "sRestForOne preserves declaration order after a temporary child terminates":
+  test "ssRestForOne preserves declaration order after a temporary child terminates":
     # Regression: previously `s.children.del idx` was an unordered
     # swap-delete which silently reordered children. After any
     # temporary/clean exit, restForOne cascades operated on the
@@ -90,7 +90,7 @@ suite "supervisor strategies":
         inc startsC
         await sleepAsync(40.milliseconds)
         if startsC == 1: raise newException(IOError, "boom")
-      let sup = newSupervisor(strategy = sRestForOne,
+      let sup = newSupervisor(strategy = ssRestForOne,
                               maxRestarts = 10, within = 1.seconds)
       sup.addChild("a", lcTransient, childA)
       sup.addChild("b", lcTemporary, childB)   # exits cleanly → removed
@@ -105,7 +105,7 @@ suite "supervisor strategies":
       check startsC >= 2
     waitFor body()
 
-  test "sOneForAll: cascade rate-limits every restarting child":
+  test "ssOneForAll: cascade rate-limits every restarting child":
     # Regression for round-2 C3: previously only the originally-failing
     # child had its restartTimes bumped per cascade, so an all-children-
     # fail-on-init loop would bypass maxRestarts entirely. With the fix,
@@ -122,7 +122,7 @@ suite "supervisor strategies":
         inc startsB
         await sleepAsync(1.milliseconds)
         raise newException(IOError, "boom-b")
-      let sup = newSupervisor(strategy = sOneForAll,
+      let sup = newSupervisor(strategy = ssOneForAll,
                               maxRestarts = 3, within = 1.seconds)
       sup.addChild("a", lcPermanent, childA)
       sup.addChild("b", lcPermanent, childB)
@@ -143,7 +143,7 @@ suite "supervisor strategies":
   test "cascade does not journal cancelled siblings as failures":
     # Regression for round-3 C4: the L3 fix that journaled
     # CatchableError from cascaded await calls accidentally swallowed
-    # the cancellation case. Every sOneForAll cascade emitted N-1
+    # the cancellation case. Every ssOneForAll cascade emitted N-1
     # spurious "concurrent failure" entries.
     proc body() {.async: (raises: [Exception]).} =
       discard useJournal()
@@ -154,7 +154,7 @@ suite "supervisor strategies":
         await sleepAsync(500.milliseconds)
       proc childC(): Future[void] {.async.} =
         await sleepAsync(500.milliseconds)
-      let sup = newSupervisor(strategy = sOneForAll,
+      let sup = newSupervisor(strategy = ssOneForAll,
                               maxRestarts = 5, within = 1.seconds)
       sup.addChild("a", lcTransient, childA)
       sup.addChild("b", lcTransient, childB)
@@ -192,7 +192,7 @@ suite "supervisor strategies":
       check starts >= 3   # restarted past the first failure
     waitFor body()
 
-  test "sOneForOne (default) does not cascade":
+  test "ssOneForOne (default) does not cascade":
     proc body() {.async: (raises: [Exception]).} =
       var startsA = 0
       var startsB = 0

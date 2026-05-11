@@ -18,7 +18,7 @@
 import ../events
 import ../input
 import ../reactive/scope
-import ./cls
+import ../cls
 import ../journal/events as jev
 import ../journal/log
 

@@ -40,6 +40,12 @@ proc cancel*(m: Mount) {.gcsafe, raises: [].} =
   ## Cancel the task. Idempotent. Triggers scope dispose via the
   ## future-completion callback. Swallows any exception from cleanup
   ## closures so cancel is safe to call from callback bodies.
+  ##
+  ## **Sync/async asymmetry:** `cancel` returns immediately. The scope
+  ## is disposed synchronously (cleanup closures run before this proc
+  ## returns), but the child future's cancellation request is async
+  ## (`cancelSoon`). A caller that needs the child to be fully halted
+  ## before proceeding must `await m.wait()` after cancel.
   if m == nil: return
   if not m.future.finished:
     m.future.cancelSoon()

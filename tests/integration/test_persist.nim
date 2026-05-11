@@ -55,7 +55,7 @@ suite "persist: round-trip":
       s
     check kinds == @[
       ekTaskSpawned, ekTaskCancelled, ekTaskFailed,
-      ekStateWrite, ekKeyReceived, ekKeyConsumed,
+      ekSignalWrite, ekKeyReceived, ekKeyConsumed,
       ekSupervisorRestart, ekSupervisorEscalate, ekSupervisorTerminate
     ]
     close(j2)

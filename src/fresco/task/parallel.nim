@@ -15,7 +15,7 @@
 
 import chronos
 import ./core
-import ./cls
+import ../cls
 
 proc awaitParallel(mounts: seq[Mount]) {.task, async: (raises: [CatchableError]).} =
   ## Wait for every Mount. On first failure: cancel siblings, drain

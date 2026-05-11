@@ -26,7 +26,7 @@ type
     ekTaskCompleted
     ekTaskFailed
     ekTaskCancelled
-    ekStateWrite
+    ekSignalWrite
     ekKeyReceived
     ekKeyConsumed
     ekSupervisorRestart
@@ -50,7 +50,7 @@ type
       failureType*:    string         # exception type name
     of ekTaskCancelled:
       cancelReason*:   string
-    of ekStateWrite:
+    of ekSignalWrite:
       signalLabel*:    string         # signal identifier (or "")
       writeRepr*:      string         # repr-style value
     of ekKeyReceived, ekKeyConsumed:

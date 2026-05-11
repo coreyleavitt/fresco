@@ -56,7 +56,7 @@ The wedge is **kernel-plus-one-API**: solve the hard parts (raw-mode TTY, render
 | R8 | State substrate | **Journaled event log** as single substrate for state writes, spawns, receives, failures, supervisor decisions. State is left-fold projection. Reactive graph is incremental view maintenance over the log. |
 | R9 | Causality | Every event has a typed causal parent. Macro records links at spawn/await/emit sites. Causal DAG queryable from UI and tests. |
 | R10 | Capabilities | Capability set inferred per task from body primitives. Static enforcement that callers grant what's required via `provide`. |
-| R11 | Speculative scopes | `speculative:` block opens MVCC-style state branch. Children's writes go to a side-version; explicit `commit()` or `discard()`. Failure inside auto-rolls-back. |
+| R11 | Speculative scopes | `speculative:` block opens an optimistic-write branch with compensating-revert semantics: writes mutate the signal immediately AND notify observers, while a revert closure is recorded per write. `commit()` clears the reverts and the writes stick; falling out without commit (normal exit or exception) drains the reverts in reverse, restoring prior values and re-notifying. Observers therefore see intermediate states that may never commit — this is optimistic locking, not classical MVCC isolation. The trade-off keeps the implementation simple and lets effects re-render against speculative state, which matches the UI use case. |
 | R12 | Supervision | Dual surface: declarative `supervisor:` blocks (full OTP — `oneForOne` / `oneForAll` / `restForOne` / dynamic pools, lifecycle types, restart-rate windows) plus inline `spawn` with per-instance modifiers (`retry`, `catch`, `restart`). |
 | R13 | Supervision additions | (a) Per-exception-type `onError:` policies (typechecked against task's exception set); (b) every supervisor decision in the journal; (c) state-restoration policy per child (`replayJournal` / `replayJournalToCheckpoint` / `resetClean`). |
 | R14 | Context / DI | Unified **`provide T: v`** / **`use T`** subsumes both capabilities (markers) and services (values). Compile-time discharge along static supervisor paths; runtime fallback for dynamic spawns. Implicit region passing is a special case. |
@@ -79,7 +79,12 @@ src/fresco/
 
 Pure infrastructure. No user-facing API. Re-exported only as primitives for T2-T4. (Signal-handler helpers live alongside termios save/restore — there's no separate `signals.nim`.)
 
-**Allowed dependency exception:** `input.nim` imports `fresco/task/cls` for the continuation-local storage substrate. CLS is treated as a layer-0 cross-cutting concern (like `chronos` itself) rather than a T4-only feature — any async-suspending code, including T1's input pump, needs context preservation across `await`. The dependency direction T1 → cls is intentional; `cls` is the only T4 module T1 may depend on.
+**Allowed dependency exceptions:** `input.nim` (T1) and `hotkey.nim` (T4 but tier-mixed) import:
+
+- `fresco/cls` — the continuation-local storage substrate. CLS is layer-0 (like `chronos` itself); any async-suspending code needs context preservation across `await`. Located at `src/fresco/cls.nim`, not under any tier directory, to make the layering explicit.
+- `fresco/journal/{events,log}` — journal attribution for input events. Journals are layer-0 audit infrastructure; restricting them to T4 would mean T1 code can't record its own events.
+
+These are the only cross-tier deps; any new ones need DESIGN.md approval.
 
 ### Tier 2: Region + render
 

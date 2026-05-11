@@ -46,11 +46,20 @@ proc rollback*(scope: SpeculativeScope) {.gcsafe.} =
   ## Run all queued reverts in reverse order. Reverts trigger observer
   ## notifications whose own writes can push *new* reverts onto the
   ## same frame; we drain those too. Idempotent.
+  ##
+  ## A revert closure that raises `CatchableError` would leave state
+  ## half-rolled-back with no diagnostic — surface it on stderr so the
+  ## bug isn't silent. Defects propagate (the outer finally in the
+  ## `speculative:` template still restores `currentSpeculative`).
   {.cast(gcsafe).}:
     while scope.reverts.len > 0:
       let r = scope.reverts.pop()
       try: r()
-      except CatchableError: discard
+      except CatchableError as e:
+        try:
+          stderr.writeLine("fresco speculative revert raised: " &
+                           $e.name & ": " & e.msg)
+        except IOError: discard
     scope.committed = true
 
 template speculative*(body: untyped): SpeculativeScope =
