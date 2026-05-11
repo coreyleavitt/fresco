@@ -22,14 +22,21 @@ type
     scope*: Scope
     future*: Future[void]
 
-proc cancel*(m: Mount) {.gcsafe.} =
+var parallelCollector* {.threadvar.}: ptr seq[Mount]
+  ## When set, any `spawn` adds its Mount to the pointed-to seq so a
+  ## `parallel:` block can await them as a group. Lifetime-scoped by
+  ## the `parallel` template; do not touch directly.
+
+proc cancel*(m: Mount) {.gcsafe, raises: [].} =
   ## Cancel the task. Idempotent. Triggers scope dispose via the
-  ## future-completion callback.
+  ## future-completion callback. Swallows any exception from cleanup
+  ## closures so cancel is safe to call from callback bodies.
   if m == nil: return
   if not m.future.finished:
     m.future.cancelSoon()
   {.cast(gcsafe).}:
-    dispose(m.scope)
+    try: dispose(m.scope)
+    except Exception: discard
 
 proc wait*(m: Mount): Future[void] {.async: (raises: [CancelledError, CatchableError]).} =
   ## Wait for the task to complete. Propagates the task's exception
@@ -62,7 +69,8 @@ proc wireLifecycle(m: Mount) =
 template spawn*(call: untyped): Mount =
   ## Open a child scope, run the async `call` inside it, return a Mount.
   ## The call must be an invocation of an `{.async.}` proc returning
-  ## `Future[void]`.
+  ## `Future[void]`. If we're inside a `parallel:` block, the Mount is
+  ## also added to the block's collector for group-await.
   block:
     let childScope = newScope(currentScope)
     var fut: Future[void]
@@ -70,4 +78,6 @@ template spawn*(call: untyped): Mount =
       fut = call
     let m = Mount(scope: childScope, future: fut)
     wireLifecycle(m)
+    if parallelCollector != nil:
+      parallelCollector[].add m
     m
