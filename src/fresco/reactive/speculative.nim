@@ -49,12 +49,14 @@ proc recordRevert*(p: proc() {.closure.}) {.gcsafe.} =
       currentSpeculative.reverts.add p
 
 proc rollback*(scope: SpeculativeScope) {.gcsafe.} =
-  ## Run all queued reverts in reverse order. Idempotent.
+  ## Run all queued reverts in reverse order. Reverts trigger observer
+  ## notifications whose own writes can push *new* reverts onto the
+  ## same frame; we drain those too. Idempotent.
   {.cast(gcsafe).}:
-    for i in countdown(scope.reverts.high, 0):
-      try: scope.reverts[i]()
+    while scope.reverts.len > 0:
+      let r = scope.reverts.pop()
+      try: r()
       except Exception: discard
-    scope.reverts.setLen(0)
     scope.committed = true
 
 template speculative*(body: untyped): SpeculativeScope =
@@ -66,6 +68,13 @@ template speculative*(body: untyped): SpeculativeScope =
     let frame = SpeculativeScope(parent: prevSpec)
     currentSpeculative = frame
     template commit() {.inject, used.} =
+      # If we're nested, promote our reverts into the parent frame so
+      # an outer rollback still undoes our writes. MVCC: an inner
+      # commit only means "merge into the parent branch", not "make
+      # canonical regardless of outer outcome."
+      if frame.parent != nil:
+        for r in frame.reverts:
+          frame.parent.reverts.add r
       frame.committed = true
       frame.reverts.setLen(0)
     template discardSpeculative() {.inject, used.} =

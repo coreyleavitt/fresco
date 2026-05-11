@@ -85,3 +85,36 @@ suite "speculative":
       count := 7
     # After rollback, observer should be informed of the final state.
     check seenVals[^1] == 0
+
+  test "observer-triggered writes during rollback are themselves rolled back":
+    # Regression for review #11: rollback fires reverts → notify
+    # observers → effects may signal.set. Previously the new reverts
+    # pushed during rollback iteration were dropped (setLen(0) after
+    # the for-loop). Now rollback drains until reverts is empty.
+    let a = signal(0)
+    let b = signal(0)
+    discard createRoot:
+      createEffect proc() =
+        # When `a` changes, this effect mirrors it into `b`.
+        b.set(a())
+    discard speculative:
+      a := 5      # → effect fires, b := 5 inside the same frame
+    # After rollback both a and b must return to 0.
+    check a() == 0
+    check b() == 0
+
+  test "nested: outer rollback undoes inner commit even with no outer writes":
+    # Regression for review #12: previously inner commit cleared its
+    # own reverts without promoting them. If the outer made no writes
+    # of its own, outer.reverts was empty, so outer rollback was a
+    # no-op and the inner-committed writes survived. Now an inner
+    # commit promotes its reverts to the parent frame.
+    let x = signal(0)
+    discard speculative:
+      discard speculative:
+        x := 7
+        commit()
+      # x is 7 here; outer hasn't committed and has no writes of its own
+      check x() == 7
+    # Outer rolls back; the promoted revert restores x.
+    check x() == 0
