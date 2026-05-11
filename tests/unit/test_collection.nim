@@ -1,5 +1,8 @@
+{.experimental: "callOperator".}
+
 import std/unittest
 import fresco/reactive/scope
+import fresco/reactive/signal
 import fresco/reactive/collection
 
 suite "CollectionSignal":
@@ -99,3 +102,41 @@ suite "CollectionSignal":
     c.push(7)
     check sumA == 10
     check sumB == 10
+
+  test "plain reactive observers re-fire on collection changes":
+    # Regression: CollectionSignal previously wasn't Subscribable and
+    # never called notify(), so `createEffect` / `bindRows` reading
+    # the items never re-ran on push/pop/etc.
+    let c = collection(@["a"])
+    var runs = 0
+    var lastLen = 0
+    discard createRoot:
+      createEffect proc() =
+        lastLen = c.len
+        inc runs
+    check runs == 1
+    check lastLen == 1
+    c.push("b")
+    check runs == 2
+    check lastLen == 2
+    c.push("c")
+    check runs == 3
+    check lastLen == 3
+    c.pop()
+    check runs == 4
+    check lastLen == 2
+
+  test "plain observers fire on every delta kind":
+    let c = collection(@[1, 2, 3])
+    var runs = 0
+    discard createRoot:
+      createEffect proc() =
+        discard c.get()
+        inc runs
+    let baseline = runs
+    c.push(4);     check runs == baseline + 1
+    c.insert(0, 0); check runs == baseline + 2
+    c.setAt(1, 99); check runs == baseline + 3
+    c.remove(0);    check runs == baseline + 4
+    c.set(@[1, 2]); check runs == baseline + 5
+    c.clear();      check runs == baseline + 6

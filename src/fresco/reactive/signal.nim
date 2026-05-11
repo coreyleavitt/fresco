@@ -72,7 +72,7 @@ proc get*[T](s: Signal[T]): T {.gcsafe.} =
 proc `()`*[T](s: Signal[T]): T {.gcsafe.} = s.get()
   ## Sugar — `count()` reads + tracks; same as `count.get()`.
 
-proc notify(s: Subscribable) {.gcsafe, raises: [].} =
+proc notify*(s: Subscribable) {.gcsafe, raises: [].} =
   ## Snapshot observers first; a re-run may mutate the list.
   {.cast(gcsafe).}:
     let snap = s.observers

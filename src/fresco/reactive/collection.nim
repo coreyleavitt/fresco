@@ -40,7 +40,7 @@ type
 
   DeltaHandler*[T] = proc(d: Delta[T]) {.closure.}
 
-  CollectionSignal*[T] = ref object
+  CollectionSignal*[T] = ref object of Subscribable
     items*: seq[T]
     label*: string
     deltaObservers*: seq[DeltaHandler[T]]
@@ -65,19 +65,36 @@ proc onDelta*[T](c: CollectionSignal[T], handler: DeltaHandler[T]) =
     if idx >= 0: captured.deltaObservers.del idx
 
 proc emit[T](c: CollectionSignal[T], d: Delta[T]) =
+  ## Fan out to delta-aware handlers AND notify plain reactive
+  ## observers so a `createEffect`/`bindRows` that read `c.items` or
+  ## `c.len` re-runs on any mutation. The two channels are independent:
+  ## handlers see typed deltas, computations see "something changed."
   let snap = c.deltaObservers
   for h in snap:
     try: h(d)
     except Exception: discard
+  notify(Subscribable(c))
+
+proc trackCollectionRead[T](c: CollectionSignal[T]) =
+  ## Subscribe the current Computation (if any) to this collection.
+  ## Called from `get` / `len` so plain reactive code that reads
+  ## these naturally tracks them.
+  if currentComputation == nil or currentComputation.disposed: return
+  if currentComputation notin Subscribable(c).observers:
+    Subscribable(c).observers.add currentComputation
+    currentComputation.sources.add Subscribable(c)
 
 # --- Read ----------------------------------------------------------------
 
 proc get*[T](c: CollectionSignal[T]): seq[T] =
   ## Snapshot of the current items. Returns by value; callers don't
   ## mutate this — use the delta-emitting ops below.
+  trackCollectionRead(c)
   c.items
 
-proc len*[T](c: CollectionSignal[T]): int = c.items.len
+proc len*[T](c: CollectionSignal[T]): int =
+  trackCollectionRead(c)
+  c.items.len
 
 # --- Delta-emitting ops --------------------------------------------------
 
