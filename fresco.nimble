@@ -35,6 +35,7 @@ task test, "run all tests":
     "tests/integration/test_termios_pty.nim",
     "tests/integration/test_input_pty.nim",
     "tests/integration/test_task.nim",
+    "tests/integration/test_receive_pty.nim",
   ]
   for t in unitTests & integrationTests:
     exec "nim r --hints:off --warnings:off --path:src " & t
