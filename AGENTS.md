@@ -1,10 +1,10 @@
 # AGENTS.md
 
-Conventions for AI coding agents working on this repository (we dogfood `recall` here, so these conventions apply to us too).
+Conventions for AI coding agents working on this repository (we dogfood `amoxtli` here, so these conventions apply to us too).
 
 ## Project at a glance
 
-`fresco` is a Nim terminal-UI kernel — raw-mode input event stream + region rendering + composable widgets. Built as a sibling library to `recall` but designed to be useful to any Nim CLI. See [DESIGN.md](DESIGN.md) for the locked architecture.
+`fresco` is a Nim terminal-UI kernel — raw-mode input + region rendering + a reactive task system (T4). T1-T3 are pure infrastructure; T4 is the only user-facing API. Built as a sibling library to `amoxtli` (its primary consumer) but designed to be useful to any Nim CLI that needs a serious reactive surface. See [DESIGN.md](DESIGN.md) for the locked architecture.
 
 - Language: **Nim 2.x**. Async via **chronos** (not std/asyncdispatch). GC: ARC/ORC.
 - Rendering: ANSI escape sequences (no curses).
@@ -24,7 +24,7 @@ Conventions for AI coding agents working on this repository (we dogfood `recall`
 
 ## Test strategy
 
-Three tiers, mirroring recall's approach:
+Three tiers, mirroring amoxtli's approach:
 
 1. **Unit** (`tests/unit/test_*.nim`) — pure functions: ANSI builder, key event decoder, region geometry. Every save.
 2. **Integration** (`tests/integration/test_*.nim`) — drive real termios + a PTY pair. Verify input/output without needing a human terminal. Every PR.
@@ -34,13 +34,14 @@ Three tiers, mirroring recall's approach:
 
 - Conventional commits: `feat:`, `fix:`, `refactor:`, `docs:`, `infra:`, `chore:`.
 - One issue per PR; reference the issue number.
-- Pre-1.0: commit direct to main; no PRs (matches recall's v0 phase).
+- Pre-1.0: commit direct to main; no PRs (matches amoxtli's v0 phase).
 - No Co-Authored-By trailers, no "Generated with…" footers.
 
 ## What not to do
 
 - **Don't introduce a second async runtime.** chronos only.
-- **Don't add a VDOM** until something needs it. Region-based rendering is the v0 contract.
+- **Don't add a VDOM, ever.** Reactivity is signals + compile-time dataflow over the existing per-row diff renderer. See DESIGN.md R1/R4.
+- **Don't ship a parallel imperative-widget surface.** T4 is the only user-facing API.
 - **Don't shell out to curses or termcap.** Pure ANSI.
 - **Don't write to stdout** from library code. stderr or via caller-supplied streams.
 - **Don't ship without crash-safe terminal restoration.** A bug that leaves the user's terminal in raw mode is the worst class of defect this library can have.
