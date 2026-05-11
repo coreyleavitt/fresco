@@ -27,14 +27,14 @@ import ../journal/log
 
 type
   Computation* = ref object
-    run: proc() {.closure.}
-    sources: seq[Subscribable]
+    run*: proc() {.closure.}
+    sources*: seq[Subscribable]
     disposed*: bool
 
-  Subscribable = ref object of RootObj
+  Subscribable* = ref object of RootObj
     ## Erased base for "anything observable" so a Computation can
     ## hold a heterogeneous list of sources without generic infection.
-    observers: seq[Computation]
+    observers*: seq[Computation]
 
   Signal*[T] = ref object of Subscribable
     val: T
@@ -46,6 +46,17 @@ var currentComputation* {.threadvar.}: Computation
 
 proc signal*[T](initial: T, label = ""): Signal[T] =
   Signal[T](val: initial, label: label)
+
+proc subscribe*(s: Subscribable, c: Computation) {.gcsafe.} =
+  ## Explicit static subscription: wire `c` as an observer of `s`
+  ## without going through the runtime `currentComputation` stack.
+  ## Used by the typed-macro layer (`tracked:`) to emit compile-time-
+  ## known dep edges.
+  {.cast(gcsafe).}:
+    if c.disposed: return
+    if c notin s.observers:
+      s.observers.add c
+      c.sources.add s
 
 proc trackRead(s: Subscribable) {.gcsafe.} =
   {.cast(gcsafe).}:
