@@ -21,6 +21,7 @@
 {.experimental: "callOperator".}
 
 import ./scope
+import ./speculative
 import ../journal/events
 import ../journal/log
 
@@ -72,6 +73,15 @@ proc notify(s: Subscribable) {.gcsafe, raises: [].} =
 proc set*[T](s: Signal[T], newVal: T) {.gcsafe, raises: [].} =
   when compiles(s.val == newVal):
     if s.val == newVal: return
+  # Push a revert into the active speculative frame, if any. Captures
+  # the prior value by closure so a rollback restores it AND notifies
+  # observers so dependent effects re-run.
+  if currentSpeculative != nil and not currentSpeculative.committed:
+    let captured = s
+    let prior = s.val
+    recordRevert proc() =
+      captured.val = prior
+      notify(captured)
   s.val = newVal
   {.cast(gcsafe).}:
     try:

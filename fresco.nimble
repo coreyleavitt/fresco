@@ -35,6 +35,7 @@ task test, "run all tests":
     "tests/unit/test_dsl.nim",
     "tests/unit/test_aggregate_import.nim",
     "tests/unit/test_journal.nim",
+    "tests/unit/test_speculative.nim",
   ]
   let integrationTests = @[
     "tests/integration/test_termios_pty.nim",
