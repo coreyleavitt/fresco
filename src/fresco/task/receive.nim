@@ -1,5 +1,4 @@
 ## Selective `receive` — pattern-matched input dispatch.
-import std/tables
 ##
 ##   case (await receive(stream)):
 ##     Char('+'):   count.set(count() + 1)
@@ -16,10 +15,9 @@ import std/tables
 ## `KeyEvent` shape produced by `stream.nextKey()`. Capture identifiers
 ## (`Char(c)`, `Ctrl(c)`, `Alt(c)`) bind a local `let` in the arm body.
 ##
-## v2.0 scope: core patterns + wildcard. `after Duration:` timeout arms
-## land in a follow-up commit together with exhaustiveness checking.
+## Arms can also include `after Duration: body` to time out the receive.
 
-import std/[macros, sets, unicode]
+import std/[macros, sets, tables, unicode]
 import chronos
 import ../events
 import ../input

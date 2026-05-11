@@ -145,5 +145,5 @@ suite "journal: supervisor":
       await sup.run()
       let terms = globalJournal.byKind(ekSupervisorTerminate)
       check terms.len == 1
-      check terms[0].termName == "one"
+      check terms[0].terminateName == "one"
     waitFor body()

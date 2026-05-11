@@ -33,7 +33,7 @@ proc isSignalRead(n: NimNode): bool =
   var t: NimNode
   try:
     t = receiver.getTypeInst()
-  except: return false
+  except CatchableError: return false
   if t == nil or t.kind != nnkBracketExpr or t.len < 1: return false
   t[0].kind == nnkSym and $t[0] == "Signal"
 

@@ -15,7 +15,7 @@
 ## proc invocation. The supervisor calls the factory each time it
 ## (re)starts the child.
 
-import std/[macros, sequtils]
+import std/macros
 import chronos
 import ./core
 import ../reactive/scope

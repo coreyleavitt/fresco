@@ -133,7 +133,7 @@ proc onReadable(udata: pointer) {.gcsafe, raises: [].} =
   if s.pending.len > 0 and s.pending[0] == '\x1b':
     s.escWaiter = finalizeEsc(s)
 
-proc newInputStream*(fd: cint = cint(0),
+proc newInputStream*(fd: cint = STDIN_FILENO,
                      queueSize: int = 0,
                      escTimeout = DefaultEscTimeout): InputStream =
   ## `fd` defaults to STDIN. `queueSize = 0` is unbounded.

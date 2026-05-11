@@ -16,7 +16,6 @@
 ## doesn't corrupt the rest).
 
 import std/[json, options, os, times]
-import chronos
 import ./events
 import ./log
 
@@ -64,7 +63,7 @@ proc toJson*(e: Event): JsonNode =
     result["escalateName"]   = %e.escalateName
     result["escalateReason"] = %e.escalateReason
   of ekSupervisorTerminate:
-    result["termName"] = %e.termName
+    result["terminateName"] = %e.terminateName
 
 proc parseKind(s: string): Option[EventKind] =
   for k in EventKind:
@@ -104,7 +103,7 @@ proc fromJson*(n: JsonNode): Option[Event] =
     e.escalateName   = n{"escalateName"}.getStr("")
     e.escalateReason = n{"escalateReason"}.getStr("")
   of ekSupervisorTerminate:
-    e.termName = n{"termName"}.getStr("")
+    e.terminateName = n{"terminateName"}.getStr("")
   some(e)
 
 # --- File-backed Journal -------------------------------------------------

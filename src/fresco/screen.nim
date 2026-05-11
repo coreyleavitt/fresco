@@ -49,13 +49,13 @@ type
     renderer*: Renderer
     regions*: seq[Region]
 
-proc newScreen*(height, width: int, fd: cint = cint(2)): Screen =
+proc newScreen*(height, width: int, fd: cint = STDERR_FILENO): Screen =
   ## Explicit-size constructor. Used by tests and any caller that
   ## already knows the dimensions; bypasses TIOCGWINSZ.
   Screen(fd: fd, height: height, width: width,
          renderer: newRenderer(height, width))
 
-proc newScreen*(fd: cint = cint(2)): Screen =
+proc newScreen*(fd: cint = STDERR_FILENO): Screen =
   let (h, w) = queryWinsize(fd)
   newScreen(h, w, fd)
 

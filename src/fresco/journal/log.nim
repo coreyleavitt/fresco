@@ -10,7 +10,7 @@
 ## the log forward up to an observation cursor to reconstruct state
 ## at any historical point.
 
-import std/[times, sequtils]
+import std/[tables, times, sequtils]
 import chronos
 import ./events
 
@@ -114,7 +114,7 @@ proc logSupervisorEscalate*(j: Journal, taskId: TaskId, parentId: EventId,
 proc logSupervisorTerminate*(j: Journal, taskId: TaskId, parentId: EventId,
                              name: string): EventId =
   var ev = baseEvent(ekSupervisorTerminate, taskId, parentId)
-  ev.termName = name
+  ev.terminateName = name
   j.append(ev)
 
 # --- Query API -----------------------------------------------------------
@@ -135,8 +135,6 @@ proc find*(j: Journal, id: EventId): Event =
   for e in j.events:
     if e.id == id: return e
   raise newException(KeyError, "no event with id " & $id)
-
-import std/tables
 
 proc lastWritesByLabel*(j: Journal, taskId: TaskId): Table[string, Event] =
   ## For a given task, return the most-recent `ekStateWrite` event per

@@ -62,7 +62,7 @@ type
       escalateName*:   string
       escalateReason*: string
     of ekSupervisorTerminate:
-      termName*:       string
+      terminateName*:       string
 
 # --- Distinct-type plumbing ----------------------------------------------
 

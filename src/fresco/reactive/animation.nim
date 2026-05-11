@@ -14,7 +14,6 @@
 
 import std/math
 import chronos
-import ./scope
 import ./signal
 
 type
