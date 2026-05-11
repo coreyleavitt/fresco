@@ -40,8 +40,8 @@ type
   Region* = ref object
     screen*: Screen
     row*, col*, height*, width*: int
-    target: seq[string]
-    pending: bool
+    target*: seq[string]
+    pending*: bool
 
   Screen* = ref object
     fd*: cint
