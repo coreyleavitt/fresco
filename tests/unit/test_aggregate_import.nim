@@ -1,0 +1,31 @@
+## Verify that `import fresco` brings in the user-facing surface.
+
+{.experimental: "callOperator".}
+
+import std/[unittest, unicode]
+import fresco
+
+suite "aggregate import":
+
+  test "core types exported":
+    check Region is type
+    check Screen is type
+    check KeyEvent is type
+    check InputStream is type
+    check Signal[int] is type
+    check Mount is type
+    check Supervisor is type
+
+  test "core constructors exported":
+    discard signal(0)
+    discard newScreen(5, 10)
+    discard charKey(Rune('x'))
+    discard simple(kEnter)
+    discard ctrlKey('c')
+    discard newSupervisor()
+
+  test "DSL exports compile":
+    state:
+      count = 0
+    count := 1
+    check count() == 1
