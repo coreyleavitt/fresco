@@ -77,6 +77,30 @@ suite "journal: input":
       dispose(sc)
     waitFor body()
 
+  test "hotkey-consumed events attribute to the registering scope's task":
+    proc body() {.async: (raises: [Exception]).} =
+      let (master, slave) = openPtyPair()
+      let stream = newInputStream(slave)
+      fresco_input.start(stream)
+      defer:
+        fresco_input.stop(stream)
+        discard close(master); discard close(slave)
+
+      let sc = newScope()
+      sc.taskId = TaskId.fresh()
+      let owningTid = sc.taskId
+      withScope(sc):
+        hotkey stream, ctrlKey('q'):
+          discard
+
+      writeAll(master, "\x11")
+      await sleepAsync(30.milliseconds)
+      let consumed = globalJournal.byKind(ekKeyConsumed)
+      check consumed.len == 1
+      check consumed[0].taskId == owningTid     # not whatever's current at fire
+      dispose(sc)
+    waitFor body()
+
 suite "journal: supervisor":
 
   setup:

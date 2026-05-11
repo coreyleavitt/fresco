@@ -61,3 +61,8 @@ import fresco/task/mount
 import fresco/task/hotkey
 import fresco/task/supervisor
 export core, receive, parallel, mount, hotkey, supervisor
+
+# T4 — journal (v2.1)
+import fresco/journal/events as journal_events
+import fresco/journal/log    as journal_log
+export journal_events, journal_log

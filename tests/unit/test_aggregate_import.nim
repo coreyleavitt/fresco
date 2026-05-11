@@ -15,6 +15,10 @@ suite "aggregate import":
     check Signal[int] is type
     check Mount is type
     check Supervisor is type
+    check Journal is type
+    check Event is type
+    check TaskId is type
+    check EventId is type
 
   test "core constructors exported":
     discard signal(0)
@@ -23,6 +27,7 @@ suite "aggregate import":
     discard simple(kEnter)
     discard ctrlKey('c')
     discard newSupervisor()
+    discard newJournal()
 
   test "DSL exports compile":
     signals:
