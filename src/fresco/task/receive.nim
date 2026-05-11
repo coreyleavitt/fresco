@@ -19,7 +19,7 @@ import std/tables
 ## v2.0 scope: core patterns + wildcard. `after Duration:` timeout arms
 ## land in a follow-up commit together with exhaustiveness checking.
 
-import std/[macros, unicode]
+import std/[macros, sets, unicode]
 import chronos
 import ../events
 import ../input
@@ -131,6 +131,39 @@ proc isAfterArm(arm: NimNode): bool =
   let head = arm[0]
   head.kind == nnkIdent and $head == "after"
 
+const allKeyKinds = [
+  "kChar", "kEnter", "kTab", "kBackspace", "kEscape",
+  "kArrowUp", "kArrowDown", "kArrowLeft", "kArrowRight",
+  "kHome", "kEnd", "kPageUp", "kPageDown", "kDelete", "kInsert",
+  "kF1", "kF2", "kF3", "kF4", "kF5", "kF6",
+  "kF7", "kF8", "kF9", "kF10", "kF11", "kF12",
+  "kCtrl", "kAlt",
+]
+
+proc kindCoveredByArm(arm: NimNode): string =
+  ## If this arm "fully covers" a KeyKind (no literal constraint),
+  ## return the kind name. Otherwise return "" (partial / not-covering).
+  ## Wildcard arms return a sentinel "*".
+  if arm.kind notin {nnkCall, nnkCommand}: return ""
+  if arm.len == 2 and arm[0].kind == nnkIdent:
+    let name = $arm[0]
+    if name == "_": return "*"
+    let k = atomKindFor(name)
+    if k.len > 0: return k
+    return ""
+  if arm.len == 3 and arm[0].kind == nnkIdent:
+    let ctor = $arm[0]
+    let arg = arm[1]
+    # Only a capture (identifier) is fully-covering; a literal pins
+    # one specific char.
+    if arg.kind == nnkIdent:
+      case ctor
+      of "Char": return "kChar"
+      of "Ctrl": return "kCtrl"
+      of "Alt":  return "kAlt"
+      else: discard
+  return ""
+
 macro receive*(stream: untyped, body: untyped): untyped =
   ## Block until the next KeyEvent arrives on `stream`; dispatch to
   ## the first matching arm. Returns the value of the arm's body
@@ -144,6 +177,8 @@ macro receive*(stream: untyped, body: untyped): untyped =
   var elseBody: NimNode = nil
   var afterDur: NimNode = nil
   var afterBody: NimNode = nil
+  var covered = initHashSet[string]()
+  var hasWildcard = false
 
   for arm in body:
     if isAfterArm(arm):
@@ -152,6 +187,9 @@ macro receive*(stream: untyped, body: untyped): untyped =
       afterDur = arm[1]
       afterBody = arm[^1]
       continue
+    let cov = kindCoveredByArm(arm)
+    if cov == "*": hasWildcard = true
+    elif cov.len > 0: covered.incl cov
     let (cond, armBody) = compileArm(evSym, arm)
     if cond.kind == nnkIntLit and cond.intVal != 0:
       elseBody = armBody
@@ -159,6 +197,15 @@ macro receive*(stream: untyped, body: untyped): untyped =
       if chain == nil:
         chain = newNimNode(nnkIfExpr)
       chain.add newTree(nnkElifBranch, cond, armBody)
+
+  if not hasWildcard:
+    var missing: seq[string] = @[]
+    for k in allKeyKinds:
+      if k notin covered: missing.add k
+    if missing.len > 0 and missing.len < allKeyKinds.len:
+      hint("receive: no `_:` arm and some KeyKinds are uncovered — " &
+           "matching keys will be silently dropped. " &
+           "Uncovered: " & $missing)
 
   if chain == nil:
     chain = newNimNode(nnkIfExpr)
