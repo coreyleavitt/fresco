@@ -96,3 +96,41 @@ suite "persist: round-trip":
     let next = EventId.fresh()
     check uint64(next) > loadedMax
     close(j2)
+
+suite "persist: edge cases":
+
+  test "openJournal with bare relative filename doesn't crash":
+    # Previously: parentDir("journal.log") == "" → createDir("") raised.
+    let cwd = getCurrentDir()
+    let tmpdir = getTempDir() / ("fresco-bare-" & $getCurrentProcessId())
+    createDir(tmpdir)
+    defer: removeDir(tmpdir)
+    setCurrentDir(tmpdir)
+    defer: setCurrentDir(cwd)
+    let j = openJournal("bare-name.log")
+    close(j)
+    check fileExists(tmpdir / "bare-name.log")
+
+  test "bumpAfterLoad is O(1) advance, not O(maxId)":
+    # Previously: a high maxId would loop fresh() that many times,
+    # potentially hanging startup. Just verify the load is fast and
+    # the next fresh() exceeds the loaded max.
+    let path = tempPath()
+    defer: discard tryRemoveFile(path)
+
+    block:
+      let j = openJournal(path)
+      let t = TaskId.fresh()
+      # Burn a few thousand ids before our recorded event.
+      for _ in 0 ..< 5000: discard EventId.fresh()
+      discard j.logStateWrite(t, NoEvent, "x", "high")
+      close(j)
+
+    let started = epochTime()
+    let j2 = openJournal(path)
+    let elapsed = epochTime() - started
+    # Even with id ~5001, advance is constant-time — well under 1s.
+    check elapsed < 0.5
+    let next = EventId.fresh()
+    check uint64(next) > uint64(j2.events[^1].id)
+    close(j2)

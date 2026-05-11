@@ -24,14 +24,15 @@ import ./log
 
 proc bumpAfterLoad*(j: Journal) =
   ## Ensure new events allocated after loading don't collide with ids
-  ## already in the journal. Walks all events for the maximum id.
-  var maxEvt: uint64 = 0
-  var maxTsk: uint32 = 0
+  ## already in the journal. O(n) over events to find the max; O(1) to
+  ## advance the id generators.
+  var maxEvt = EventId(0)
+  var maxTsk = TaskId(0)
   for e in j.events:
-    if uint64(e.id)    > maxEvt: maxEvt = uint64(e.id)
-    if uint32(e.taskId) > maxTsk: maxTsk = uint32(e.taskId)
-  for _ in 1 .. int(maxEvt): discard EventId.fresh()
-  for _ in 1 .. int(maxTsk): discard TaskId.fresh()
+    if uint64(e.id) > uint64(maxEvt): maxEvt = e.id
+    if uint32(e.taskId) > uint32(maxTsk): maxTsk = e.taskId
+  EventId.bumpFresh(maxEvt)
+  TaskId.bumpFresh(maxTsk)
 
 # --- Serialization -------------------------------------------------------
 
@@ -129,7 +130,8 @@ proc openJournal*(path: string): PersistentJournal =
       let ev = fromJson(parsed)
       if ev.isSome: result.events.add ev.get
     bumpAfterLoad(result)
-  createDir(parentDir(path))
+  let parent = parentDir(path)
+  if parent.len > 0: createDir(parent)
   result.file = open(path, fmAppend)
 
 proc close*(j: PersistentJournal) =

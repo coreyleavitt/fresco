@@ -89,3 +89,12 @@ proc fresh*(_: typedesc[EventId]): EventId =
 proc fresh*(_: typedesc[TaskId]): TaskId =
   inc nextTaskId
   TaskId(nextTaskId)
+
+proc bumpFresh*(_: typedesc[EventId], floor: EventId) =
+  ## Ensure the next `EventId.fresh()` returns at least `floor + 1`.
+  ## Used by the persistence layer to continue id allocation past
+  ## the maximum seen in a loaded journal.
+  if uint64(floor) > nextEventId: nextEventId = uint64(floor)
+
+proc bumpFresh*(_: typedesc[TaskId], floor: TaskId) =
+  if uint32(floor) > nextTaskId: nextTaskId = uint32(floor)
