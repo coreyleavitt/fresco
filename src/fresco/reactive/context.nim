@@ -26,6 +26,12 @@ proc typeMarker*[T](_: typedesc[T]): pointer =
   ## Stable unique key per type T. The `{.global.}` storage gives one
   ## ref per instantiation of this generic — different `T`s get
   ## different markers regardless of `$T` collisions.
+  ##
+  ## Lazy init is *not* thread-safe: two threads first-touching the
+  ## same `T` could race and create distinct refs. fresco is
+  ## single-dispatcher per design, so this hasn't bitten anyone, but
+  ## if you need cross-thread context sharing, pre-warm the markers
+  ## from a single thread before any worker starts.
   var marker {.global.}: TypeMarkerObj
   if marker == nil: marker = TypeMarkerObj()
   cast[pointer](marker)

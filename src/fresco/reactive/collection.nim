@@ -73,6 +73,9 @@ proc emit[T](c: CollectionSignal[T], d: Delta[T]) =
   for h in snap:
     try: h(d)
     except Exception: discard
+      # User-supplied delta handler — same swallow rationale as
+      # signal.notify: a faulty observer shouldn't break siblings
+      # or propagate out through the mutating call.
   notify(Subscribable(c))
 
 proc trackCollectionRead[T](c: CollectionSignal[T]) =

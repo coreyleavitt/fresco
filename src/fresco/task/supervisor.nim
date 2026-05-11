@@ -141,6 +141,8 @@ proc run*(s: Supervisor) {.task, async: (raises: [CatchableError]).} =
           policyAction = child.spec.onError(err)
           policyFired = true
         except Exception:
+          # User-supplied ErrorPolicy closure — if it raises, fall
+          # back to the lifecycle default (treat as policyFired=false).
           discard
 
     if policyFired and policyAction == eaTerminate:
@@ -248,6 +250,9 @@ proc run*(s: Supervisor) {.task, async: (raises: [CatchableError]).} =
             target.spec.name, target.restartTimes.len)
           if currentScope != nil: currentScope.lastEventId = id
         except Exception: discard
+          # Journal append wrapped in Exception because we're inside
+          # an `{.async: (raises: ...)}` body — any wider effect would
+          # leak through chronos's strict raises analysis.
 
       if target.spec.onRestart != nil and globalJournal != nil and
          target.mount != nil and target.mount.scope != nil:
@@ -302,6 +307,8 @@ macro supervisor*(name: untyped, body: untyped): untyped =
   ## `newSupervisor()`. `child(...)` calls become `addChild` calls.
   expectKind(body, nnkStmtList)
 
+  const KnownConfigKeys = ["strategy", "maxRestarts", "within"]
+
   var supInit = newCall(bindSym"newSupervisor")
   var addCalls: seq[NimNode] = @[]
 
@@ -310,6 +317,9 @@ macro supervisor*(name: untyped, body: untyped): untyped =
     of nnkAsgn:
       let key = stmt[0]
       let val = stmt[1]
+      if key.kind != nnkIdent or $key notin KnownConfigKeys:
+        error("supervisor: unknown config key `" & key.repr &
+              "` (expected one of " & $KnownConfigKeys & ")", key)
       supInit.add newTree(nnkExprEqExpr, key, val)
     of nnkCall:
       if stmt[0].kind == nnkIdent and $stmt[0] == "child":

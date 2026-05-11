@@ -40,6 +40,12 @@ const DefaultFPS* = 30
 var frameAnimations* {.threadvar.}: seq[Animation]
 var frameClockTask {.threadvar.}: Future[void]
 var frameInterval {.threadvar.}: Duration
+  ## All three are thread-locals tied to the chronos dispatcher that
+  ## first called `startFrameClock` (typically via `tween`). A `tween`
+  ## issued from a different thread joins a list no clock is ticking,
+  ## so its animation never advances. Single-dispatcher apps (the
+  ## fresco default) are unaffected. Cross-thread animation would
+  ## require a shared list + a per-thread clock — not yet implemented.
 
 proc applyEasing*(t: float, e: Easing): float =
   let t = clamp(t, 0.0, 1.0)

@@ -38,12 +38,22 @@ proc isSignalRead(n: NimNode): bool =
   t[0].kind == nnkSym and $t[0] == "Signal"
 
 const SyntheticKinds = {
+  # Compiler-inserted nodes that wrap user expressions during the
+  # typed pass. We skip their *subtrees* so a Signal[T] receiver
+  # carried inside an implicit conversion or range check doesn't
+  # produce a spurious match. Expand this set if Nim adds new
+  # synthetic kinds in future releases.
   nnkHiddenCallConv,
   nnkHiddenStdConv,
   nnkHiddenSubConv,
   nnkHiddenDeref,
   nnkHiddenAddr,
   nnkConv,
+  nnkChckRange,
+  nnkChckRangeF,
+  nnkChckRange64,
+  nnkStringToCString,
+  nnkCStringToString,
 }
 
 macro tracked*(body: typed): untyped =

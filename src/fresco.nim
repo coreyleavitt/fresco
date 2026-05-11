@@ -1,7 +1,19 @@
 ## fresco — terminal-UI kernel for Nim.
 ##
-## Single-import entry. See DESIGN.md for architecture. A typical
-## amoxtli-flavored app:
+## Single-import entry. See DESIGN.md for architecture.
+##
+## **Caller setup:** if you want to use the `count()` read sugar
+## (instead of `count.get()`), enable the experimental pragma in your
+## own module:
+##
+##   {.experimental: "callOperator".}
+##
+## Nim's experimental pragmas don't propagate from imported modules,
+## so enabling it inside fresco only lets fresco *define* the `()`
+## overload — call sites still need their own pragma. The qualified
+## `count.get()` form works without it.
+##
+## A typical amoxtli-flavored app:
 ##
 ##   import fresco
 ##   import chronos

@@ -129,14 +129,12 @@ proc isAfterArm(arm: NimNode): bool =
   let head = arm[0]
   head.kind == nnkIdent and $head == "after"
 
-const allKeyKinds = [
-  "kChar", "kEnter", "kTab", "kBackspace", "kEscape",
-  "kArrowUp", "kArrowDown", "kArrowLeft", "kArrowRight",
-  "kHome", "kEnd", "kPageUp", "kPageDown", "kDelete", "kInsert",
-  "kF1", "kF2", "kF3", "kF4", "kF5", "kF6",
-  "kF7", "kF8", "kF9", "kF10", "kF11", "kF12",
-  "kCtrl", "kAlt",
-]
+const allKeyKinds = block:
+  ## Derived from the `KeyKind` enum so adding a new key in events.nim
+  ## doesn't silently break exhaustiveness analysis here.
+  var s: seq[string] = @[]
+  for k in KeyKind: s.add $k
+  s
 
 proc kindCoveredByArm(arm: NimNode): string =
   ## If this arm "fully covers" a KeyKind (no literal constraint),

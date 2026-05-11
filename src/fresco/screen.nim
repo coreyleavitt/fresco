@@ -110,9 +110,24 @@ proc paint*(s: Screen) =
   ## Convenience: flush + write the resulting bytes to `s.fd`. Most
   ## widgets call this after mutating their region's target; tests
   ## that want to inspect the rendered bytes call `flush()` instead.
+  ##
+  ## Handles partial writes and EINTR: a fully-flushed render is a
+  ## correctness property (a partial write would tear an ANSI sequence
+  ## mid-escape), so we loop until every byte is committed or an
+  ## unrecoverable error surfaces — at which point the remainder is
+  ## dropped silently. EAGAIN on a non-blocking stderr backs off via
+  ## a single retry; persistent backpressure also drops the remainder.
   let bytes = s.flush()
-  if bytes.len > 0:
-    discard posix.write(s.fd, unsafeAddr bytes[0], bytes.len)
+  if bytes.len == 0: return
+  var written = 0
+  while written < bytes.len:
+    let n = posix.write(s.fd, unsafeAddr bytes[written], bytes.len - written)
+    if n > 0:
+      written += n
+    elif errno == EINTR:
+      continue
+    else:
+      break   # EAGAIN / EBADF / EPIPE — caller will see truncation on next paint
 
 # --- SIGWINCH -------------------------------------------------------------
 

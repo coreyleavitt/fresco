@@ -87,6 +87,9 @@ proc notify*(s: Subscribable) {.gcsafe, raises: [].} =
       if not c.disposed:
         try: c.run()
         except Exception: discard
+          # `c.run()` is a user closure — body can untyped-raise.
+          # Swallowing keeps notify deterministic; a faulty observer
+          # shouldn't break sibling observers or the writing task.
 
 proc set*[T](s: Signal[T], newVal: T) {.gcsafe, raises: [].} =
   when compiles(s.val == newVal):

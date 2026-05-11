@@ -41,6 +41,12 @@ type
     registered: bool
     escTimeout: Duration
     escWaiter: Future[void]
+    escGen: int
+      ## Monotonic generation; incremented every time onReadable spawns
+      ## or replaces an escWaiter. finalizeEsc captures the generation
+      ## at entry and only enqueues if it still matches at exit — this
+      ## prevents a phantom kEscape when sleepAsync wins the cancel
+      ## race against fresh disambiguating bytes.
     closing*: Future[void]
       ## Completes when stop() is called. nextKey awaits on this in
       ## parallel with the queue so pending awaiters wake on stream
@@ -106,11 +112,17 @@ proc removeFilter*(s: InputStream, handle: int) =
       return
 
 proc finalizeEsc(s: InputStream) {.task, async.} =
+  let myGen = s.escGen
   try:
     await sleepAsync(s.escTimeout)
   except CancelledError:
     return
   if s.closed: return
+  # If onReadable bumped the generation while we were sleeping, fresh
+  # bytes have arrived and we've been superseded. The new waiter (or
+  # onReadable itself) will handle whatever's pending; we must not
+  # emit a stale bare-ESC.
+  if s.escGen != myGen: return
   if s.pending.len > 0 and s.pending[0] == '\x1b':
     let (evs, consumed) = decode(s.pending, finalize = true)
     s.enqueue(evs)
@@ -138,6 +150,7 @@ proc onReadable(udata: pointer) {.gcsafe, raises: [].} =
     s.escWaiter.cancelSoon()
     s.escWaiter = nil
   if s.pending.len > 0 and s.pending[0] == '\x1b':
+    inc s.escGen
     s.escWaiter = finalizeEsc(s)
 
 proc newInputStream*(fd: cint = STDIN_FILENO,

@@ -144,20 +144,31 @@ proc openJournal*(path: string): PersistentJournal =
   ## bumps id generators. The returned journal appends every new
   ## event to the file as well as to memory.
   result = PersistentJournal(events: @[], path: path)
+  # Ensure the parent directory exists *before* attempting to read
+  # (lines() would raise IOError on a missing dir, and we want first-
+  # time opens against fresh paths to succeed).
+  let parent = parentDir(path)
+  if parent.len > 0: createDir(parent)
   if fileExists(path):
     var schemaMismatchCount = 0
-    for raw in lines(path):
-      if raw.len == 0: continue
-      let parsed =
-        try: parseJson(raw)
-        except JsonParsingError: nil
-      if parsed == nil: continue
-      let ev =
-        try: fromJson(parsed)
-        except JournalSchemaMismatch:
-          inc schemaMismatchCount
-          none(Event)
-      if ev.isSome: result.events.add ev.get
+    try:
+      for raw in lines(path):
+        if raw.len == 0: continue
+        let parsed =
+          try: parseJson(raw)
+          # Widen beyond JsonParsingError: malformed payloads can
+          # surface as IOError/ValueError on some inputs. The contract
+          # is "never crash openJournal on a corrupt line."
+          except CatchableError: nil
+        if parsed == nil: continue
+        let ev =
+          try: fromJson(parsed)
+          except JournalSchemaMismatch:
+            inc schemaMismatchCount
+            none(Event)
+        if ev.isSome: result.events.add ev.get
+    except CatchableError:
+      discard   # file vanished mid-read or similar — proceed with what we have
     if schemaMismatchCount > 0:
       try:
         stderr.writeLine("fresco: " & $schemaMismatchCount &
@@ -166,8 +177,6 @@ proc openJournal*(path: string): PersistentJournal =
                          " skipped due to schema-version mismatch")
       except IOError: discard
     bumpAfterLoad(result)
-  let parent = parentDir(path)
-  if parent.len > 0: createDir(parent)
   result.file = open(path, fmAppend)
 
 proc close*(j: PersistentJournal) =

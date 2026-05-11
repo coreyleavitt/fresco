@@ -100,6 +100,9 @@ macro region*(r: untyped, body: untyped): untyped =
     of "rows":
       if arm.len != 3:
         error("region: `rows A..B: body` expects one slice argument", arm)
+      if arm[1].kind != nnkInfix:
+        error("region: `rows` arm needs an HSlice (`A..B`, `A..<B`, " &
+              "`A..^B`) — got `" & arm[1].repr & "`", arm[1])
       let slice = resolveSliceEnds(r, arm[1])
       result.add quote do:
         bindRows(`r`, `slice`, `armBody`)

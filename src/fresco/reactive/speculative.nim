@@ -62,6 +62,17 @@ template speculative*(body: untyped): SpeculativeScope =
     let frame = SpeculativeScope(parent: prevSpec)
     currentSpeculative = frame
     template commit() {.inject, used.} =
+      ## End the speculative transaction: writes become canonical.
+      ## After `commit()` any further `signal.set` inside the same
+      ## `speculative:` block also sticks (no reverts are recorded),
+      ## so writes that happen after-commit-before-block-end are
+      ## logically part of the same canonical branch.
+      ##
+      ## Note: this template injects the name `commit` into the
+      ## enclosing scope for the duration of the body. If you have a
+      ## user-defined `commit` symbol in scope (e.g. a DB client
+      ## method), reference it qualified inside `speculative:`.
+      ##
       # If we're nested, promote our reverts into the parent frame so
       # an outer rollback still undoes our writes. MVCC: an inner
       # commit only means "merge into the parent branch", not "make

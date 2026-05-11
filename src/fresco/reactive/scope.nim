@@ -74,9 +74,13 @@ proc dispose*(s: Scope) {.gcsafe.} =
   if s == nil or s.disposed: return
   s.disposed = true
   {.cast(gcsafe).}:
-    for i in countdown(s.children.high, 0):
-      dispose(s.children[i])
+    # Snapshot the children seq before iterating. A cleanup that
+    # disposes a *sibling* (via a captured reference) would otherwise
+    # mutate `s.children` mid-loop and corrupt the index.
+    let childSnap = s.children
     s.children.setLen(0)
+    for i in countdown(childSnap.high, 0):
+      dispose(childSnap[i])
     for i in countdown(s.cleanups.high, 0):
       s.cleanups[i]()
     s.cleanups.setLen(0)
