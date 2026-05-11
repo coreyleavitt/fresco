@@ -181,26 +181,6 @@ proc run*(s: Supervisor) {.task, async: (raises: [CatchableError]).} =
       s.children.delete(idx)
       continue
 
-    let now = Moment.now()
-    child.restartTimes.add now
-    trimWindow(child.restartTimes, now, s.within)
-    if child.restartTimes.len > s.maxRestarts:
-      var err = newException(SupervisorEscalation,
-        "child '" & child.spec.name & "' exceeded " &
-        $s.maxRestarts & " restarts in " & $s.within)
-      err.childName = child.spec.name
-      if globalJournal != nil:
-        let tid = if currentScope != nil: currentScope.taskId else: jev.RootTask
-        let p   = if currentScope != nil: currentScope.lastEventId else: jev.NoEvent
-        try:
-          let id = globalJournal.logSupervisorEscalate(tid, p,
-            child.spec.name, err.msg)
-          if currentScope != nil: currentScope.lastEventId = id
-        except CatchableError: discard
-      for c in s.children:
-        if not c.mount.future.finished: c.mount.cancel()
-      raise err
-
     # Determine the cascade group based on supervisor strategy.
     #   sOneForOne:  just the failing child.
     #   sRestForOne: failing child + every child declared after it.
@@ -213,6 +193,38 @@ proc run*(s: Supervisor) {.task, async: (raises: [CatchableError]).} =
       for i in idx ..< s.children.len: cascade.add i
     of sOneForAll:
       for i in 0 ..< s.children.len: cascade.add i
+
+    # Rate-window every cascaded child, not just the originating one.
+    # In oneForAll/restForOne a cascade *is* a restart event for every
+    # member: if any has exceeded its window, escalate. Otherwise an
+    # all-children-fail-on-init loop would bypass the limit because
+    # only the unlucky triggering child gets counted each round.
+    let now = Moment.now()
+    for i in cascade:
+      s.children[i].restartTimes.add now
+      trimWindow(s.children[i].restartTimes, now, s.within)
+    var rateOffender = -1
+    for i in cascade:
+      if s.children[i].restartTimes.len > s.maxRestarts:
+        rateOffender = i
+        break
+    if rateOffender >= 0:
+      let offendingName = s.children[rateOffender].spec.name
+      var err = newException(SupervisorEscalation,
+        "child '" & offendingName & "' exceeded " &
+        $s.maxRestarts & " restarts in " & $s.within)
+      err.childName = offendingName
+      if globalJournal != nil:
+        let tid = if currentScope != nil: currentScope.taskId else: jev.RootTask
+        let p   = if currentScope != nil: currentScope.lastEventId else: jev.NoEvent
+        try:
+          let id = globalJournal.logSupervisorEscalate(tid, p,
+            offendingName, err.msg)
+          if currentScope != nil: currentScope.lastEventId = id
+        except CatchableError: discard
+      for c in s.children:
+        if not c.mount.future.finished: c.mount.cancel()
+      raise err
 
     # Cancel siblings in the cascade (the triggering child is already
     # finished). Then wait for cancellation cascades to settle.

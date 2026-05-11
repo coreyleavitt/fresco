@@ -190,3 +190,28 @@ suite "receive: after timeout":
         Char(c):                 outcome = "char:" & $c
         after 500.milliseconds:  outcome = "timeout"
     check got == "char:z"
+
+  test "after-only receive compiles and times out cleanly":
+    # Regression: a receive with only an `after:` arm used to produce
+    # an empty nnkIfStmt (invalid AST) — the macro now skips the chain
+    # entirely when nonAfterArms is empty.
+    proc inner(): Future[string] {.async: (raises: [Exception]).} =
+      let (master, slave) = openPtyPair()
+      let stream = newInputStream(slave)
+      fresco_input.start(stream)
+      defer:
+        fresco_input.stop(stream)
+        discard close(master); discard close(slave)
+      var outcome = "unset"
+      receive stream:
+        after 30.milliseconds: outcome = "tick"
+      return outcome
+    check waitFor(inner()) == "tick"
+
+  test "after-only receive discards key on the key-arrival path":
+    let got = rig("x"):
+      receive stream:
+        after 200.milliseconds: outcome = "timeout"
+      if outcome == "":
+        outcome = "key-discarded"
+    check got == "key-discarded"

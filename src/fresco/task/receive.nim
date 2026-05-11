@@ -209,18 +209,31 @@ macro receive*(stream: untyped, body: untyped): untyped =
            "matching keys will be silently dropped. " &
            "Uncovered: " & $missing)
 
+  if nonAfterArms.len == 0 and afterDur == nil:
+    error("receive: body must contain at least one key arm or an " &
+          "`after Duration:` clause — otherwise the receive is a no-op",
+          body)
+
   # Second pass: emit one elif per arm in source order. The wildcard
   # arm becomes an elif with condition `true`, which makes it match
   # all remaining events. nnkIfStmt (not nnkIfExpr) so statement-
   # shaped arm bodies (return, discard, mixed value/void) compose
-  # correctly.
-  var chain = newNimNode(nnkIfStmt)
-  for arm in nonAfterArms:
-    let (cond, armBody) = compileArm(evSym, arm)
-    chain.add newTree(nnkElifBranch, cond, armBody)
-  if not hasWildcard:
-    # Final else is a no-op so the if-statement remains total.
-    chain.add newTree(nnkElse, quote do: discard)
+  # correctly. When `nonAfterArms` is empty (after-only receive), we
+  # skip the chain entirely — emitting an `nnkIfStmt` with no elif
+  # branches is invalid AST.
+  var chain: NimNode
+  if nonAfterArms.len > 0:
+    chain = newNimNode(nnkIfStmt)
+    for arm in nonAfterArms:
+      let (cond, armBody) = compileArm(evSym, arm)
+      chain.add newTree(nnkElifBranch, cond, armBody)
+    if not hasWildcard:
+      # Final else is a no-op so the if-statement remains total.
+      chain.add newTree(nnkElse, quote do: discard)
+  else:
+    # After-only receive — the key path consumes one event and
+    # discards it; the timer path runs `afterBody`.
+    chain = quote do: discard
 
   if afterDur == nil:
     result = quote do:

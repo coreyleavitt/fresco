@@ -103,6 +103,41 @@ suite "supervisor strategies":
       check startsC >= 2
     waitFor body()
 
+  test "sOneForAll: cascade rate-limits every restarting child":
+    # Regression for round-2 C3: previously only the originally-failing
+    # child had its restartTimes bumped per cascade, so an all-children-
+    # fail-on-init loop would bypass maxRestarts entirely. With the fix,
+    # each cascade is a restart event for every cascaded child; the
+    # supervisor escalates once any has exceeded its window.
+    proc body() {.async: (raises: [Exception]).} =
+      var startsA = 0
+      var startsB = 0
+      proc childA(): Future[void] {.async.} =
+        inc startsA
+        await sleepAsync(1.milliseconds)
+        raise newException(IOError, "boom-a")
+      proc childB(): Future[void] {.async.} =
+        inc startsB
+        await sleepAsync(1.milliseconds)
+        raise newException(IOError, "boom-b")
+      let sup = newSupervisor(strategy = sOneForAll,
+                              maxRestarts = 3, within = 1.seconds)
+      sup.addChild("a", lcPermanent, childA)
+      sup.addChild("b", lcPermanent, childB)
+      var escalated = false
+      try:
+        await sup.run()
+      except SupervisorEscalation:
+        escalated = true
+      check escalated
+      # Each child should have started no more than maxRestarts+1 times
+      # (initial + maxRestarts restarts before the window check fires).
+      # Without the fix, B alone could be restarted indefinitely while
+      # only A's counter was tracked.
+      check startsA <= 5
+      check startsB <= 5
+    waitFor body()
+
   test "sOneForOne (default) does not cascade":
     proc body() {.async: (raises: [Exception]).} =
       var startsA = 0

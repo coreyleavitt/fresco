@@ -58,11 +58,21 @@ proc enterCbreak*(fd: cint = STDIN_FILENO): TermiosSnapshot =
 const MaxSignalSnapshots = 16
 var snapshotStack: array[MaxSignalSnapshots, TermiosSnapshot]
 var snapshotDepth: int
+  ## Total nesting depth across all install/uninstall pairs. May exceed
+  ## MaxSignalSnapshots; only the first `MaxSignalSnapshots` snapshots
+  ## are stored in the array, but the depth counter tracks every level
+  ## so install/uninstall stay paired (the alternative — skipping a
+  ## decrement on uninstall when no push happened — would require
+  ## tracking which calls pushed, which is more fragile).
 
 proc termiosSignalHandler(sig: cint) {.noconv.} =
-  # Restore innermost-first: each scope undoes its own change so the
-  # final state is the termios as of process startup.
-  for i in countdown(snapshotDepth - 1, 0):
+  # Restore innermost-first: each stored scope undoes its own change
+  # so the final state is the termios as of process startup. When
+  # depth exceeded MaxSignalSnapshots, we restore from the first 16
+  # only — better than reading uninitialized array slots, and the
+  # outermost original termios is always stored.
+  let top = min(snapshotDepth, MaxSignalSnapshots) - 1
+  for i in countdown(top, 0):
     restoreTermios(snapshotStack[i])
   signal(sig, SIG_DFL)
   discard kill(getpid(), sig)
@@ -70,20 +80,24 @@ proc termiosSignalHandler(sig: cint) {.noconv.} =
 proc installSignalHandlers*(s: TermiosSnapshot) =
   ## Register restore-on-fatal-signal hooks for SIGINT/SIGTERM/SIGSEGV.
   ## Nested install calls push onto a stack so the original termios
-  ## of each scope is preserved through fatal-signal restore. Silently
-  ## drops snapshots beyond MaxSignalSnapshots (16) — deeply-nested
-  ## cbreak is not a real workload.
+  ## of each scope is preserved through fatal-signal restore. Snapshots
+  ## beyond MaxSignalSnapshots (16) are silently *not stored*, but the
+  ## depth counter still increments — pairing with uninstall stays
+  ## correct even at extreme nesting. Deep nesting is not a real
+  ## workload; the bound exists to keep this signal-safe (no alloc).
   if snapshotDepth < MaxSignalSnapshots:
     snapshotStack[snapshotDepth] = s
-    inc snapshotDepth
+  inc snapshotDepth
   if snapshotDepth == 1:
     discard signal(SIGINT,  termiosSignalHandler)
     discard signal(SIGTERM, termiosSignalHandler)
     discard signal(SIGSEGV, termiosSignalHandler)
 
 proc uninstallSignalHandlers*() =
-  ## Pop one snapshot from the stack; restore default handlers only
-  ## when the stack is empty.
+  ## Pop one nest level; restore default handlers only when the stack
+  ## is empty. Mirrors `installSignalHandlers` exactly so the pairing
+  ## stays correct whether or not the corresponding install actually
+  ## stored its snapshot in the bounded array.
   if snapshotDepth > 0: dec snapshotDepth
   if snapshotDepth == 0:
     discard signal(SIGINT,  SIG_DFL)

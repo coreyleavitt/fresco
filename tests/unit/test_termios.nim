@@ -24,3 +24,22 @@ suite "termios against a non-TTY fd":
     defer: discard close(fd)
     let snap = enterCbreak(fd)
     check snap.valid == false
+
+  test "install/uninstall stay paired past MaxSignalSnapshots":
+    # Regression: a 17th+ nested install used to skip the push without
+    # tracking it; uninstall always decremented, mis-pairing depth and
+    # causing the signal handler to walk corrupted state. With the fix
+    # the depth counter tracks every level even when the bounded array
+    # can't store the snapshot.
+    var snap: TermiosSnapshot
+    snap.valid = false
+    const N = 20  # well past the bound of 16
+    for _ in 0 ..< N:
+      installSignalHandlers(snap)
+    for _ in 0 ..< N:
+      uninstallSignalHandlers()
+    # If pairing were off, this last install would re-trigger the
+    # depth-1 branch incorrectly or skip it. We exercise that path:
+    installSignalHandlers(snap)
+    uninstallSignalHandlers()
+    check true
