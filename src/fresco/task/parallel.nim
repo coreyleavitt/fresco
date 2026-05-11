@@ -71,4 +71,10 @@ template parallel*(body: untyped): untyped =
     finally:
       parallelCollector = prev
     if collector.mounts.len > 0:
-      await awaitParallel(collector.mounts)
+      # `taskAwait` (not bare `await`) — this await is emitted at
+      # template-expansion time, after the enclosing proc's `{.task.}`
+      # pragma has already walked the body, so task's rewriter never
+      # sees it. Without explicit CLS wrapping, `currentScope` and
+      # `currentSpeculative` after the parallel block would be
+      # whatever the dispatcher last left them as.
+      taskAwait awaitParallel(collector.mounts)

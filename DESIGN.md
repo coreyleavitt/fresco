@@ -57,7 +57,7 @@ The wedge is **kernel-plus-one-API**: solve the hard parts (raw-mode TTY, render
 | R9 | Causality | Every event has a typed causal parent. Macro records links at spawn/await/emit sites. Causal DAG queryable from UI and tests. |
 | R10 | Capabilities | Capability set inferred per task from body primitives. Static enforcement that callers grant what's required via `provide`. |
 | R11 | Speculative scopes | `speculative:` block opens an optimistic-write branch with compensating-revert semantics: writes mutate the signal immediately AND notify observers, while a revert closure is recorded per write. `commit()` clears the reverts and the writes stick; falling out without commit (normal exit or exception) drains the reverts in reverse, restoring prior values and re-notifying. Observers therefore see intermediate states that may never commit — this is optimistic locking, not classical MVCC isolation. The trade-off keeps the implementation simple and lets effects re-render against speculative state, which matches the UI use case. |
-| R12 | Supervision | Dual surface: declarative `supervisor:` blocks (full OTP — `oneForOne` / `oneForAll` / `restForOne` / dynamic pools, lifecycle types, restart-rate windows) plus inline `spawn` with per-instance modifiers (`retry`, `catch`, `restart`). |
+| R12 | Supervision | Dual surface: declarative `supervisor:` blocks (full OTP — `ssOneForOne` / `ssOneForAll` / `ssRestForOne` / dynamic pools, lifecycle types, restart-rate windows) plus inline `spawn` with per-instance modifiers (`retry`, `catch`, `restart`). |
 | R13 | Supervision additions | (a) Per-exception-type `onError:` policies (typechecked against task's exception set); (b) every supervisor decision in the journal; (c) state-restoration policy per child (`replayJournal` / `replayJournalToCheckpoint` / `resetClean`). |
 | R14 | Context / DI | Unified **`provide T: v`** / **`use T`** subsumes both capabilities (markers) and services (values). Compile-time discharge along static supervisor paths; runtime fallback for dynamic spawns. Implicit region passing is a special case. |
 | R15 | Testing oracle | The **journal is the test oracle**. Tests are tasks; assertions are over event sequences. No snapshot-rendering hacks. |
@@ -114,19 +114,19 @@ src/fresco/
 │   ├── signal.nim          # Signal[T], Computation, signals: macro, := operator, createEffect/Computed
 │   ├── binding.nim         # bindRow / bindRows / region: macro
 │   ├── context.nim         # provide T: v / use T (DI + capability values)
-│   ├── speculative.nim     # MVCC speculative scopes (signal.nim depends on this for revert hooks)
+│   ├── speculative.nim     # optimistic-revert speculative scopes (signal.nim depends on this for revert hooks)
 │   ├── animation.nim       # Easing + tween + frame clock
 │   ├── collection.nim      # CollectionSignal[T] + Delta[T]
 │   ├── static_graph.nim    # `tracked:` typed macro — compile-time dep extraction
 │   └── capabilities.nim    # capability markers + `requires` macro
+├── cls.nim                 # continuation-local storage — TaskContext + {.task.} pragma + taskAwait (layer-0)
 ├── task/
 │   ├── core.nim            # task primitive, Mount handle, spawn / spawnRetry / spawnCatch
-│   ├── cls.nim             # continuation-local storage — TaskContext + {.task.} pragma
 │   ├── receive.nim         # selective receive runtime — pattern arms + after timeout
 │   ├── parallel.nim        # parallel: block — structured-concurrency group await
 │   ├── mount.nim           # mountWhen / mount(cond) — reactive conditional spawn
 │   ├── hotkey.nim          # scope-bound input filter
-│   └── supervisor.nim      # OTP-flavored supervisor (one_for_one/all/rest_for_one)
+│   └── supervisor.nim      # OTP-flavored supervisor (ssOneForOne / ssOneForAll / ssRestForOne strategies)
 ├── journal/
 │   ├── events.nim          # Event variant + EventId / TaskId distinct types
 │   ├── log.nim             # in-memory log + projection (lastWritesByLabel / stateAt / stateAtTime)
@@ -161,7 +161,7 @@ Minimum coherent surface to write amoxtli's UI in the new model.
 - `mount when cond:` for dynamic mount/unmount
 - `parallel:` for structured concurrency
 - `provide T: v` / `use T` — runtime version, no static discharge yet
-- `supervisor:` blocks with `oneForOne` only; lifecycle types; restart-rate windowing
+- `supervisor:` blocks with `ssOneForOne` only; lifecycle types; restart-rate windowing
 - `spawn` with `retry` / `catch` modifiers
 
 ### v2.1 — Journal substrate (~1 week)
@@ -180,7 +180,7 @@ Where the novel synthesis starts paying off for users.
 
 - Time-warp: scrub observation-time, reactive graph re-projects from log
 - State-restoration policies (`replayJournal` / `replayJournalToCheckpoint` / `resetClean`)
-- `speculative:` scope with MVCC branch-and-commit
+- `speculative:` scope with optimistic-revert branch-and-commit
 - In-process crash recovery (task failure → state survives)
 - Per-exception-type `onError:` arms in supervisors
 
@@ -191,7 +191,7 @@ Invisible upgrades on the existing surface — code written against v2.0 just ge
 - **Static reactive graph**: macro lifts dep tracking to compile time; ~10x faster paint path
 - **Differential collections**: `state seq[T]` → `CollectionSignal[T]` with delta operations
 - **Animated signals**: frame clock, piecewise FRP behaviors, `.tween` API
-- Remaining OTP strategies: `oneForAll`, `restForOne`
+- Remaining OTP strategies: `ssOneForAll`, `ssRestForOne`
 
 ### v2.4 — Capabilities, persistence, devtools (~2 weeks)
 

@@ -15,7 +15,7 @@ import chronos
 import fresco
 import fresco/reactive/signal
 
-proc demoWorker(id: int) {.async.} =
+proc demoWorker(id: int) {.task, async.} =
   signals:
     count = 0
   for i in 1 .. 5:

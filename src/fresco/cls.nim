@@ -72,6 +72,24 @@ proc restoreContext*(ctx: TaskContext) {.gcsafe.} =
     currentSpeculative = ctx.speculative
     parallelCollector = ctx.parallelCollector
 
+macro taskAwait*(call: untyped): untyped =
+  ## Wrap a single `await` with CLS save/restore. Use this when a
+  ## macro or template emits an `await` — those emissions happen
+  ## AFTER the `{.task.}` pragma has walked the enclosing proc body,
+  ## so task's rewriter never sees them. The `parallel:` template
+  ## and the `receive:` macro use this internally.
+  ##
+  ## Inside a `{.task.}` proc, bare `await X` is already rewritten —
+  ## you don't need `taskAwait` for source-level awaits.
+  let ctxSym = genSym(nskLet, "frescoCtx")
+  result = quote do:
+    block:
+      let `ctxSym` = captureContext()
+      try:
+        await `call`
+      finally:
+        restoreContext(`ctxSym`)
+
 template withContext*(ctx: TaskContext, body: untyped) =
   ## Run `body` with the four fresco threadvars set from `ctx`. Restores
   ## the previously-current context on every exit path. Useful in

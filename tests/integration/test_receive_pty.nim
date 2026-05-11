@@ -6,6 +6,9 @@ import chronos
 import fresco/input as fresco_input
 import fresco/events
 import fresco/task/receive
+import fresco/cls
+import fresco/reactive/scope
+import fresco/journal/log
 
 proc posix_openpt(flags: cint): cint {.importc, header: "<stdlib.h>".}
 proc grantpt(fd: cint): cint           {.importc, header: "<stdlib.h>".}
@@ -215,6 +218,33 @@ suite "receive: after timeout":
       if outcome == "":
         outcome = "key-discarded"
     check got == "key-discarded"
+
+  test "await inside a receive arm body is CLS-protected by {.task.}":
+    # Verify the AST-walking analysis: the task macro's rewriter
+    # descends into the receive call's argument stmtlist (since macro
+    # args are just AST when task runs), so user-source-level awaits
+    # inside arm bodies ARE rewritten with save/restore. A signal
+    # write after such an await attributes to the task's scope, not
+    # to whichever stale scope the dispatcher left in currentScope.
+    proc inner(): Future[bool] {.task, async: (raises: [Exception]).} =
+      discard useJournal()
+      let (master, slave) = openPtyPair()
+      let stream = newInputStream(slave)
+      fresco_input.start(stream)
+      defer:
+        fresco_input.stop(stream)
+        discard close(master); discard close(slave)
+      writeAll(master, "x")
+      let taskScopeBefore = currentScope
+      receive stream:
+        Char(c):
+          await sleepAsync(2.milliseconds)
+          # After await inside arm body: currentScope must still be
+          # the {.task.}'d outer scope.
+          return currentScope == taskScopeBefore
+        _: return false
+      return false
+    check waitFor(inner())
 
   test "stream close mid-wait propagates rather than firing after":
     # Regression for round-3 C1: receive's after-clause used to fall

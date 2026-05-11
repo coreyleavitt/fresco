@@ -149,9 +149,25 @@ template spawn*(call: untyped): Mount =
   ## The call must be an invocation of an `{.async.}` proc returning
   ## `Future[void]`. If we're inside a `parallel:` block, the Mount is
   ## also added to the block's collector for group-await.
+  ##
+  ## **`parallelCollector` isolation:** the collector captures *direct*
+  ## spawns of the enclosing `parallel:` block, not the spawns a child
+  ## task makes internally. Without isolation, `parallel: spawn
+  ## sup.run()` would leak the supervisor's own children into the
+  ## outer parallel group (sup.run's synchronous startup loop runs
+  ## with the inherited threadvar). The fix clears `parallelCollector`
+  ## while the child task's body executes synchronously up to its
+  ## first await; after the call returns we restore the parent value
+  ## and register this Mount with it.
   block:
     let childScope = newScope(currentScope)
     childScope.taskId = TaskId.fresh()
+    # Direct logTaskSpawned write rather than `journalEvent` — this
+    # site must advance lastEventId on BOTH the new childScope (so
+    # the child's first event chains from its own spawn) AND the
+    # parent's currentScope (so the parent's causal chain advances
+    # to the child's birth event). journalEvent only writes to
+    # currentScope.
     if globalJournal != nil:
       let parent =
         if currentScope != nil: currentScope.lastEventId else: NoEvent
@@ -161,8 +177,13 @@ template spawn*(call: untyped): Mount =
       if currentScope != nil:
         currentScope.lastEventId = id
     var fut: Future[void]
-    withScope(childScope):
-      fut = call
+    let savedCollector = parallelCollector
+    parallelCollector = nil   # child task body must not see parent's collector
+    try:
+      withScope(childScope):
+        fut = call
+    finally:
+      parallelCollector = savedCollector
     let m = Mount(scope: childScope, future: fut)
     # Register with the parallel collector BEFORE wiring lifecycle.
     # `wireLifecycle.addCallback` fires synchronously when the future
