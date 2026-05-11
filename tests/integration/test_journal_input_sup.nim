@@ -39,6 +39,9 @@ suite "journal: input":
   setup:
     globalJournal = newJournal()
 
+  teardown:
+    resetJournal()
+
   test "nextKey writes ekKeyReceived":
     proc body() {.async: (raises: [Exception]).} =
       let (master, slave) = openPtyPair()
@@ -105,6 +108,9 @@ suite "journal: supervisor":
 
   setup:
     globalJournal = newJournal()
+
+  teardown:
+    resetJournal()
 
   test "permanent restart writes ekSupervisorRestart":
     proc body() {.async: (raises: [Exception]).} =

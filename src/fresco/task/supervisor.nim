@@ -90,6 +90,11 @@ type
 proc newSupervisor*(strategy = ssOneForOne,
                     maxRestarts = 5,
                     within = 10.seconds): Supervisor =
+  ## Construct a supervisor. Defaults mirror OTP's typical values:
+  ## up to `maxRestarts` (5) restarts within a `within` (10s) sliding
+  ## window before the supervisor escalates. `strategy` controls how
+  ## cascades propagate among siblings (`ssOneForOne` restarts only
+  ## the failing child; see Strategy doc).
   Supervisor(
     strategy: strategy,
     maxRestarts: maxRestarts,
@@ -99,6 +104,14 @@ proc addChild*(s: Supervisor, name: string,
                lifecycle: Lifecycle, factory: ChildFactory,
                onError: ErrorPolicy = nil,
                onRestart: RestartHandler = nil) =
+  ## Register a child to be started when `run()` begins. `name` is
+  ## used in journal entries for traceability. `lifecycle` decides
+  ## whether to restart on each kind of exit (see Lifecycle doc).
+  ## `onError` (optional) inspects the failing future's exception and
+  ## returns an ErrorAction (eaRestart/eaEscalate/eaTerminate),
+  ## overriding the lifecycle default. `onRestart` (optional, requires
+  ## an installed journal) fires before each restart with the previous
+  ## taskId so the handler can replay state via `lastWritesByLabel`.
   s.children.add ChildState(
     spec: ChildSpec(name: name, lifecycle: lifecycle,
                     factory: factory, onError: onError,
@@ -149,7 +162,10 @@ proc run*(s: Supervisor) {.task, async: (raises: [CatchableError]).} =
     let failed = child.mount.future.failed
 
     # Consult per-exception onError policy when failed and policy set.
-    var policyAction = eaRestart    # sentinel; only used if policy fires
+    # `policyAction` is read only when `policyFired == true`; the
+    # initial `eaRestart` is the zero-value default for ErrorAction
+    # (first enum member), arbitrary, never reached without policyFired.
+    var policyAction: ErrorAction
     var policyFired = false
     if failed and child.spec.onError != nil:
       let err = child.mount.future.error
@@ -324,13 +340,23 @@ macro supervisor*(name: untyped, body: untyped): untyped =
     of nnkAsgn:
       let key = stmt[0]
       let val = stmt[1]
-      # Identity check via name string — hygiene may wrap `key` as
-      # nnkSym if `supervisor:` is invoked inside a template. `$key`
-      # returns the base name regardless of node kind.
-      if $key notin KnownConfigKeys:
+      # Normalize via strVal: hygiene may wrap `key` as nnkSym (or
+      # nnkOpenSymChoice) when `supervisor:` is invoked inside a
+      # template. `strVal` returns the base name for any ident-like
+      # node, but bare `$node` on a gensym'd nnkSym would include
+      # the mangle suffix.
+      let keyName =
+        if key.kind in {nnkIdent, nnkSym, nnkOpenSymChoice}:
+          key.strVal
+        else:
+          ""
+      if keyName notin KnownConfigKeys:
         error("supervisor: unknown config key `" & key.repr &
               "` (expected one of " & $KnownConfigKeys & ")", key)
-      supInit.add newTree(nnkExprEqExpr, key, val)
+      # Rebuild the named-argument key as a fresh ident — Nim's
+      # named-arg call form requires nnkIdent here; passing an
+      # nnkSym would error during semantic check.
+      supInit.add newTree(nnkExprEqExpr, ident(keyName), val)
     of nnkCall:
       if stmt[0].eqIdent("child"):
         let addCall = newCall(newDotExpr(name, ident("addChild")))

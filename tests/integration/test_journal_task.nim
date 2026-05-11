@@ -17,6 +17,9 @@ suite "journal: task lifecycle":
   setup:
     globalJournal = newJournal()
 
+  teardown:
+    resetJournal()
+
   test "spawn writes a TaskSpawned event":
     proc body() {.async: (raises: [Exception]).} =
       proc work() {.async.} = await sleepAsync(2.milliseconds)

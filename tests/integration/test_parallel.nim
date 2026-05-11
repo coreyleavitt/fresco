@@ -118,6 +118,33 @@ suite "parallel:":
       resetJournal()
     waitFor body()
 
+  test "body raising mid-block cancels already-spawned mounts":
+    # Regression for round-9 H4: previously a body that raised after
+    # some spawn() calls would orphan those mounts — control exited
+    # the parallel: template without ever awaiting/cancelling them.
+    proc body() {.async: (raises: [Exception]).} =
+      var cancelled = 0
+      proc longRunner() {.async: (raises: [Exception]).} =
+        try:
+          await sleepAsync(2000.milliseconds)
+        except CancelledError:
+          inc cancelled
+          raise
+      var caught = false
+      try:
+        parallel:
+          discard spawn longRunner()
+          discard spawn longRunner()
+          discard spawn longRunner()
+          raise newException(ValueError, "body raised before spawns awaited")
+      except ValueError:
+        caught = true
+      check caught
+      # Give the dispatcher a few ticks for cancelSoon to deliver.
+      await sleepAsync(20.milliseconds)
+      check cancelled == 3
+    waitFor body()
+
   test "spawn isolates child task's view of parallelCollector":
     # Regression for round-5 C1: previously a child task spawned inside
     # `parallel:` saw the parent's parallelCollector via the threadvar,

@@ -118,3 +118,22 @@ suite "tracked: static dependency tracking":
     check runs == 2
     items.setAt(0, 99)
     check runs == 3
+
+  test "tracked: subscribes reads inside implicit conversions":
+    # Regression for round-9 H1: the walker used to `return` without
+    # recursing on synthetic conversion nodes. A signal read wrapped
+    # in an implicit coercion (here: int → Natural in a proc arg)
+    # would be silently missed. After the fix, the walker visits
+    # children of synthetic nodes.
+    proc takesNat(n: Natural): int = int(n)
+    let count = signal(0)
+    var runs = 0
+    discard createRoot:
+      tracked:
+        # count() returns int; takesNat takes Natural — Nim inserts
+        # an nnkHiddenStdConv around count().
+        discard takesNat(count())
+        inc runs
+    check runs == 1
+    count.set(1)
+    check runs == 2     # would fail (still 1) before round-9 H1

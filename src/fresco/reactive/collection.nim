@@ -27,6 +27,8 @@
 ## `ekCollectionDelta` event variant and wire emit() through journalEvent;
 ## until then, treat collection state as ephemeral (not replayable).
 
+{.experimental: "callOperator".}
+
 import ./signal
 import ./scope
 import ./speculative
@@ -57,7 +59,11 @@ type
   DeltaHandler*[T] = proc(d: Delta[T]) {.closure.}
 
   CollectionSignal*[T] = ref object of Subscribable
-    items*: seq[T]
+    items: seq[T]
+      ## Internal — read via `get()` or `len()` (which register the
+      ## reactive dependency); mutate via the delta-emitting ops.
+      ## Direct `.items` access would bypass `trackCollectionRead`,
+      ## silently breaking reactive subscription.
     label*: string
       ## Reserved for v2.4 journal integration (`ekCollectionDelta`
       ## events). Stored but otherwise unused in v2.3.
@@ -110,6 +116,11 @@ proc get*[T](c: CollectionSignal[T]): seq[T] =
   trackCollectionRead(c)
   c.items
 
+proc `()`*[T](c: CollectionSignal[T]): seq[T] = c.get()
+  ## Sugar — `items()` reads + tracks; same as `items.get()`.
+  ## Mirrors `Signal[T]`'s `()` operator for API symmetry. Requires
+  ## `{.experimental: "callOperator".}` at the call site.
+
 proc len*[T](c: CollectionSignal[T]): int =
   ## Length of the collection. Tracked: a `createEffect` / `tracked:`
   ## body that reads `.len` re-runs when the collection mutates.
@@ -119,11 +130,13 @@ proc len*[T](c: CollectionSignal[T]): int =
 # --- Delta-emitting ops --------------------------------------------------
 
 template withRevert[T](c: CollectionSignal[T], body: untyped) =
-  ## Snapshot `c.items` and push a revert closure that restores it
-  ## before running `body`. Inside a `speculative:` block, falling
-  ## out without commit drains the closure and emits a `dkReplace`
-  ## delta so observers re-render against the restored state.
-  ## Outside a speculative scope this is a single seq copy + body.
+  ## Push a revert closure that restores `c.items` before running
+  ## `body`. Inside a `speculative:` block, falling out without
+  ## commit drains the closure and emits a `dkReplace` delta so
+  ## observers re-render against the restored state. **Outside a
+  ## speculative scope this is a zero-cost no-op (no copy, no
+  ## allocation) — the snapshot only happens when reversion is
+  ## actually possible.**
   ##
   ## **Snapshot semantics:** we capture the full prior items seq
   ## rather than an inverse delta. For the v2.3 use case (small
@@ -132,13 +145,23 @@ template withRevert[T](c: CollectionSignal[T], body: untyped) =
   ## `ekCollectionDelta` journal integration will revisit this with
   ## inverse-deltas (`dkInsert` ↔ `dkRemove` at the same index, etc.)
   ## to amortize the cost.
-  let priorItems = c.items   # plain copy — explicit and obvious
+  ##
+  ## **Multi-mutation rollback** fires one `dkReplace` per mutation
+  ## (LIFO) — M mutations produce M re-render passes. Correct but
+  ## potentially inefficient; batch coalescing not implemented.
+  ##
+  ## The outer guard duplicates a check that `recordRevert` also
+  ## performs internally. The duplication is deliberate — it avoids
+  ## the seq-copy + closure allocation when there's no active frame.
+  ## If you change the condition here, change it in
+  ## `speculative.nim:recordRevert` too (single source of truth would
+  ## require always allocating, which defeats the point).
   if currentSpeculative != nil and not currentSpeculative.committed:
+    let priorItems = c.items   # plain copy — only when needed
     let captured = c
-    let snap = priorItems
     recordRevert proc() =
-      captured.items = snap
-      emit(captured, Delta[T](kind: dkReplace, replaceVal: snap))
+      captured.items = priorItems
+      emit(captured, Delta[T](kind: dkReplace, replaceVal: priorItems))
   body
 
 proc push*[T](c: CollectionSignal[T], v: T) =

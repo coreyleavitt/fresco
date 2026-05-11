@@ -142,6 +142,11 @@ proc setUntracked*[T](s: Signal[T], newVal: T) {.gcsafe, raises: [].} =
 # --- Computations -----------------------------------------------------------
 
 proc unsubscribeAll*(c: Computation) {.gcsafe.} =
+  ## Detach `c` from every signal it currently observes. Called by
+  ## `createEffect` before re-running (to rebuild deps cleanly) and
+  ## by the `onCleanup` emitted in `tracked:` blocks. Exported
+  ## because macro-emitted code lives in user scope; not typically
+  ## called by user code directly.
   {.cast(gcsafe).}:
     for src in c.sources:
       let idx = src.observers.find(c)

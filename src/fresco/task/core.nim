@@ -171,14 +171,21 @@ template spawn*(call: untyped): Mount =
     # parent's currentScope (so the parent's causal chain advances
     # to the child's birth event). journalEvent only writes to
     # currentScope.
+    #
+    # Wrapped in try/except CatchableError: discard so a journal
+    # write failure (e.g., PersistentJournal disk error) doesn't
+    # propagate out of `spawn`. Matches the swallow contract every
+    # other journal call site honours.
     if globalJournal != nil:
-      let parent =
-        if currentScope != nil: currentScope.lastEventId else: NoEvent
-      let id = globalJournal.logTaskSpawned(
-        childScope.taskId, parent, astToStr(call), "")
-      childScope.lastEventId = id
-      if currentScope != nil:
-        currentScope.lastEventId = id
+      try:
+        let parent =
+          if currentScope != nil: currentScope.lastEventId else: NoEvent
+        let id = globalJournal.logTaskSpawned(
+          childScope.taskId, parent, astToStr(call), "")
+        childScope.lastEventId = id
+        if currentScope != nil:
+          currentScope.lastEventId = id
+      except CatchableError: discard
     var fut: Future[void]
     let savedCollector = parallelCollector
     parallelCollector = nil   # child task body must not see parent's collector

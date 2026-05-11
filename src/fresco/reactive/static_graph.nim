@@ -37,6 +37,10 @@ proc trackableTypeName(t: NimNode): string =
   ## would fail to compile in the subsequent `subscribe(...)` call
   ## (the user type doesn't inherit from `Subscribable`), so the
   ## failure is loud rather than silent.
+  ##
+  ## **Adding a new Subscribable subtype:** update this list AND
+  ## DESIGN.md R10. The `tracked:` macro will not detect reads of
+  ## the new type otherwise.
   if t == nil or t.kind != nnkBracketExpr or t.len < 1: return ""
   if t[0].kind != nnkSym: return ""
   let name = $t[0]
@@ -46,6 +50,16 @@ proc isReactiveRead(n: NimNode): bool =
   ## True when `n` looks like a call against a `Signal[T]` or
   ## `CollectionSignal[T]` receiver. Detects both `count()` (the `()`
   ## operator) and `count.get()` / `coll.len` (UFCS).
+  ##
+  ## **Type-alias limitation:** uses `getTypeInst`, which preserves
+  ## type aliases as their alias name rather than resolving to the
+  ## canonical form. A user with `type AppCount = Signal[int]; let
+  ## c: AppCount = signal(0)` would have `c()` reads NOT detected by
+  ## `tracked:` — the alias name doesn't match "Signal". Workaround:
+  ## use plain `Signal[T]` types directly, or fall back to
+  ## `createEffect`. Switching to `getType` resolves aliases but
+  ## changes the AST shape (returns ref-of-object structure), which
+  ## breaks the common case.
   if n.kind != nnkCall or n.len < 2: return false
   let receiver = n[1]
   var t: NimNode
@@ -77,10 +91,14 @@ macro tracked*(body: typed): untyped =
   ## See module docstring.
   var sigs: seq[NimNode] = @[]
   proc walk(n: NimNode) =
-    # Skip compiler-synthesized nodes whose contents would otherwise
-    # produce spurious Signal[T] matches on inserted conversions.
-    if n.kind in SyntheticKinds: return
-    if isReactiveRead(n):
+    # Skip the synthetic node itself (its kind would never match
+    # `isReactiveRead`), but DO recurse into its children — they
+    # carry the actual user expressions that may include reactive
+    # reads. The earlier "return without recursing" form silently
+    # under-subscribed when a Signal read was wrapped in an implicit
+    # conversion (e.g., `count()` passed to a `Natural` parameter
+    # gets `nnkHiddenStdConv(nnkCall(count_op, count_sym))`).
+    if n.kind notin SyntheticKinds and isReactiveRead(n):
       sigs.add n[1]
     for child in n:
       walk(child)

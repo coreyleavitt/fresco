@@ -16,7 +16,7 @@
 import chronos
 import ./core
 import ../cls
-import ../journal/events as jev
+import ../journal/events   # for `$` on TaskId
 import ../journal/log
 
 proc awaitParallel(mounts: seq[Mount]) {.task, async: (raises: [CatchableError]).} =
@@ -59,21 +59,14 @@ proc awaitParallel(mounts: seq[Mount]) {.task, async: (raises: [CatchableError])
         except CatchableError as siblingErr:
           # Sibling crashed concurrently with the winner. Journal it
           # under the sibling's OWN scope (not the parallel block's
-          # enclosing scope) — that's how supervisor.nim:240 handles
-          # the analogous case, and it makes `byTask(siblingTaskId)`
-          # actually find the event. Direct log call rather than
-          # `journalEvent` because that template uses currentScope,
-          # which is the parallel's enclosing task here.
-          if siblingErr != nil and globalJournal != nil:
-            let siblingTid = p.scope.taskId
-            let siblingParent = p.scope.lastEventId
-            let siblingName = "parallel-task-" & $siblingTid
+          # enclosing scope) so `byTask(siblingTaskId)` finds it.
+          # `journalEventOnScope` is the cross-cutting helper for
+          # this pattern (same one wireLifecycle uses).
+          if siblingErr != nil:
+            let siblingName = "parallel-task-" & $p.scope.taskId
             let reason = "concurrent failure during parallel cascade: " & siblingErr.msg
-            try:
-              let id = globalJournal.logSupervisorEscalate(
-                siblingTid, siblingParent, siblingName, reason)
-              p.scope.lastEventId = id
-            except CatchableError: discard
+            journalEventOnScope(p.scope):
+              jrnl.logSupervisorEscalate(taskTid, parentEvt, siblingName, reason)
       raise err
 
 template parallel*(body: untyped): untyped =
@@ -92,10 +85,26 @@ template parallel*(body: untyped): untyped =
     let collector = MountCollector()
     let prev = parallelCollector
     parallelCollector = collector
+    var bodyRaised = false
     try:
       body
-    finally:
+    except CatchableError:
+      bodyRaised = true
+      # Body raised after some spawns may have registered. Structured
+      # concurrency: cancel everything that was started, then re-raise
+      # so the caller sees the original failure. Cancellation is
+      # async (cancelSoon) — the spawned mounts' wireLifecycle
+      # callbacks will dispose their scopes when the futures finally
+      # resolve as cancelled. We don't await here (async-in-finally
+      # is unsafe under chronos); we only need the cancellation
+      # request issued before unwinding.
+      for m in collector.mounts:
+        if not m.future.finished: m.cancel()
       parallelCollector = prev
+      raise
+    finally:
+      if not bodyRaised:
+        parallelCollector = prev
     if collector.mounts.len > 0:
       # `taskAwait` (not bare `await`) — this await is emitted at
       # template-expansion time, after the enclosing proc's `{.task.}`

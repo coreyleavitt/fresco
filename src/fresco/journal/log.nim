@@ -74,6 +74,31 @@ template journalEvent*(body: untyped) =
       if currentScope != nil: currentScope.lastEventId = frescoEvtId
     except CatchableError: discard
 
+template journalEventOnScope*(scope: Scope, body: untyped) =
+  ## Like `journalEvent` but attributes the event to a specific scope
+  ## rather than `currentScope`. Used in callback sites where the
+  ## dispatcher's `currentScope` is unrelated to the event's logical
+  ## owner — e.g. `wireLifecycle`'s future-completion callback (uses
+  ## the captured task's scope), the `spawn` template's pre-await
+  ## logTaskSpawned, and `parallel:`'s concurrent-sibling cascade.
+  ##
+  ## Inside `body`, the same three names are injected as `journalEvent`:
+  ##   `jrnl`      — the active journal (non-nil)
+  ##   `taskTid`   — `scope.taskId` (or RootTask if scope is nil)
+  ##   `parentEvt` — `scope.lastEventId` (or NoEvent if scope is nil)
+  ##
+  ## Advances `scope.lastEventId` to the new event id, NOT
+  ## `currentScope.lastEventId`. Silent no-op without a journal;
+  ## CatchableError from the log call is swallowed.
+  if globalJournal != nil:
+    let jrnl {.inject.} = globalJournal
+    let taskTid {.inject.} = if scope != nil: scope.taskId else: RootTask
+    let parentEvt {.inject.} = if scope != nil: scope.lastEventId else: NoEvent
+    try:
+      let frescoEvtId = body
+      if scope != nil: scope.lastEventId = frescoEvtId
+    except CatchableError: discard
+
 proc useJournal*(j: Journal = nil): Journal =
   ## Install or reuse the process-wide journal. Semantics:
   ##

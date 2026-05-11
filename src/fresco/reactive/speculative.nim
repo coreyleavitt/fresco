@@ -39,11 +39,12 @@ proc recordRevert*(p: proc() {.closure.}) {.gcsafe.} =
   ## Push a revert closure onto the active speculative frame. No-op
   ## outside any speculative scope or after the frame committed.
   ##
-  ## Exported so library-internal modules (`signal.set`,
-  ## `collection.withRevert`) and user-defined revertible types can
-  ## participate in `speculative:` semantics. Most callers should
-  ## not need this — `signal.set` and `CollectionSignal` mutations
-  ## already record reverts automatically.
+  ## Exported for cross-module use by `signal.setCore` and
+  ## `collection.withRevert`. There is no documented external
+  ## contract for user-defined revertible types yet; if you find
+  ## yourself calling this directly from user code, file an issue
+  ## with the use case so the extension surface can be designed
+  ## properly rather than relying on this implementation detail.
   {.cast(gcsafe).}:
     if currentSpeculative != nil and not currentSpeculative.committed:
       currentSpeculative.reverts.add p

@@ -15,6 +15,9 @@ suite "journal: signal writes":
   setup:
     globalJournal = newJournal()
 
+  teardown:
+    resetJournal()
+
   test "signal.set writes a StateWrite event with label and repr":
     let count = signal(0, label = "count")
     count.set(5)

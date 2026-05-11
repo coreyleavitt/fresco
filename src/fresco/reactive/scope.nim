@@ -14,14 +14,12 @@ import ../journal/events
 
 type
   ProviderEntry* = object
-    typeKey*: pointer
-      ## Unique identity per type. Two `Config` types in different
-      ## modules have distinct keys even though `$T` would produce
-      ## the same string. See `context.typeMarker`.
-    fetch*: proc(): pointer {.closure.}
-      ## Closure that returns the stored value as a pointer. The
-      ## closure captures the original ref, which keeps it alive
-      ## as long as this entry exists.
+    ## Internal — populated by `context.provide`, read by `use`/
+    ## `tryUse`. Exported because it's the element type of
+    ## `Scope.providers`; the fields below are unexported because
+    ## only `context.nim` legitimately accesses them.
+    typeKey: pointer
+    fetch: proc(): pointer {.closure.}
 
   Scope* = ref object
     parent*: Scope
