@@ -130,6 +130,17 @@ proc find*(j: Journal, id: EventId): Event =
     if e.id == id: return e
   raise newException(KeyError, "no event with id " & $id)
 
+import std/tables
+
+proc lastWritesByLabel*(j: Journal, taskId: TaskId): Table[string, Event] =
+  ## For a given task, return the most-recent `ekStateWrite` event per
+  ## signal label. Useful for state restoration: walk this table and
+  ## re-apply each entry's `writeRepr` to a freshly-declared signal of
+  ## the same label.
+  for ev in j.events:
+    if ev.taskId == taskId and ev.kind == ekStateWrite:
+      result[ev.signalLabel] = ev
+
 proc ancestors*(j: Journal, id: EventId): seq[Event] =
   ## Walk the causal chain from `id` back to its root. The returned
   ## sequence is innermost-first (start, then parent, then grandparent…)

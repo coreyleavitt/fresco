@@ -48,11 +48,20 @@ type
     ## and decides how the supervisor should respond. nil means
     ## "use the lifecycle default (restart for permanent/transient).
 
+  RestartHandler* = proc(j: Journal, previousTaskId: TaskId)
+                    {.closure, gcsafe.}
+    ## Fires before each *restart* (not the initial spawn) with the
+    ## journal and the previous taskId. Typical use: walk
+    ## `journal.lastWritesByLabel(previousTaskId)` and restore state
+    ## from `ekStateWrite` events. Restoration happens out of band —
+    ## the factory will still be called fresh after the handler.
+
   ChildSpec* = object
     name*: string
     lifecycle*: Lifecycle
     factory*: ChildFactory
     onError*: ErrorPolicy
+    onRestart*: RestartHandler
 
   ChildState = ref object
     spec: ChildSpec
@@ -78,10 +87,12 @@ proc newSupervisor*(strategy = sOneForOne,
 
 proc addChild*(s: Supervisor, name: string,
                lifecycle: Lifecycle, factory: ChildFactory,
-               onError: ErrorPolicy = nil) =
+               onError: ErrorPolicy = nil,
+               onRestart: RestartHandler = nil) =
   s.children.add ChildState(
     spec: ChildSpec(name: name, lifecycle: lifecycle,
-                    factory: factory, onError: onError))
+                    factory: factory, onError: onError,
+                    onRestart: onRestart))
 
 proc shouldRestart(lifecycle: Lifecycle, failed: bool): bool =
   case lifecycle
@@ -195,6 +206,15 @@ proc run*(s: Supervisor) {.async: (raises: [CatchableError]).} =
           child.spec.name, child.restartTimes.len)
         if currentScope != nil: currentScope.lastEventId = id
       except Exception: discard
+
+    # Invoke the restart handler with the previous taskId + journal,
+    # giving user code a chance to restore state before re-spawning.
+    if child.spec.onRestart != nil and globalJournal != nil and
+       child.mount != nil and child.mount.scope != nil:
+      let prevTid = child.mount.scope.taskId
+      try: child.spec.onRestart(globalJournal, prevTid)
+      except Exception: discard
+
     child.mount = spawn child.spec.factory()
 
 # --- Declarative supervisor: block ---------------------------------------
