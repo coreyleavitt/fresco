@@ -55,8 +55,13 @@ proc restoreFlags(fd: cint, flags: cint) =
 proc runFilters(s: InputStream, ev: KeyEvent): bool {.gcsafe.} =
   ## Walk filters in registration order. First filter that returns
   ## true consumes the event; the rest don't see it.
+  ##
+  ## The list is *snapshotted* before iteration: a filter body that
+  ## disposes its registering scope (and therefore calls removeFilter)
+  ## mid-loop would otherwise corrupt index-based iteration.
   {.cast(gcsafe).}:
-    for entry in s.filters:
+    let snap = s.filters
+    for entry in snap:
       try:
         if entry.fn(ev):
           return true

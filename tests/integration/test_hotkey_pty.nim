@@ -88,6 +88,40 @@ suite "hotkey":
       check not fired
     waitFor body()
 
+  test "hotkey body that disposes the registering scope doesn't corrupt filter iteration":
+    # Regression: runFilters used to iterate s.filters by ref; a
+    # hotkey body that disposed its scope (which calls removeFilter)
+    # could corrupt the in-progress for-loop and skip later filters.
+    var fired1 = false
+    var fired2 = false
+    proc body() {.async: (raises: [Exception]).} =
+      let (master, slave) = openPtyPair()
+      let stream = newInputStream(slave)
+      fresco_input.start(stream)
+      defer:
+        fresco_input.stop(stream)
+        discard close(master)
+        discard close(slave)
+      let scopeA = newScope()
+      let scopeB = newScope()
+      # Two hotkeys on different keys; scopeA's body disposes scopeA
+      # synchronously inside the filter callback.
+      withScope(scopeA):
+        hotkey stream, ctrlKey('q'):
+          fired1 = true
+          dispose(scopeA)        # ← would corrupt iteration before fix
+      withScope(scopeB):
+        hotkey stream, ctrlKey('w'):
+          fired2 = true
+      writeAll(master, "\x11")   # Ctrl-Q — fires scopeA's hotkey
+      await sleepAsync(30.milliseconds)
+      writeAll(master, "\x17")   # Ctrl-W — must still fire scopeB's
+      await sleepAsync(30.milliseconds)
+      check fired1
+      check fired2
+      dispose(scopeB)
+    waitFor body()
+
   test "multiple hotkeys coexist; only matching one fires":
     var firedQ = false
     var firedH = false
