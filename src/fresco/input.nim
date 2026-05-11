@@ -130,17 +130,34 @@ proc newInputStream*(fd: cint = cint(0),
   )
 
 proc start*(s: InputStream) =
-  ## Put `fd` in cbreak + non-blocking mode and register the read hook.
-  ## Must be called from within a running chronos dispatcher context.
+  ## Put `fd` in cbreak + non-blocking mode and register the read hook
+  ## with chronos. Must be called from within a running chronos dispatcher
+  ## context.
+  ##
+  ## Installs SIGINT/SIGTERM/SIGSEGV handlers so a crash restores
+  ## termios before the process exits (CLAUDE.md non-negotiable: never
+  ## leave the user's terminal in raw mode). On any exception during
+  ## startup we tear back down before propagating.
   s.snapshot = enterCbreak(s.fd)
-  s.prevFlags = setNonblocking(s.fd)
-  register(AsyncFD(s.fd))
-  addReader(AsyncFD(s.fd), onReadable, cast[pointer](s))
-  s.registered = true
+  installSignalHandlers(s.snapshot)
+  try:
+    s.prevFlags = setNonblocking(s.fd)
+    register(AsyncFD(s.fd))
+    try:
+      addReader(AsyncFD(s.fd), onReadable, cast[pointer](s))
+      s.registered = true
+    except CatchableError:
+      unregister(AsyncFD(s.fd))
+      raise
+  except CatchableError:
+    uninstallSignalHandlers()
+    restoreFlags(s.fd, s.prevFlags)
+    restoreTermios(s.snapshot)
+    raise
 
 proc stop*(s: InputStream) =
   ## Tear down: cancel pending timer, unregister reader, restore flags
-  ## and termios. Safe to call more than once.
+  ## and termios, uninstall signal handlers. Safe to call more than once.
   if s.closed: return
   s.closed = true
   if s.escWaiter != nil and not s.escWaiter.finished:
@@ -151,6 +168,7 @@ proc stop*(s: InputStream) =
     unregister(AsyncFD(s.fd))
     s.registered = false
   restoreFlags(s.fd, s.prevFlags)
+  uninstallSignalHandlers()
   restoreTermios(s.snapshot)
 
 proc nextKey*(s: InputStream): Future[KeyEvent] {.async.} =
