@@ -40,21 +40,21 @@ var currentScope* {.threadvar.}: Scope
   ## Dynamically-scoped owner that signals, effects, and child tasks
   ## attach themselves to.
   ##
-  ## **Constraint:** this is a thread-local — it's only reliable for
-  ## synchronous code. Chronos doesn't restore thread-locals across
-  ## coroutine suspension, so after a task awaits, `currentScope` is
-  ## whatever the last-running coroutine left behind (typically `nil`).
-  ## Code that needs the task's scope after an await should capture
-  ## the scope at task entry and re-bind explicitly:
+  ## This is a thread-local L1 cache. Chronos doesn't restore
+  ## thread-locals across coroutine suspensions on its own, so the
+  ## fresco continuation-local substrate (`fresco/task/cls`) handles
+  ## save/restore around every await. Use the `{.task.}` pragma on
+  ## any async proc that needs `currentScope` to survive its awaits:
   ##
-  ##     proc myTask() {.async.} =
-  ##       let myScope = currentScope         # capture once
-  ##       # ... work that may await ...
-  ##       withScope(myScope):                # re-bind for any
-  ##         signal.set(x)                    # context-sensitive code
+  ##     proc myTask() {.task, async.} =
+  ##       await something()
+  ##       signal.set(x)         # currentScope is preserved
   ##
-  ## v3 fix tracked at github issue #37: chronos async-macro extension
-  ## that saves/restores per-coroutine context at every suspension.
+  ## For callback-style code (effect bodies, input filters) that fires
+  ## from the dispatcher with whatever scope happens to be current,
+  ## capture a `TaskContext` at registration and wrap the callback
+  ## body in `withContext(ctx):` to attribute it to the right owner.
+  ## `mountWhen` and `hotkey` do this internally.
 
 proc newScope*(parent: Scope = nil): Scope =
   result = Scope(parent: parent)

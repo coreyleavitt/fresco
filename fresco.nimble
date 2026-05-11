@@ -45,6 +45,7 @@ task test, "run all tests":
     "tests/integration/test_termios_pty.nim",
     "tests/integration/test_input_pty.nim",
     "tests/integration/test_task.nim",
+    "tests/integration/test_cls.nim",
     "tests/integration/test_receive_pty.nim",
     "tests/integration/test_parallel.nim",
     "tests/integration/test_mount.nim",

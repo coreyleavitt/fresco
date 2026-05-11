@@ -15,6 +15,7 @@ import chronos
 import ./terminal/termios
 import ./events
 import ./reactive/scope
+import ./task/cls
 import ./journal/events as jev
 import ./journal/log
 
@@ -104,7 +105,7 @@ proc removeFilter*(s: InputStream, handle: int) =
       s.filters.del i
       return
 
-proc finalizeEsc(s: InputStream) {.async.} =
+proc finalizeEsc(s: InputStream) {.task, async.} =
   try:
     await sleepAsync(s.escTimeout)
   except CancelledError:
@@ -196,7 +197,7 @@ proc stop*(s: InputStream) =
   uninstallSignalHandlers()
   restoreTermios(s.snapshot)
 
-proc nextKey*(s: InputStream): Future[KeyEvent] {.async.} =
+proc nextKey*(s: InputStream): Future[KeyEvent] {.task, async.} =
   if s.closed:
     raise newException(InputStreamClosedError, "stream is closed")
   let getFut = s.queue.get()

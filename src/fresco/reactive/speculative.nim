@@ -19,19 +19,13 @@
 ##     the reverts replay in reverse and observers re-notify, so the
 ##     world returns to its pre-block state.
 ##
-## **Constraint:** the body of `speculative:` should not `await`. The
-## active frame is tracked via a thread-local pointer; if the body
-## yields and another coroutine performs a `signal.set` during the
-## suspension, that coroutine's write is pushed onto our revert stack
-## and gets rolled back when we don't commit. If you need a confirm
-## prompt before committing, perform the prompt outside the block:
-##
-##     let approved = await confirm("commit?")
-##     speculative:
-##       count := newCount
-##       if approved: commit()
-##
-## v3 fix tracked at github issue #37 (coroutine-context isolation).
+## **Awaiting inside a speculative body is safe** as long as the
+## enclosing async proc is annotated `{.task.}` — fresco's CLS
+## substrate restores `currentSpeculative` after every suspension,
+## so writes from sibling coroutines that ran during the suspension
+## don't land on our revert stack. Without `{.task.}`, the active
+## frame is lost across the suspend and any signal write while
+## suspended would erroneously be tracked on our frame.
 
 type
   SpeculativeScope* = ref object

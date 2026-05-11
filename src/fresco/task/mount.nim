@@ -15,6 +15,7 @@
 import ../reactive/scope
 import ../reactive/signal
 import ./core
+import ./cls
 
 template mountWhen*(cond: untyped, body: untyped): untyped =
   ## Reactive conditional mount. `cond` is re-evaluated whenever any
@@ -23,16 +24,25 @@ template mountWhen*(cond: untyped, body: untyped): untyped =
   ##
   ## Also exposed as `mount(cond): body` — same semantics, terser
   ## DSL form. Pick whichever reads better at the call site.
+  ##
+  ## The effect body fires from `notify`, not from any task — the
+  ## dispatcher's `currentScope` at that point is whatever the last
+  ## coroutine left behind (often nil). We capture the registering
+  ## scope's context here and restore it around the effect body so
+  ## `spawn`s inside `body` parent to the right place and journal
+  ## events attribute to the right task.
+  let mountWhenCtx = captureContext()
   var currentMount: Mount = nil
   createEffect proc() =
-    let shouldMount = cond
-    if shouldMount:
-      if currentMount == nil or currentMount.future.finished:
-        currentMount = body
-    else:
-      if currentMount != nil and not currentMount.future.finished:
-        currentMount.cancel()
-        currentMount = nil
+    withContext(mountWhenCtx):
+      let shouldMount = cond
+      if shouldMount:
+        if currentMount == nil or currentMount.future.finished:
+          currentMount = body
+      else:
+        if currentMount != nil and not currentMount.future.finished:
+          currentMount.cancel()
+          currentMount = nil
   onCleanup proc() =
     if currentMount != nil and not currentMount.future.finished:
       currentMount.cancel()

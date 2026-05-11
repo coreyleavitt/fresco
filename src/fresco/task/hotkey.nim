@@ -18,6 +18,7 @@
 import ../events
 import ../input
 import ../reactive/scope
+import ./cls
 import ../journal/events as jev
 import ../journal/log
 
@@ -26,21 +27,23 @@ template hotkey*(stream: InputStream, key: KeyEvent, body: untyped): untyped =
   ## on scope dispose. When matched, journals an ekKeyConsumed event
   ## so devtools can see which hotkey ate the input.
   ##
-  ## The registering scope is captured at template instantiation so
-  ## the journal event is attributed to the correct task, not to
-  ## whatever scope happens to be current inside the chronos read
-  ## callback (which is usually nil).
-  let owningScope = currentScope
+  ## The registering context is captured at template instantiation and
+  ## restored around both the journal write and the user-supplied
+  ## `body` — the filter callback fires from chronos's read hook with
+  ## a stale `currentScope`, so signal writes / spawns inside `body`
+  ## would otherwise attribute to the wrong owner.
+  let hotkeyCtx = captureContext()
   let handle = stream.addFilter(proc(ev: KeyEvent): bool =
     if ev == key:
-      if globalJournal != nil:
-        let tid = if owningScope != nil: owningScope.taskId else: jev.RootTask
-        let parent = if owningScope != nil: owningScope.lastEventId else: jev.NoEvent
-        try:
-          let id = globalJournal.logKeyConsumed(tid, parent, ev.summary)
-          if owningScope != nil: owningScope.lastEventId = id
-        except CatchableError: discard
-      body
+      withContext(hotkeyCtx):
+        if globalJournal != nil:
+          let tid = if currentScope != nil: currentScope.taskId else: jev.RootTask
+          let parent = if currentScope != nil: currentScope.lastEventId else: jev.NoEvent
+          try:
+            let id = globalJournal.logKeyConsumed(tid, parent, ev.summary)
+            if currentScope != nil: currentScope.lastEventId = id
+          except CatchableError: discard
+        body
       return true
     return false)
   onCleanup proc() = stream.removeFilter(handle)

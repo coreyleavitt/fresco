@@ -15,8 +15,9 @@
 
 import chronos
 import ./core
+import ./cls
 
-proc awaitParallel(mounts: seq[Mount]) {.async: (raises: [CatchableError]).} =
+proc awaitParallel(mounts: seq[Mount]) {.task, async: (raises: [CatchableError]).} =
   ## Wait for every Mount. On first failure: cancel siblings, drain
   ## their cancellation cascades, re-raise the original error.
   var pending = mounts
@@ -48,16 +49,13 @@ template parallel*(body: untyped): untyped =
   ## the remaining are cancelled and the exception propagates. Must be
   ## called from an async context.
   ##
-  ## **Constraint:** `body` should consist of `spawn` calls without
-  ## intervening `await`s. The block uses a thread-local pointer to
-  ## collect spawned Mounts; if `body` awaits, another coroutine that
-  ## runs during the suspension and calls `spawn` will have its Mount
-  ## added to *this* group, joining its lifetime to ours and causing
-  ## cross-task cancellation on failure.
-  ##
-  ## If you need to interleave awaits with spawns, await the
-  ## individual Mounts explicitly with `m.wait()` and skip `parallel:`.
-  ## v3 fix tracked at github issue #37 (coroutine-context isolation).
+  ## **Awaiting inside the parallel body is safe** as long as the
+  ## enclosing async proc is annotated `{.task.}` — fresco's CLS
+  ## substrate restores `parallelCollector` after every suspension,
+  ## so spawns from sibling coroutines that run during the suspension
+  ## don't end up joined to this group. Without `{.task.}` on the
+  ## enclosing proc, an interleaved `spawn` from another coroutine
+  ## would incorrectly land in our collector.
   block:
     var mounts: seq[Mount] = @[]
     let prev = parallelCollector

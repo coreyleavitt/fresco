@@ -61,12 +61,13 @@ export scope, signal, binding, context, speculative, animation, collection,
 
 # T4 — task
 import fresco/task/core
+import fresco/task/cls
 import fresco/task/receive
 import fresco/task/parallel
 import fresco/task/mount
 import fresco/task/hotkey
 import fresco/task/supervisor
-export core, receive, parallel, mount, hotkey, supervisor
+export core, cls, receive, parallel, mount, hotkey, supervisor
 
 # T4 — journal (v2.1 + v2.4)
 import fresco/journal/events as journal_events
