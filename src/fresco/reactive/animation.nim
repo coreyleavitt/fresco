@@ -107,7 +107,7 @@ proc tween*(s: Signal[float], target: float,
     if a.target == s: a.cancelled = true
   result = Animation(
     target: s,
-    startVal: s.get(),
+    startVal: s.peek(),                   # no dep registration
     endVal: target,
     startMono: Moment.now(),
     duration: duration,

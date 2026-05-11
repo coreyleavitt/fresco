@@ -25,13 +25,6 @@ import std/macros
 import ./scope
 import ./signal
 
-proc unsubscribeAll*(c: Computation) {.gcsafe.} =
-  {.cast(gcsafe).}:
-    for src in c.sources:
-      let idx = src.observers.find(c)
-      if idx >= 0: src.observers.del idx
-    c.sources.setLen(0)
-
 proc isSignalRead(n: NimNode): bool =
   ## True when `n` looks like a call against a `Signal[T]` receiver.
   ## Detects both `count()` (`()` operator) and `count.get()` (UFCS).

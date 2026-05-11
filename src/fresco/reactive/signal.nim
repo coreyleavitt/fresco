@@ -69,6 +69,13 @@ proc get*[T](s: Signal[T]): T {.gcsafe.} =
   trackRead(s)
   s.val
 
+proc peek*[T](s: Signal[T]): T {.gcsafe.} =
+  ## Read the current value without registering a dependency on the
+  ## current Computation. Use this in code that observes a signal for
+  ## side-effects (animation start values, debug logs, journal writes)
+  ## but doesn't want to be re-fired when the signal changes.
+  s.val
+
 proc `()`*[T](s: Signal[T]): T {.gcsafe.} = s.get()
   ## Sugar — `count()` reads + tracks; same as `count.get()`.
 
@@ -111,7 +118,7 @@ proc set*[T](s: Signal[T], newVal: T) {.gcsafe, raises: [].} =
 
 # --- Computations -----------------------------------------------------------
 
-proc unsubscribeAll(c: Computation) {.gcsafe.} =
+proc unsubscribeAll*(c: Computation) {.gcsafe.} =
   {.cast(gcsafe).}:
     for src in c.sources:
       let idx = src.observers.find(c)
@@ -167,7 +174,7 @@ macro signals*(body: untyped): untyped =
       result.add quote do:
         let `name` = signal(`value`, label = `labelLit`)
     else:
-      error("state: arm must be `name = value` or `name: Type`; got " &
+      error("signals: arm must be `name = value`; got " &
             stmt.repr, stmt)
 
 proc createComputed*[T](body: proc(): T {.closure.}): Signal[T] {.gcsafe.} =
