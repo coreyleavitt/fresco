@@ -68,8 +68,10 @@ template journalEvent*(body: untyped) =
     let taskTid {.inject.} = if currentScope != nil: currentScope.taskId else: RootTask
     let parentEvt {.inject.} = if currentScope != nil: currentScope.lastEventId else: NoEvent
     try:
-      let id = body
-      if currentScope != nil: currentScope.lastEventId = id
+      # Internal binding for the returned EventId. Prefixed to avoid
+      # shadowing a caller's local `id` variable.
+      let frescoEvtId = body
+      if currentScope != nil: currentScope.lastEventId = frescoEvtId
     except CatchableError: discard
 
 proc useJournal*(j: Journal = nil): Journal =

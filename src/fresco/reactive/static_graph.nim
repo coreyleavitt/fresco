@@ -5,10 +5,11 @@
 ##     region.setRow(1, $total())
 ##
 ## A typed macro walks the body's AST after Nim's semantic pass,
-## identifies every `()` or `.get()` call whose receiver has type
-## `Signal[T]`, and emits explicit `subscribe(signal, comp)` edges
-## before the body runs. The body itself never touches the runtime
-## `currentComputation` stack — dep edges are wired statically.
+## identifies every `()` or `.get()` / `.len` call whose receiver has
+## type `Signal[T]` or `CollectionSignal[T]`, and emits explicit
+## `subscribe(receiver, comp)` edges before the body runs. The body
+## itself never touches the runtime `currentComputation` stack — dep
+## edges are wired statically.
 ##
 ## Conservative semantics: the macro subscribes to *every* signal it
 ## can detect, including those only read in conditional branches.
@@ -24,18 +25,34 @@
 import std/macros
 import ./scope
 import ./signal
+import ./collection
 
-proc isSignalRead(n: NimNode): bool =
-  ## True when `n` looks like a call against a `Signal[T]` receiver.
-  ## Detects both `count()` (`()` operator) and `count.get()` (UFCS).
+proc trackableTypeName(t: NimNode): string =
+  ## If `t` is a `Signal[T]` or `CollectionSignal[T]` bracket-expr,
+  ## return the type name; otherwise empty string. Used by the
+  ## `tracked:` walker to recognize reactive receivers.
+  ##
+  ## Comparison is name-based on the type symbol. A user type named
+  ## `Signal` or `CollectionSignal` in scope would match the name but
+  ## would fail to compile in the subsequent `subscribe(...)` call
+  ## (the user type doesn't inherit from `Subscribable`), so the
+  ## failure is loud rather than silent.
+  if t == nil or t.kind != nnkBracketExpr or t.len < 1: return ""
+  if t[0].kind != nnkSym: return ""
+  let name = $t[0]
+  if name == "Signal" or name == "CollectionSignal": name else: ""
+
+proc isReactiveRead(n: NimNode): bool =
+  ## True when `n` looks like a call against a `Signal[T]` or
+  ## `CollectionSignal[T]` receiver. Detects both `count()` (the `()`
+  ## operator) and `count.get()` / `coll.len` (UFCS).
   if n.kind != nnkCall or n.len < 2: return false
   let receiver = n[1]
   var t: NimNode
   try:
     t = receiver.getTypeInst()
   except CatchableError: return false
-  if t == nil or t.kind != nnkBracketExpr or t.len < 1: return false
-  t[0].kind == nnkSym and $t[0] == "Signal"
+  trackableTypeName(t).len > 0
 
 const SyntheticKinds = {
   # Compiler-inserted nodes that wrap user expressions during the
@@ -63,7 +80,7 @@ macro tracked*(body: typed): untyped =
     # Skip compiler-synthesized nodes whose contents would otherwise
     # produce spurious Signal[T] matches on inserted conversions.
     if n.kind in SyntheticKinds: return
-    if isSignalRead(n):
+    if isReactiveRead(n):
       sigs.add n[1]
     for child in n:
       walk(child)
@@ -74,8 +91,11 @@ macro tracked*(body: typed): untyped =
   result.add quote do:
     let `compSym` = Computation()
   for s in sigs:
+    # subscribe() takes a `Subscribable`; both `Signal[T]` and
+    # `CollectionSignal[T]` inherit from it, so the same call works
+    # for either.
     result.add quote do:
-      subscribe(`s`, `compSym`)
+      subscribe(Subscribable(`s`), `compSym`)
   result.add quote do:
     `compSym`.run = proc() {.closure.} = `body`
     onCleanup proc() =

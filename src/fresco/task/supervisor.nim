@@ -324,7 +324,10 @@ macro supervisor*(name: untyped, body: untyped): untyped =
     of nnkAsgn:
       let key = stmt[0]
       let val = stmt[1]
-      if key.kind != nnkIdent or $key notin KnownConfigKeys:
+      # Identity check via name string — hygiene may wrap `key` as
+      # nnkSym if `supervisor:` is invoked inside a template. `$key`
+      # returns the base name regardless of node kind.
+      if $key notin KnownConfigKeys:
         error("supervisor: unknown config key `" & key.repr &
               "` (expected one of " & $KnownConfigKeys & ")", key)
       supInit.add newTree(nnkExprEqExpr, key, val)

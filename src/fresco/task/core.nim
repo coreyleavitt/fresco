@@ -81,18 +81,23 @@ proc wireLifecycle(m: Mount) =
         # not whatever `currentScope` happens to be when the dispatcher
         # fires this callback.
         if globalJournal != nil:
-          let parent = captured.scope.lastEventId
-          let tid    = captured.scope.taskId
+          # Local names `completedTid` / `completedParent` rather than
+          # `tid` / `parent` to make it visually obvious this is NOT
+          # the `journalEvent` template's `taskTid` / `parentEvt` —
+          # the rules are different (this path uses captured.scope,
+          # not currentScope).
+          let completedParent = captured.scope.lastEventId
+          let completedTid    = captured.scope.taskId
           let id =
             if captured.future.cancelled:
-              globalJournal.logTaskCancelled(tid, parent, "")
+              globalJournal.logTaskCancelled(completedTid, completedParent, "")
             elif captured.future.failed:
               let e = captured.future.error
-              globalJournal.logTaskFailed(tid, parent,
+              globalJournal.logTaskFailed(completedTid, completedParent,
                 if e == nil: "" else: e.msg,
                 if e == nil: "" else: $e.name)
             else:
-              globalJournal.logTaskCompleted(tid, parent)
+              globalJournal.logTaskCompleted(completedTid, completedParent)
           captured.scope.lastEventId = id
         if not captured.scope.disposed:
           dispose(captured.scope)

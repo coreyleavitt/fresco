@@ -87,6 +87,19 @@ suite "tween":
       check abs(afterDispose - midpoint) < 1.0
     waitFor body()
 
+  test "startFrameClock is idempotent (no-op on second call)":
+    # Round-8 L4: documents the "first-installed-fps wins" semantic.
+    # Calling startFrameClock twice should be safe — the second call
+    # is a no-op while the first clock is running.
+    proc body() {.async: (raises: [Exception]).} =
+      startFrameClock(60)
+      startFrameClock(30)   # should be ignored
+      let s = signal(0.0)
+      discard tween(s, 1.0, 80.milliseconds, esLinear)
+      await sleepAsync(120.milliseconds)
+      check abs(s() - 1.0) < 1e-6
+    waitFor body()
+
   test "stopFrameClock resets frameInterval so subsequent fps takes effect":
     # Regression for round-2 H1: a stopFrameClock followed by
     # startFrameClock(fps = X) used to silently keep the previous

@@ -46,6 +46,9 @@ var currentComputation* {.threadvar.}: Computation
 # --- Signal -----------------------------------------------------------------
 
 proc signal*[T](initial: T, label = ""): Signal[T] =
+  ## Construct a Signal holding `initial`. The optional `label` is
+  ## used by the journal for `ekSignalWrite` events — unlabeled
+  ## signals are excluded from state-restoration projection.
   Signal[T](val: initial, label: label)
 
 proc subscribe*(s: Subscribable, c: Computation) {.gcsafe.} =
@@ -67,6 +70,9 @@ proc trackRead(s: Subscribable) {.gcsafe.} =
       currentComputation.sources.add s
 
 proc get*[T](s: Signal[T]): T {.gcsafe.} =
+  ## Read the current value. When called inside a `createEffect` /
+  ## `createComputed` body, registers a dynamic dependency on `s`.
+  ## Use `peek` to read without tracking.
   trackRead(s)
   s.val
 

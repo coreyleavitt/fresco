@@ -56,6 +56,14 @@ const atomMap = {
 proc atomKindFor(name: string): string =
   if name in atomMap: atomMap[name] else: ""
 
+template isIdentLike(n: NimNode): bool =
+  ## Accept any node that behaves like an identifier in untyped-macro
+  ## context: bare `nnkIdent`, hygiene-wrapped `nnkSym`, or
+  ## `nnkOpenSymChoice` (the compiler's pre-resolution form). Reject
+  ## `nnkDotExpr`, `nnkBracketExpr`, etc. — those aren't valid DSL
+  ## keyword forms.
+  n.kind in {nnkIdent, nnkSym, nnkOpenSymChoice}
+
 proc compileArm(evSym, arm: NimNode): tuple[cond, body: NimNode] =
   ## Translate one arm of a receive into an (if-condition, body) pair
   ## suitable for inclusion in an elif chain. Wildcard arms return
@@ -69,7 +77,7 @@ proc compileArm(evSym, arm: NimNode): tuple[cond, body: NimNode] =
     return (nil, armBody)
 
   # Atom: `Enter: body`, `ArrowUp: body`, `F1: body` …
-  if arm.kind == nnkCall and arm.len == 2 and arm[0].kind == nnkIdent:
+  if arm.kind == nnkCall and arm.len == 2 and arm[0].isIdentLike:
     let name = $arm[0]
     let kindName = atomKindFor(name)
     if kindName.len == 0:
@@ -79,7 +87,7 @@ proc compileArm(evSym, arm: NimNode): tuple[cond, body: NimNode] =
     return (cond, armBody)
 
   # Constructor: `Char('+')` / `Char(c)` / `Ctrl('c')` / `Alt(a)`
-  if arm.kind == nnkCall and arm.len == 3 and arm[0].kind == nnkIdent:
+  if arm.kind == nnkCall and arm.len == 3 and arm[0].isIdentLike:
     let ctor = $arm[0]
     let argument = arm[1]
 
@@ -90,7 +98,7 @@ proc compileArm(evSym, arm: NimNode): tuple[cond, body: NimNode] =
         let cond = quote do:
           `evSym`.kind == kChar and `evSym`.rune == Rune(`chLit`)
         return (cond, armBody)
-      elif argument.kind == nnkIdent:
+      elif argument.isIdentLike:
         let binder = argument
         let cond = quote do: `evSym`.kind == kChar
         let wrapped = quote do:
@@ -105,7 +113,7 @@ proc compileArm(evSym, arm: NimNode): tuple[cond, body: NimNode] =
         let cond = quote do:
           `evSym`.kind == kCtrl and `evSym`.ch == `chLit`
         return (cond, armBody)
-      elif argument.kind == nnkIdent:
+      elif argument.isIdentLike:
         let binder = argument
         let cond = quote do: `evSym`.kind == kCtrl
         let wrapped = quote do:
@@ -120,7 +128,7 @@ proc compileArm(evSym, arm: NimNode): tuple[cond, body: NimNode] =
         let cond = quote do:
           `evSym`.kind == kAlt and `evSym`.ch == `chLit`
         return (cond, armBody)
-      elif argument.kind == nnkIdent:
+      elif argument.isIdentLike:
         let binder = argument
         let cond = quote do: `evSym`.kind == kAlt
         let wrapped = quote do:
@@ -154,18 +162,17 @@ proc kindCoveredByArm(arm: NimNode): string =
   ## return the kind name. Otherwise return "" (partial / not-covering).
   ## Wildcard arms return a sentinel "*".
   if arm.kind notin {nnkCall, nnkCommand}: return ""
-  if arm.len == 2 and arm[0].kind == nnkIdent:
-    let name = $arm[0]
-    if name == "_": return "*"
-    let k = atomKindFor(name)
+  if arm.len == 2 and arm[0].isIdentLike:
+    if arm[0].eqIdent("_"): return "*"
+    let k = atomKindFor($arm[0])
     if k.len > 0: return k
     return ""
-  if arm.len == 3 and arm[0].kind == nnkIdent:
+  if arm.len == 3 and arm[0].isIdentLike:
     let ctor = $arm[0]
     let arg = arm[1]
     # Only a capture (identifier) is fully-covering; a literal pins
     # one specific char.
-    if arg.kind == nnkIdent:
+    if arg.isIdentLike:
       case ctor
       of "Char": return "kChar"
       of "Ctrl": return "kCtrl"

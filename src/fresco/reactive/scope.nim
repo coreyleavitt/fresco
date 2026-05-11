@@ -57,6 +57,9 @@ var currentScope* {.threadvar.}: Scope
   ## `mountWhen` and `hotkey` do this internally.
 
 proc newScope*(parent: Scope = nil): Scope =
+  ## Construct a fresh Scope, optionally parented. Disposal cascades
+  ## from parent to children. `createRoot` is the higher-level form
+  ## that also installs the new scope as `currentScope` for a body.
   result = Scope(parent: parent)
   if parent != nil:
     parent.children.add result

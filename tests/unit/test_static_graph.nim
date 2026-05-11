@@ -3,6 +3,7 @@
 import std/[unittest, strformat]
 import fresco/reactive/scope
 import fresco/reactive/signal
+import fresco/reactive/collection
 import fresco/reactive/static_graph
 
 suite "tracked: static dependency tracking":
@@ -101,3 +102,19 @@ suite "tracked: static dependency tracking":
     check runs == 1
     tracked_sig.set(1)
     check runs == 2
+
+  test "tracked: detects CollectionSignal reads via .get and .len":
+    # Regression for round-8 H3: previously isSignalRead matched only
+    # Signal[T]; CollectionSignal[T] reads inside tracked: produced no
+    # subscribe edge, so the block didn't re-run on mutations.
+    let items = collection(@[1, 2, 3])
+    var runs = 0
+    discard createRoot:
+      tracked:
+        discard items.len
+        inc runs
+    check runs == 1
+    items.push(4)        # mutation must fire the tracked block
+    check runs == 2
+    items.setAt(0, 99)
+    check runs == 3

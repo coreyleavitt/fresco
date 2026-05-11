@@ -6,6 +6,8 @@ import chronos
 import fresco/reactive/scope
 import fresco/task/core
 import fresco/task/parallel
+import fresco/journal/events
+import fresco/journal/log
 
 proc tick(): Future[void] {.async: (raises: [CancelledError]).} =
   await sleepAsync(0.milliseconds)
@@ -80,6 +82,40 @@ suite "parallel:":
         discard spawn immediate()
         discard spawn immediate()
       check ran == 3
+    waitFor body()
+
+  test "concurrent sibling failure journals under the sibling's taskId":
+    # Regression for round-8 H2: previously the journal entry used the
+    # parallel's enclosing taskId (via journalEvent's `taskTid`) AND a
+    # static "parallel-sibling" placeholder name. Now the direct log
+    # call uses the failing sibling's own scope so `byTask` finds it.
+    proc body() {.async: (raises: [Exception]).} =
+      resetJournal()
+      discard useJournal()
+      proc loser() {.async: (raises: [Exception]).} =
+        await sleepAsync(2.milliseconds)
+        raise newException(IOError, "loser-boom")
+      proc concurrentLoser() {.async: (raises: [Exception]).} =
+        await sleepAsync(2.milliseconds)
+        raise newException(ValueError, "concurrent-boom")
+      var caught = false
+      var loserTid: TaskId
+      try:
+        parallel:
+          let m1 = spawn loser()
+          let m2 = spawn concurrentLoser()
+          loserTid = m2.scope.taskId
+      except CatchableError:
+        caught = true
+      check caught
+      # Find the escalate event for the concurrent sibling. Look it
+      # up by the sibling's taskId.
+      let escalates = globalJournal.byKind(ekSupervisorEscalate)
+      var found = false
+      for ev in escalates:
+        if ev.taskId == loserTid: found = true
+      check found
+      resetJournal()
     waitFor body()
 
   test "spawn isolates child task's view of parallelCollector":

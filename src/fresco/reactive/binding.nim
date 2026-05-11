@@ -56,22 +56,24 @@ proc resolveSliceEnds(rIdent, slice: NimNode): NimNode =
   ## For a `..` / `..<` infix slice, rewrite ^N on either end. The
   ## `..^` operator (e.g. `1..^2`) is recognized as a single infix
   ## and split into `..` with the right side rewritten.
-  if slice.kind != nnkInfix or slice.len != 3 or slice[0].kind != nnkIdent:
+  if slice.kind != nnkInfix or slice.len != 3:
     return slice
-  let op = $slice[0]
-  case op
-  of "..", "..<":
+  # eqIdent match against ident-like operators (nnkIdent / nnkSym).
+  if slice[0].eqIdent(".."):
     let lo = resolveBackIndex(rIdent, slice[1])
     let hi = resolveBackIndex(rIdent, slice[2])
     return newTree(nnkInfix, slice[0], lo, hi)
-  of "..^":
+  if slice[0].eqIdent("..<"):
+    let lo = resolveBackIndex(rIdent, slice[1])
+    let hi = resolveBackIndex(rIdent, slice[2])
+    return newTree(nnkInfix, slice[0], lo, hi)
+  if slice[0].eqIdent("..^"):
     # `lo ..^ n` ≡ `lo .. (rIdent.height - n)`
     let lo = resolveBackIndex(rIdent, slice[1])
     let n  = slice[2]
     let dotDot = ident("..")
     return newTree(nnkInfix, dotDot, lo, quote do: `rIdent`.height - `n`)
-  else:
-    return slice
+  return slice
 
 macro region*(r: untyped, body: untyped): untyped =
   ## DSL block: gather row / rows bindings against a Region.
@@ -92,16 +94,16 @@ macro region*(r: untyped, body: untyped): untyped =
             arm.repr, arm)
     let head = arm[0]
     let armBody = arm[^1]
-    if head.kind != nnkIdent:
-      error("region: arm head must be `row` or `rows`", head)
-    case $head
-    of "row":
+    # eqIdent accepts nnkIdent / nnkSym / nnkOpenSymChoice — hygiene
+    # may wrap `row` / `rows` as a symbol when this macro is expanded
+    # inside another template. Match on the name, not the AST kind.
+    if head.eqIdent("row"):
       if arm.len != 3:
         error("region: `row N: body` expects one index argument", arm)
       let idx = resolveBackIndex(r, arm[1])
       result.add quote do:
         bindRow(`r`, `idx`, `armBody`)
-    of "rows":
+    elif head.eqIdent("rows"):
       if arm.len != 3:
         error("region: `rows A..B: body` expects one slice argument", arm)
       if arm[1].kind != nnkInfix:
@@ -111,4 +113,4 @@ macro region*(r: untyped, body: untyped): untyped =
       result.add quote do:
         bindRows(`r`, `slice`, `armBody`)
     else:
-      error("region: unknown arm `" & $head & "` (expected `row`/`rows`)", head)
+      error("region: unknown arm `" & head.repr & "` (expected `row`/`rows`)", head)

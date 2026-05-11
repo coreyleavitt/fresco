@@ -176,3 +176,36 @@ suite "CollectionSignal: speculative scope":
       c.set(@[10, 20, 30])
       check c.get() == @[10, 20, 30]
     check c.get() == @[1, 2, 3]
+
+suite "CollectionSignal: edge cases":
+
+  test "clear() on empty is a silent no-op (no delta, no observer fire)":
+    let c = collection[int]()
+    var observerRuns = 0
+    discard createRoot:
+      createEffect proc() =
+        discard c.len
+        inc observerRuns
+    let baseline = observerRuns
+    c.clear()    # already empty
+    check observerRuns == baseline   # no fire
+
+  test "pop on empty asserts":
+    let c = collection[int]()
+    expect AssertionDefect:
+      discard c.pop()
+
+  test "insert at out-of-bounds asserts":
+    let c = collection(@[1, 2, 3])
+    expect AssertionDefect:
+      c.insert(99, 4)    # idx > len
+
+  test "remove on out-of-bounds asserts":
+    let c = collection(@[1, 2])
+    expect AssertionDefect:
+      c.remove(5)
+
+  test "setAt on out-of-bounds asserts":
+    let c = collection(@[1])
+    expect AssertionDefect:
+      c.setAt(2, 99)

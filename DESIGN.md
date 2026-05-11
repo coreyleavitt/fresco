@@ -144,6 +144,7 @@ Notes on collapsed modules vs the original sketch:
 - `journal/time.nim` → bitemporal projection lives directly in `journal/log.nim`.
 - `context/provide.nim` → `reactive/context.nim`.
 - `macros/*` → each DSL macro is co-located with the runtime module it expands to (`receive` macro in `task/receive.nim`, `region` macro in `reactive/binding.nim`, `supervisor` macro in `task/supervisor.nim`, etc.). No separate macros directory.
+- `task/types.nim` → new layer-0 split (added during v2.x review). Holds `Mount`, `MountCollector`, and `parallelCollector` — pure data, no async machinery. Exists so `cls.nim` (continuation-local storage substrate) can import these types without dragging in `task/core.nim`'s lifecycle code. `core.nim` re-exports `types` so existing imports of `task/core` see the same surface.
 
 ---
 

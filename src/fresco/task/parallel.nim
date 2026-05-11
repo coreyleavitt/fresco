@@ -58,13 +58,22 @@ proc awaitParallel(mounts: seq[Mount]) {.task, async: (raises: [CatchableError])
           discard
         except CatchableError as siblingErr:
           # Sibling crashed concurrently with the winner. Journal it
-          # so the failure isn't silently lost. Mirrors supervisor's
-          # cascade-drain handling (supervisor.nim) — without this,
-          # parallel: would silently swallow simultaneous failures.
-          if siblingErr != nil:
-            let siblingName = "parallel-sibling"
+          # under the sibling's OWN scope (not the parallel block's
+          # enclosing scope) — that's how supervisor.nim:240 handles
+          # the analogous case, and it makes `byTask(siblingTaskId)`
+          # actually find the event. Direct log call rather than
+          # `journalEvent` because that template uses currentScope,
+          # which is the parallel's enclosing task here.
+          if siblingErr != nil and globalJournal != nil:
+            let siblingTid = p.scope.taskId
+            let siblingParent = p.scope.lastEventId
+            let siblingName = "parallel-task-" & $siblingTid
             let reason = "concurrent failure during parallel cascade: " & siblingErr.msg
-            journalEvent: jrnl.logSupervisorEscalate(taskTid, parentEvt, siblingName, reason)
+            try:
+              let id = globalJournal.logSupervisorEscalate(
+                siblingTid, siblingParent, siblingName, reason)
+              p.scope.lastEventId = id
+            except CatchableError: discard
       raise err
 
 template parallel*(body: untyped): untyped =

@@ -101,11 +101,16 @@ suite "journal: timestamps":
 
 suite "journal: useJournal / resetJournal":
 
+  setup:
+    resetJournal()   # don't bleed across cases on failure
+
+  teardown:
+    resetJournal()
+
   test "useJournal(j) always replaces an existing journal":
     # Regression for round-6 H3 / round-7 M3: useJournal(j) had been
     # idempotent (silently kept the first-installed journal). The new
     # contract is "always replaces."
-    resetJournal()
     let j1 = newJournal()
     discard useJournal(j1)
     check globalJournal == j1
@@ -113,15 +118,20 @@ suite "journal: useJournal / resetJournal":
     discard useJournal(j2)
     check globalJournal == j2
     check globalJournal != j1
-    resetJournal()
 
   test "useJournal() with no arg reuses existing or creates fresh":
-    resetJournal()
     let j1 = useJournal()         # creates fresh
     check j1 != nil
     let j2 = useJournal()         # reuses
     check j1 == j2
-    resetJournal()
+
+  test "useJournal(nil) with existing journal is equivalent to no-arg":
+    # Round-8 M6: the proc signature is `useJournal(j: Journal = nil)`
+    # so an explicit nil should behave identically to no argument.
+    let j = newJournal()
+    discard useJournal(j)
+    let r = useJournal(nil)
+    check r == j           # existing kept, not replaced with new
 
   test "resetJournal clears the active journal":
     let j = newJournal()

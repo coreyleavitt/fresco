@@ -59,6 +59,8 @@ type
   CollectionSignal*[T] = ref object of Subscribable
     items*: seq[T]
     label*: string
+      ## Reserved for v2.4 journal integration (`ekCollectionDelta`
+      ## events). Stored but otherwise unused in v2.3.
     deltaObservers: seq[DeltaHandler[T]]
 
 proc collection*[T](initial: seq[T] = @[], label = ""): CollectionSignal[T] =
@@ -109,77 +111,85 @@ proc get*[T](c: CollectionSignal[T]): seq[T] =
   c.items
 
 proc len*[T](c: CollectionSignal[T]): int =
+  ## Length of the collection. Tracked: a `createEffect` / `tracked:`
+  ## body that reads `.len` re-runs when the collection mutates.
   trackCollectionRead(c)
   c.items.len
 
 # --- Delta-emitting ops --------------------------------------------------
 
-proc recordCollectionRevert[T](c: CollectionSignal[T],
-                               prior: sink seq[T]) =
-  ## Push a revert that restores the collection's full prior items
-  ## seq. Only fires inside a `speculative:` block; otherwise no-op.
-  ## We snapshot the whole seq rather than the inverse-delta because:
-  ## (a) revert closures already execute as a stack on block exit, so
-  ## the cost is one snapshot per mutation, not one inverse-op
-  ## reconstruction; (b) `dkReplace` and `dkClear` would need full
-  ## snapshots anyway; uniform snapshotting keeps the code simple and
-  ## the semantics obvious.
-  if currentSpeculative == nil or currentSpeculative.committed: return
-  let captured = c
-  let priorItems = prior
-  recordRevert proc() =
-    captured.items = priorItems
-    emit(captured, Delta[T](kind: dkReplace, replaceVal: priorItems))
+template withRevert[T](c: CollectionSignal[T], body: untyped) =
+  ## Snapshot `c.items` and push a revert closure that restores it
+  ## before running `body`. Inside a `speculative:` block, falling
+  ## out without commit drains the closure and emits a `dkReplace`
+  ## delta so observers re-render against the restored state.
+  ## Outside a speculative scope this is a single seq copy + body.
+  ##
+  ## **Snapshot semantics:** we capture the full prior items seq
+  ## rather than an inverse delta. For the v2.3 use case (small
+  ## collections, few mutations per block) the per-mutation O(N)
+  ## copy and O(N×M) memory across M mutations is acceptable. v2.4's
+  ## `ekCollectionDelta` journal integration will revisit this with
+  ## inverse-deltas (`dkInsert` ↔ `dkRemove` at the same index, etc.)
+  ## to amortize the cost.
+  let priorItems = c.items   # plain copy — explicit and obvious
+  if currentSpeculative != nil and not currentSpeculative.committed:
+    let captured = c
+    let snap = priorItems
+    recordRevert proc() =
+      captured.items = snap
+      emit(captured, Delta[T](kind: dkReplace, replaceVal: snap))
+  body
 
 proc push*[T](c: CollectionSignal[T], v: T) =
   ## Append `v`. Emits `dkInsert` with the appended index.
-  recordCollectionRevert(c, c.items)
-  let idx = c.items.len
-  c.items.add v
-  emit(c, Delta[T](kind: dkInsert, insertIdx: idx, insertVal: v))
+  withRevert(c):
+    let idx = c.items.len
+    c.items.add v
+    emit(c, Delta[T](kind: dkInsert, insertIdx: idx, insertVal: v))
 
 proc pop*[T](c: CollectionSignal[T]): T {.discardable.} =
   ## Remove and return the last element. **Asserts on empty.**
   doAssert c.items.len > 0, "pop on empty collection"
-  recordCollectionRevert(c, c.items)
-  let idx = c.items.high
-  result = c.items[idx]
-  c.items.setLen(idx)
-  emit(c, Delta[T](kind: dkRemove, removeIdx: idx))
+  withRevert(c):
+    let idx = c.items.high
+    result = c.items[idx]
+    c.items.setLen(idx)
+    emit(c, Delta[T](kind: dkRemove, removeIdx: idx))
 
 proc insert*[T](c: CollectionSignal[T], idx: int, v: T) =
   ## Insert `v` at `idx` (valid range: `0 .. len`, inclusive — `len`
   ## inserts at the end). **Asserts on out-of-bounds.**
   doAssert idx in 0 .. c.items.len, "insert index out of bounds"
-  recordCollectionRevert(c, c.items)
-  c.items.insert(v, idx)
-  emit(c, Delta[T](kind: dkInsert, insertIdx: idx, insertVal: v))
+  withRevert(c):
+    c.items.insert(v, idx)
+    emit(c, Delta[T](kind: dkInsert, insertIdx: idx, insertVal: v))
 
 proc remove*[T](c: CollectionSignal[T], idx: int) =
   ## Remove the element at `idx`. **Asserts on out-of-bounds.**
   doAssert idx in 0 ..< c.items.len, "remove index out of bounds"
-  recordCollectionRevert(c, c.items)
-  c.items.delete(idx)
-  emit(c, Delta[T](kind: dkRemove, removeIdx: idx))
+  withRevert(c):
+    c.items.delete(idx)
+    emit(c, Delta[T](kind: dkRemove, removeIdx: idx))
 
 proc setAt*[T](c: CollectionSignal[T], idx: int, v: T) =
   ## Replace the element at `idx`. **Asserts on out-of-bounds.**
   doAssert idx in 0 ..< c.items.len, "setAt index out of bounds"
-  recordCollectionRevert(c, c.items)
-  c.items[idx] = v
-  emit(c, Delta[T](kind: dkUpdate, updateIdx: idx, updateVal: v))
+  withRevert(c):
+    c.items[idx] = v
+    emit(c, Delta[T](kind: dkUpdate, updateIdx: idx, updateVal: v))
 
 proc clear*[T](c: CollectionSignal[T]) =
   ## Remove all elements. No-op on an already-empty collection
   ## (no delta emitted in that case).
   if c.items.len == 0: return
-  recordCollectionRevert(c, c.items)
-  c.items.setLen(0)
-  emit(c, Delta[T](kind: dkClear))
+  withRevert(c):
+    c.items.setLen(0)
+    emit(c, Delta[T](kind: dkClear))
 
 proc set*[T](c: CollectionSignal[T], newItems: seq[T]) =
   ## Wholesale replacement. Emits a dkReplace delta — handlers that
   ## want incremental updates should treat this as "redo from scratch."
-  recordCollectionRevert(c, c.items)
-  c.items = newItems
-  emit(c, Delta[T](kind: dkReplace, replaceVal: newItems))
+  withRevert(c):
+    c.items = newItems
+    emit(c, Delta[T](kind: dkReplace, replaceVal: newItems))
