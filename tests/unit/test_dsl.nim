@@ -8,6 +8,28 @@ import fresco/reactive/scope
 import fresco/reactive/signal
 import fresco/reactive/binding
 
+suite "DSL: state block":
+
+  test "declares multiple signals in one block":
+    state:
+      count = 0
+      title = "hello"
+      ratio = 3.14
+    check count() == 0
+    check title() == "hello"
+    check ratio() == 3.14
+
+  test "declared signals participate in effects normally":
+    state:
+      a = 1
+      b = 2
+    var sums: seq[int] = @[]
+    discard createRoot:
+      createEffect proc() = sums.add a() + b()
+    a := 10
+    b := 20
+    check sums == @[3, 12, 30]
+
 suite "DSL: := operator":
 
   test ":= writes the signal and re-fires effects":

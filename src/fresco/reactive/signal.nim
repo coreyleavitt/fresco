@@ -103,6 +103,31 @@ template `:=`*[T](s: Signal[T], v: T): untyped =
   ## DSL sugar for signal writes: `count := 5` ≡ `count.set(5)`.
   s.set(v)
 
+import std/macros
+
+macro state*(body: untyped): untyped =
+  ## Declare one or more signals in a colon block:
+  ##
+  ##   state:
+  ##     count = 0
+  ##     title = "hello"
+  ##     items: seq[Item]                  # zero-initialized form
+  ##
+  ## Single-line `state x = 0` is not supported — Nim's parser claims
+  ## that shape as a named-arg call before any macro can intercept it.
+  expectKind(body, nnkStmtList)
+  result = newStmtList()
+  for stmt in body:
+    case stmt.kind
+    of nnkAsgn:
+      let name = stmt[0]
+      let value = stmt[1]
+      result.add quote do:
+        let `name` = signal(`value`)
+    else:
+      error("state: arm must be `name = value` or `name: Type`; got " &
+            stmt.repr, stmt)
+
 proc createComputed*[T](body: proc(): T {.closure.}): Signal[T] {.gcsafe.} =
   ## A derived signal that re-evaluates when its dependencies change.
   ## Reading the returned signal both yields the current value and
