@@ -173,13 +173,17 @@ macro receive*(stream: untyped, body: untyped): untyped =
   expectKind(body, nnkStmtList)
 
   let evSym = genSym(nskLet, "ev")
-  var chain: NimNode = nil
-  var elseBody: NimNode = nil
   var afterDur: NimNode = nil
   var afterBody: NimNode = nil
   var covered = initHashSet[string]()
   var hasWildcard = false
+  var wildcardSeenAt = -1
+  var nonAfterArms: seq[NimNode] = @[]
 
+  # First pass: separate `after` from regular arms, track coverage,
+  # warn on arms that appear after a wildcard (they would be
+  # unreachable since the wildcard always matches).
+  var idx = 0
   for arm in body:
     if isAfterArm(arm):
       if afterDur != nil:
@@ -188,15 +192,15 @@ macro receive*(stream: untyped, body: untyped): untyped =
       afterBody = arm[^1]
       continue
     let cov = kindCoveredByArm(arm)
-    if cov == "*": hasWildcard = true
+    if cov == "*":
+      hasWildcard = true
+      if wildcardSeenAt < 0: wildcardSeenAt = idx
     elif cov.len > 0: covered.incl cov
-    let (cond, armBody) = compileArm(evSym, arm)
-    if cond.kind == nnkIntLit and cond.intVal != 0:
-      elseBody = armBody
-    else:
-      if chain == nil:
-        chain = newNimNode(nnkIfExpr)
-      chain.add newTree(nnkElifBranch, cond, armBody)
+    if wildcardSeenAt >= 0 and idx > wildcardSeenAt:
+      warning("receive: arm appears after the wildcard `_:` and is " &
+              "unreachable", arm)
+    nonAfterArms.add arm
+    inc idx
 
   if not hasWildcard:
     var missing: seq[string] = @[]
@@ -207,11 +211,17 @@ macro receive*(stream: untyped, body: untyped): untyped =
            "matching keys will be silently dropped. " &
            "Uncovered: " & $missing)
 
-  if chain == nil:
-    chain = newNimNode(nnkIfExpr)
-  if elseBody != nil:
-    chain.add newTree(nnkElse, elseBody)
-  else:
+  # Second pass: emit one elif per arm in source order. The wildcard
+  # arm becomes an elif with condition `true`, which makes it match
+  # all remaining events. nnkIfStmt (not nnkIfExpr) so statement-
+  # shaped arm bodies (return, discard, mixed value/void) compose
+  # correctly.
+  var chain = newNimNode(nnkIfStmt)
+  for arm in nonAfterArms:
+    let (cond, armBody) = compileArm(evSym, arm)
+    chain.add newTree(nnkElifBranch, cond, armBody)
+  if not hasWildcard:
+    # Final else is a no-op so the if-statement remains total.
     chain.add newTree(nnkElse, quote do: discard)
 
   if afterDur == nil:

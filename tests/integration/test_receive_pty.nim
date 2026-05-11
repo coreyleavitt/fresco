@@ -135,6 +135,25 @@ suite "receive: core patterns":
         Enter:     outcome = "enter"
     check got == ""
 
+  test "wildcard at end of body catches non-enumerated keys":
+    # Regression: previous implementation pulled the wildcard out of
+    # source order and put it as the final `else`, which meant arms
+    # *after* a wildcard would fire BEFORE the wildcard. Now arms
+    # after `_:` are warned as unreachable; arms before fire in order.
+    let got = rig("z"):
+      receive stream:
+        Char('a'): outcome = "a"
+        Char('b'): outcome = "b"
+        _:         outcome = "fallback"
+    check got == "fallback"
+
+    let got2 = rig("a"):
+      receive stream:
+        Char('a'): outcome = "a"
+        Char('b'): outcome = "b"
+        _:         outcome = "fallback"
+    check got2 == "a"
+
   test "specific Char before general Char(c) priorities by source order":
     let got = rig("a"):
       receive stream:
