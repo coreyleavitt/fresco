@@ -5,6 +5,8 @@ import fresco/reactive/scope
 import fresco/reactive/signal
 import fresco/reactive/collection
 import fresco/reactive/speculative
+import fresco/journal/events
+import fresco/journal/log
 
 suite "CollectionSignal":
 
@@ -209,3 +211,44 @@ suite "CollectionSignal: edge cases":
     let c = collection(@[1])
     expect AssertionDefect:
       c.setAt(2, 99)
+
+suite "CollectionSignal: journal integration":
+
+  setup:
+    resetJournal()
+    discard useJournal()
+
+  teardown:
+    resetJournal()
+
+  test "labeled push emits ekCollectionDelta with insert op":
+    let c = collection[int](@[], label = "items")
+    c.push(42)
+    let evs = globalJournal.byKind(ekCollectionDelta)
+    check evs.len == 1
+    check evs[0].collectionLabel == "items"
+    check evs[0].collectionOp == "insert"
+    check evs[0].collectionIdx == 0
+    check evs[0].collectionRepr == "42"
+
+  test "remove / update / clear / replace each emit the right op":
+    let c = collection(@[1, 2, 3], label = "nums")
+    c.remove(0)
+    c.setAt(0, 99)
+    c.clear()
+    c.set(@[7, 8])
+    let evs = globalJournal.byKind(ekCollectionDelta)
+    check evs.len == 4
+    check evs[0].collectionOp == "remove"
+    check evs[0].collectionIdx == 0
+    check evs[1].collectionOp == "update"
+    check evs[2].collectionOp == "clear"
+    check evs[2].collectionIdx == -1
+    check evs[3].collectionOp == "replace"
+    check evs[3].collectionRepr == "2"     # replace records the new length
+
+  test "unlabeled collections skip journaling":
+    let c = collection[int]()   # no label
+    c.push(1)
+    c.push(2)
+    check globalJournal.byKind(ekCollectionDelta).len == 0

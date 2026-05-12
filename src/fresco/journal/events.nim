@@ -27,6 +27,7 @@ type
     ekTaskFailed
     ekTaskCancelled
     ekSignalWrite
+    ekCollectionDelta
     ekKeyReceived
     ekKeyConsumed
     ekSupervisorRestart
@@ -53,6 +54,11 @@ type
     of ekSignalWrite:
       signalLabel*:    string         # signal identifier (or "")
       writeRepr*:      string         # repr-style value
+    of ekCollectionDelta:
+      collectionLabel*: string        # collection identifier (or "")
+      collectionOp*:    string        # "insert" / "remove" / "update" / "clear" / "replace"
+      collectionIdx*:   int           # affected index, or -1 for clear/replace
+      collectionRepr*:  string        # value repr for insert/update, length-str for replace, "" else
     of ekKeyReceived, ekKeyConsumed:
       keySummary*:     string         # rendered KeyEvent
     of ekSupervisorRestart:

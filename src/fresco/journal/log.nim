@@ -175,6 +175,24 @@ proc logSignalWrite*(j: Journal, taskId: TaskId, parentId: EventId,
   ev.writeRepr = valueRepr
   j.append(ev)
 
+proc logCollectionDelta*(j: Journal, taskId: TaskId, parentId: EventId,
+                         label, op: string, idx: int, repr: string): EventId =
+  ## Record one CollectionSignal mutation. `op` is one of "insert" /
+  ## "remove" / "update" / "clear" / "replace". `idx` is -1 for the
+  ## whole-collection ops (clear, replace). `repr` carries the new
+  ## value's repr for insert/update, the new length (as string) for
+  ## replace, and empty for remove/clear.
+  ##
+  ## Reconstruction of collection state from these deltas requires
+  ## either replaying from initial state or interleaving snapshots —
+  ## v2.4+ may add a snapshot event variant.
+  var ev = baseEvent(ekCollectionDelta, taskId, parentId)
+  ev.collectionLabel = label
+  ev.collectionOp = op
+  ev.collectionIdx = idx
+  ev.collectionRepr = repr
+  j.append(ev)
+
 proc logKeyReceived*(j: Journal, taskId: TaskId, parentId: EventId,
                      summary: string): EventId =
   var ev = baseEvent(ekKeyReceived, taskId, parentId)

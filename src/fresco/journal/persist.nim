@@ -20,7 +20,9 @@ import ./events
 import ./log
 
 const
-  JournalSchemaVersion* = 1
+  JournalSchemaVersion* = 2
+    ## v2 (#39): added `ekCollectionDelta` event variant.
+    ## v1: initial schema.
     ## Bumped whenever the on-disk JSON shape changes incompatibly
     ## (new variant payload field rename, EventKind reorder, etc.).
     ## Each event line carries `v` = JournalSchemaVersion; openJournal
@@ -70,6 +72,11 @@ proc toJson*(e: Event): JsonNode =
   of ekSignalWrite:
     result["signalLabel"] = %e.signalLabel
     result["writeRepr"]   = %e.writeRepr
+  of ekCollectionDelta:
+    result["collectionLabel"] = %e.collectionLabel
+    result["collectionOp"]    = %e.collectionOp
+    result["collectionIdx"]   = %e.collectionIdx
+    result["collectionRepr"]  = %e.collectionRepr
   of ekKeyReceived, ekKeyConsumed:
     result["keySummary"]  = %e.keySummary
   of ekSupervisorRestart:
@@ -119,6 +126,11 @@ proc fromJson*(n: JsonNode): Option[Event] =
   of ekSignalWrite:
     e.signalLabel = n{"signalLabel"}.getStr("")
     e.writeRepr   = n{"writeRepr"}.getStr("")
+  of ekCollectionDelta:
+    e.collectionLabel = n{"collectionLabel"}.getStr("")
+    e.collectionOp    = n{"collectionOp"}.getStr("")
+    e.collectionIdx   = n{"collectionIdx"}.getInt(-1)
+    e.collectionRepr  = n{"collectionRepr"}.getStr("")
   of ekKeyReceived, ekKeyConsumed:
     e.keySummary = n{"keySummary"}.getStr("")
   of ekSupervisorRestart:

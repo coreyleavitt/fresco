@@ -75,34 +75,25 @@ proc wireLifecycle(m: Mount) =
   # Direction 2: future complete / cancel → log + dispose scope.
   m.future.addCallback proc(udata: pointer) {.gcsafe, raises: [].} =
     {.cast(gcsafe).}:
-      try:
-        # Direct logging here rather than journalEvent — the journal
-        # attribution must use `captured.scope` (the *task's* scope),
-        # not whatever `currentScope` happens to be when the dispatcher
-        # fires this callback.
-        if globalJournal != nil:
-          # Local names `completedTid` / `completedParent` rather than
-          # `tid` / `parent` to make it visually obvious this is NOT
-          # the `journalEvent` template's `taskTid` / `parentEvt` —
-          # the rules are different (this path uses captured.scope,
-          # not currentScope).
-          let completedParent = captured.scope.lastEventId
-          let completedTid    = captured.scope.taskId
-          let id =
-            if captured.future.cancelled:
-              globalJournal.logTaskCancelled(completedTid, completedParent, "")
-            elif captured.future.failed:
-              let e = captured.future.error
-              globalJournal.logTaskFailed(completedTid, completedParent,
-                if e == nil: "" else: e.msg,
-                if e == nil: "" else: $e.name)
-            else:
-              globalJournal.logTaskCompleted(completedTid, completedParent)
-          captured.scope.lastEventId = id
-        if not captured.scope.disposed:
-          dispose(captured.scope)
-      except Exception:
-        discard   # dispose's cleanup closures untyped-raise
+      # Journal write uses `journalEventOnScope` so attribution is the
+      # task's own scope (`captured.scope`), not whatever
+      # `currentScope` the dispatcher left behind. The template
+      # internally swallows CatchableError (the journal contract);
+      # we wrap only the `dispose` call in a broader Exception catch
+      # since cleanup closures can untyped-raise.
+      journalEventOnScope(captured.scope):
+        if captured.future.cancelled:
+          jrnl.logTaskCancelled(taskTid, parentEvt, "")
+        elif captured.future.failed:
+          let e = captured.future.error
+          jrnl.logTaskFailed(taskTid, parentEvt,
+            if e == nil: "" else: e.msg,
+            if e == nil: "" else: $e.name)
+        else:
+          jrnl.logTaskCompleted(taskTid, parentEvt)
+      if not captured.scope.disposed:
+        try: dispose(captured.scope)
+        except Exception: discard   # dispose's cleanup closures untyped-raise
 
 template spawnRetry*(retries: int, call: untyped): Mount =
   ## Retry the spawned task up to `retries` times on failure. Each
@@ -194,7 +185,7 @@ template spawn*(call: untyped): Mount =
         fut = call
     finally:
       parallelCollector = savedCollector
-    let m = Mount(scope: childScope, future: fut)
+    let m = Mount(scope: childScope, future: fut, name: astToStr(call))
     # Register with the parallel collector BEFORE wiring lifecycle.
     # `wireLifecycle.addCallback` fires synchronously when the future
     # is already finished (a fully-sync async body), and the callback

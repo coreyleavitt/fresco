@@ -56,6 +56,16 @@ var frameInterval {.threadvar.}: Duration
   ## fresco default) are unaffected. Cross-thread animation would
   ## require a shared list + a per-thread clock — not yet implemented.
 
+proc cancel*(a: Animation) =
+  ## Stop the animation. The next frame-clock tick discovers the
+  ## `cancelled` flag and removes the entry from the scheduler.
+  ## Idempotent — calling twice is a no-op.
+  ##
+  ## Use this for scope-less callers (`tween` invoked outside any
+  ## scope) that need to cancel explicitly. Scope-bound tweens get
+  ## auto-cancel via the `onCleanup` registered at tween time.
+  if a != nil: a.cancelled = true
+
 proc applyEasing*(t: float, easing: Easing): float =
   let t = clamp(t, 0.0, 1.0)
   case easing

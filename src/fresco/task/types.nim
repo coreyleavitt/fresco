@@ -13,6 +13,12 @@ type
   Mount* = ref object
     scope*: Scope
     future*: Future[void]
+    name*: string
+      ## The call expression that produced this Mount (e.g. "worker()"),
+      ## captured by `spawn` via `astToStr(call)`. Mirrors what the
+      ## journal stores in `ekTaskSpawned.spawnedName` but is reachable
+      ## from a live Mount without a journal query. Used by `parallel:`
+      ## for concurrent-failure naming.
 
   MountCollector* = ref object
     ## Heap-allocated collector for `parallel:` blocks. Holding it as a

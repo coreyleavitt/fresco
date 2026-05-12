@@ -27,6 +27,7 @@ These are the failure modes the design exists to prevent — violating any of th
 - **One async runtime: chronos.** No `std/asyncdispatch` anywhere. Never `raise` across an async boundary without converting.
 - **No curses, no termcap.** Pure ANSI emission. We accept the ~98% terminal-compat tradeoff.
 - **No VDOM/reconciler in v0.** Caller owns state; fresco owns the surface.
+- **Single chronos dispatcher per process.** fresco's threadvar-based context substrate, lazy `typeMarker` init, animation frame clock, and POSIX signal handler stack all assume one dispatcher thread. Multi-thread embedders are unsupported: POSIX signals may be delivered to a thread that never called `installSignalHandlers` (terminal stays raw on SIGINT), `typeMarker[T]` first-touch is racy, and tweens issued from non-dispatcher threads silently don't tick. Multi-dispatcher support is a v3 design item; for now, run fresco in the main thread only.
 
 ## Dev workflow
 

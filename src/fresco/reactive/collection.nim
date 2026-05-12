@@ -19,19 +19,22 @@
 ## pre-block state and firing a `dkReplace` delta so observers
 ## re-render.
 ##
-## **v2.3 limitation — no journal integration:** unlike `Signal[T].set`
-## which emits `ekSignalWrite` events, CollectionSignal mutations are
-## not journaled. This means bitemporal projection (`stateAt` /
-## `stateAtTime`) and state restoration via `lastWritesByLabel` cover
-## scalar signal state but **not** collection state. v2.4 will add an
-## `ekCollectionDelta` event variant and wire emit() through journalEvent;
-## until then, treat collection state as ephemeral (not replayable).
+## **Journal integration:** labeled mutations emit `ekCollectionDelta`
+## events. Unlabeled collections skip journaling (same rule as
+## `Signal[T].set`). The delta payload preserves enough information
+## for forward replay (insert/remove/update/clear/replace), but
+## bitemporal `stateAt` projection of collection state is not yet
+## implemented — reconstruction requires either replaying from initial
+## state or interleaving snapshots, both of which are future work
+## (see #38 for inverse-delta reverts).
 
 {.experimental: "callOperator".}
 
 import ./signal
 import ./scope
 import ./speculative
+import ../journal/events
+import ../journal/log
 
 type
   DeltaKind* = enum
@@ -65,8 +68,9 @@ type
       ## Direct `.items` access would bypass `trackCollectionRead`,
       ## silently breaking reactive subscription.
     label*: string
-      ## Reserved for v2.4 journal integration (`ekCollectionDelta`
-      ## events). Stored but otherwise unused in v2.3.
+      ## Identifier emitted with `ekCollectionDelta` journal events.
+      ## Unlabeled collections skip journaling — match the rule for
+      ## unlabeled signals so the journal is consistent.
     deltaObservers: seq[DeltaHandler[T]]
 
 proc collection*[T](initial: seq[T] = @[], label = ""): CollectionSignal[T] =
@@ -85,11 +89,33 @@ proc onDelta*[T](c: CollectionSignal[T], handler: DeltaHandler[T]) =
     let idx = captured.deltaObservers.find(h)
     if idx >= 0: captured.deltaObservers.del idx
 
+proc journalDelta[T](c: CollectionSignal[T], d: Delta[T]) =
+  ## Record this mutation in the journal. Skipped for unlabeled
+  ## collections (mirrors signal-write rule — projection only works
+  ## for labeled state).
+  if c.label.len == 0: return
+  case d.kind
+  of dkInsert:
+    let r = when compiles($d.insertVal): $d.insertVal else: ""
+    journalEvent: jrnl.logCollectionDelta(taskTid, parentEvt, c.label, "insert", d.insertIdx, r)
+  of dkRemove:
+    journalEvent: jrnl.logCollectionDelta(taskTid, parentEvt, c.label, "remove", d.removeIdx, "")
+  of dkUpdate:
+    let r = when compiles($d.updateVal): $d.updateVal else: ""
+    journalEvent: jrnl.logCollectionDelta(taskTid, parentEvt, c.label, "update", d.updateIdx, r)
+  of dkClear:
+    journalEvent: jrnl.logCollectionDelta(taskTid, parentEvt, c.label, "clear", -1, "")
+  of dkReplace:
+    let r = $d.replaceVal.len   # length-only repr — full repr could be huge
+    journalEvent: jrnl.logCollectionDelta(taskTid, parentEvt, c.label, "replace", -1, r)
+
 proc emit[T](c: CollectionSignal[T], d: Delta[T]) =
   ## Fan out to delta-aware handlers AND notify plain reactive
   ## observers so a `createEffect`/`bindRows` that read `c.items` or
   ## `c.len` re-runs on any mutation. The two channels are independent:
   ## handlers see typed deltas, computations see "something changed."
+  ## Also journals the mutation if the collection has a label.
+  journalDelta(c, d)
   let snap = c.deltaObservers
   for h in snap:
     try: h(d)

@@ -63,7 +63,12 @@ proc awaitParallel(mounts: seq[Mount]) {.task, async: (raises: [CatchableError])
           # `journalEventOnScope` is the cross-cutting helper for
           # this pattern (same one wireLifecycle uses).
           if siblingErr != nil:
-            let siblingName = "parallel-task-" & $p.scope.taskId
+            # Mount carries the original `astToStr(call)` name (set by
+            # `spawn`), so the journal entry identifies the exact
+            # call expression that failed — not a synthetic placeholder.
+            let siblingName =
+              if p.name.len > 0: p.name
+              else: "parallel-task-" & $p.scope.taskId
             let reason = "concurrent failure during parallel cascade: " & siblingErr.msg
             journalEventOnScope(p.scope):
               jrnl.logSupervisorEscalate(taskTid, parentEvt, siblingName, reason)
