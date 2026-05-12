@@ -19,13 +19,12 @@
 ##     the reverts replay in reverse and observers re-notify, so the
 ##     world returns to its pre-block state.
 ##
-## **Awaiting inside a speculative body is safe** as long as the
-## enclosing async proc is annotated `{.task.}` — fresco's CLS
-## substrate restores `currentSpeculative` after every suspension,
-## so writes from sibling coroutines that ran during the suspension
-## don't land on our revert stack. Without `{.task.}`, the active
-## frame is lost across the suspend and any signal write while
-## suspended would erroneously be tracked on our frame.
+## **Awaiting inside a speculative body is safe.** `currentSpeculative`
+## is a chronos `contextVar`, so the binding propagates through every
+## `await` automatically; writes from sibling coroutines see their own
+## frame (or none) and don't land on ours.
+
+import chronos/contextvars
 
 type
   SpeculativeScope* = ref object
@@ -47,7 +46,8 @@ type
       ## scope (so an outer rollback still undoes inner-committed work).
     committed*: bool
 
-var currentSpeculative* {.threadvar.}: SpeculativeScope
+contextVar:
+  var currentSpeculative: SpeculativeScope = nil
 
 # --- Speculative extension surface ----------------------------------------
 ##
@@ -143,9 +143,8 @@ template speculative*(body: untyped): SpeculativeScope =
   ## the body, call `commit()` to make the writes stick; otherwise
   ## the frame auto-rolls back on exit.
   block:
-    let prevSpec = currentSpeculative
+    let prevSpec = currentSpeculative      # snapshot for `frame.parent`
     let frame = SpeculativeScope(parent: prevSpec)
-    currentSpeculative = frame
     template commit() {.inject, used.} =
       ## End the speculative transaction: writes become canonical.
       ## After `commit()` any further `signal.set` inside the same
@@ -179,19 +178,15 @@ template speculative*(body: untyped): SpeculativeScope =
       frame.committed = true
       frame.reverts.setLen(0)
       frame.onRollbackHooks.setLen(0)   # no rollback after commit
-    # Rollback + threadvar restore unified into nested finallys so any
-    # exit path — normal return without commit, CatchableError, or
-    # Defect — leaves the world consistent. The inner finally runs
-    # rollback (best-effort: a Defect from a revert closure propagates,
-    # which is fine — those represent unrecoverable bugs). The outer
-    # finally unconditionally restores `currentSpeculative`, so even
-    # if rollback raises a Defect we don't leak the threadvar pointing
-    # at a dead frame.
-    try:
+    # Binding restore + rollback ordering: `withCurrentSpeculative`
+    # owns the contextVar's save/restore in its own try/finally; we
+    # only need an inner try/finally to ensure rollback fires before
+    # the binding is unwound. If rollback raises a Defect, it
+    # propagates through both finallys; the contextVar still restores
+    # the prior binding so we never leak a pointer at a dead frame.
+    withCurrentSpeculative(frame):
       try:
         body
       finally:
         if not frame.committed: rollback(frame)
-    finally:
-      currentSpeculative = prevSpec
     frame

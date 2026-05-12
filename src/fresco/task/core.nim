@@ -19,7 +19,7 @@ import ../reactive/scope
 import ../journal/events
 import ../journal/log
 import ./types
-import ../cls
+
 export types  # Mount, MountCollector, parallelCollector — public surface
 
 proc cancel*(m: Mount) {.gcsafe, raises: [].} =
@@ -48,7 +48,7 @@ proc wait*(m: Mount): Future[void] {.async: (raises: [CancelledError, CatchableE
   ## No `{.task.}` — `wait` returns immediately after its single
   ## `await m.future` with no post-await reactive work, so CLS
   ## save/restore would be pure overhead. Callers wrapped in their
-  ## own `{.task, async.}` are unaffected.
+  ## own `{.async.}` are unaffected.
   if m == nil: return
   await m.future
 
@@ -101,7 +101,7 @@ template spawnRetry*(retries: int, call: untyped): Mount =
   ## (typically a plain proc invocation). Cancellation propagates and
   ## stops further retries.
   block:
-    proc retryThunk(): Future[void] {.task, async.} =
+    proc retryThunk(): Future[void] {.async.} =
       # `{.task.}` because subsequent retries of `call` may include
       # synchronous reactive setup (signal declarations, spawns) that
       # read currentScope. Without CLS preservation across the await,
@@ -125,7 +125,7 @@ template spawnCatch*(call: untyped): Mount =
   ## already handled out-of-band (logging, signal mutation) and the
   ## supervisor shouldn't see it.
   block:
-    proc catchThunk(): Future[void] {.task, async.} =
+    proc catchThunk(): Future[void] {.async.} =
       # `{.task.}` for symmetry with `retryThunk` and correctness-by-
       # default: a future change adding post-await code here would
       # otherwise silently lose CLS context.
@@ -178,13 +178,13 @@ template spawn*(call: untyped): Mount =
           currentScope.lastEventId = id
       except CatchableError: discard
     var fut: Future[void]
-    let savedCollector = parallelCollector
-    parallelCollector = nil   # child task body must not see parent's collector
-    try:
+    # Child task body must not see parent's parallelCollector — otherwise
+    # spawns the child makes internally would leak into the parent's
+    # parallel: group. Binding nil for the duration of `call` isolates
+    # the child's synchronous startup.
+    withParallelCollector(nil):
       withScope(childScope):
         fut = call
-    finally:
-      parallelCollector = savedCollector
     let m = Mount(scope: childScope, future: fut, name: astToStr(call))
     # Register with the parallel collector BEFORE wiring lifecycle.
     # `wireLifecycle.addCallback` fires synchronously when the future

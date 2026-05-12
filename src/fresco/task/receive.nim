@@ -23,7 +23,7 @@
 ##
 ## The macro emits explicit CLS save/restore around its internal
 ## `await` (the `nextKey` / `race` calls). The enclosing proc still
-## needs `{.task, async.}` for *its other* awaits, but `receive` itself
+## needs `{.async.}` for *its other* awaits, but `receive` itself
 ## doesn't depend on the enclosing pragma to preserve context across
 ## the suspend it introduces.
 
@@ -31,7 +31,7 @@ import std/[macros, sets, tables, unicode]
 import chronos
 import ../events
 import ../input
-import ../cls
+
 
 const atomMap = {
   "Enter":      "kEnter",
@@ -260,11 +260,11 @@ macro receive*(stream: untyped, body: untyped): untyped =
 
   # The awaits this macro emits are invisible to the enclosing
   # `{.task.}` rewriter (macros expand after pragma processing).
-  # Use `taskAwait` for explicit CLS save/restore.
+  # Use `await` for explicit CLS save/restore.
 
   if afterDur == nil:
     result = quote do:
-      let `evSym` = taskAwait `stream`.nextKey()
+      let `evSym` = await `stream`.nextKey()
       `chain`
   else:
     # Race the next-key wait against a sleepAsync; dispatch on which
@@ -283,7 +283,7 @@ macro receive*(stream: untyped, body: untyped): untyped =
       let `keyFutSym` = `stream`.nextKey()
       let `timerSym`  = sleepAsync(`afterDur`)
       try:
-        discard taskAwait race(FutureBase(`keyFutSym`), FutureBase(`timerSym`))
+        discard await race(FutureBase(`keyFutSym`), FutureBase(`timerSym`))
         if `keyFutSym`.finished:
           let `evSym` = `keyFutSym`.read   # re-raises on failure
           `chain`

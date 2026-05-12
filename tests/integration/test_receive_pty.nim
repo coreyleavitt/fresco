@@ -6,7 +6,7 @@ import chronos
 import fresco/input as fresco_input
 import fresco/events
 import fresco/task/receive
-import fresco/cls
+
 import fresco/reactive/scope
 import fresco/journal/log
 
@@ -226,7 +226,7 @@ suite "receive: after timeout":
     # inside arm bodies ARE rewritten with save/restore. A signal
     # write after such an await attributes to the task's scope, not
     # to whichever stale scope the dispatcher left in currentScope.
-    proc inner(): Future[bool] {.task, async: (raises: [Exception]).} =
+    proc inner(): Future[bool] {.async: (raises: [Exception]).} =
       resetJournal()
       discard useJournal()
       let (master, slave) = openPtyPair()

@@ -18,7 +18,7 @@
 import std/macros
 import chronos
 import ./core
-import ../cls
+
 import ../reactive/scope
 import ../journal/events as jev
 import ../journal/log
@@ -132,7 +132,7 @@ proc trimWindow(times: var seq[Moment], now: Moment, window: Duration) =
   if keep > 0:
     times = times[keep ..< times.len]
 
-proc run*(s: Supervisor) {.task, async: (raises: [CatchableError]).} =
+proc run*(s: Supervisor) {.async: (raises: [CatchableError]).} =
   ## Run the supervisor loop. Returns when every child has reached a
   ## terminal state (lcTemporary done, or lcTransient exited cleanly,
   ## or rate limit escalated). Cancellation propagates: cancelling the

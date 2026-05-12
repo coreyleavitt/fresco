@@ -15,7 +15,7 @@ import chronos
 import ./terminal/termios
 import ./events
 import ./reactive/scope
-import ./cls
+
 import ./journal/events as jev
 import ./journal/log
 
@@ -237,7 +237,7 @@ proc start*(s: InputStream) =
     restoreTermios(s.snapshot)
     raise
 
-proc nextKey*(s: InputStream): Future[KeyEvent] {.task, async.} =
+proc nextKey*(s: InputStream): Future[KeyEvent] {.async.} =
   if s.closed:
     raise newException(InputStreamClosedError, "stream is closed")
   let getFut = s.queue.get()

@@ -1,12 +1,12 @@
 ## Task type primitives — pure data, no async machinery.
 ##
-## Separated from `core.nim` so that `cls.nim` (layer-0 CLS substrate)
-## can import these types without dragging in the full task lifecycle
-## machinery (spawn, wireLifecycle, journal-write boilerplate). cls
-## needs `MountCollector` and the `parallelCollector` threadvar for
-## context capture; that's it.
+## Separated from `core.nim` so low-level modules can reach `Mount` /
+## `MountCollector` / `parallelCollector` without dragging in the full
+## task lifecycle machinery (spawn, wireLifecycle, journal-write
+## boilerplate).
 
 import chronos
+import chronos/contextvars
 import ../reactive/scope
 
 type
@@ -27,9 +27,10 @@ type
     ## the pointer dangling if the surrounding stack frame moves.
     mounts*: seq[Mount]
 
-var parallelCollector* {.threadvar.}: MountCollector
-  ## INTERNAL: exported only so cls.nim's TaskContext can carry it
-  ## through CLS save/restore, and so the parallel: template and
-  ## spawn template can read/write it. Test code that needs to
-  ## introspect (e.g. assert collector.mounts.len) imports this
-  ## module directly. **Do not modify from user code.**
+contextVar:
+  var parallelCollector: MountCollector = nil
+  ## Backed by chronos's continuation-local storage so the binding
+  ## propagates through `await`. Read as `parallelCollector`, bind
+  ## via `withParallelCollector(c): body`. The `parallel:` and
+  ## `spawn` templates handle this internally; user code doesn't
+  ## interact with it directly.

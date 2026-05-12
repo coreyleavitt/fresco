@@ -7,7 +7,7 @@ import fresco/journal/log
 import fresco/reactive/scope
 import fresco/reactive/signal
 import fresco/task/core
-import fresco/cls
+
 
 proc tick(): Future[void] {.async: (raises: [CancelledError]).} =
   await sleepAsync(0.milliseconds)
@@ -68,9 +68,9 @@ suite "journal: task lifecycle":
   test "{.task.} pragma preserves journal attribution across await":
     # The CLS substrate (cls.nim) handles this automatically — no
     # manual withScope dance required. A signal write after an await
-    # inside a `{.task, async.}` proc attributes to the task's scope.
+    # inside a `{.async.}` proc attributes to the task's scope.
     proc body() {.async: (raises: [Exception]).} =
-      proc work() {.task, async.} =
+      proc work() {.async.} =
         await sleepAsync(5.milliseconds)
         let n = signal(0, label = "n")
         n.set(42)
@@ -80,20 +80,25 @@ suite "journal: task lifecycle":
       check writes.len == 1
       check writes[0].taskId == m.scope.taskId   # correct attribution
 
-  test "without {.task.}, scope is lost across await (regression baseline)":
-    # The bug shape that {.task.} fixes — recorded here so a future
-    # regression in the CLS substrate makes a *passing* test that
-    # used to fail, or vice versa.
+  test "bare {.async.} preserves scope across await (chronos contextvar propagation)":
+    # Before chronos gained continuation-local storage, this test was
+    # the "regression baseline" that ASSERTED the bug shape: a plain
+    # {.async.} proc would lose currentScope across `await` and any
+    # subsequent signal write would mis-attribute. After fresco migrated
+    # currentScope to a chronos contextVar (PR linked in
+    # docs/rfc-chronos-contextvars.md), propagation is automatic and
+    # this test now ASSERTS the correct behavior — no {.task.} pragma
+    # needed for any async proc to keep its scope.
     proc body() {.async: (raises: [Exception]).} =
-      proc work() {.async.} =                  # no {.task.}
+      proc work() {.async.} =
         await sleepAsync(5.milliseconds)
-        let n = signal(0, label = "lost")
+        let n = signal(0, label = "preserved")
         n.set(99)
       let m = spawn work()
       await m.wait()
       let writes = globalJournal.byKind(ekSignalWrite)
       check writes.len == 1
-      check writes[0].taskId != m.scope.taskId   # mis-attributed
+      check writes[0].taskId == m.scope.taskId   # correctly attributed
     waitFor body()
 
   test "parent's spawn cause is parent's lastEventId":

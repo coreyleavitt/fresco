@@ -12,10 +12,10 @@
 ##   mountWhen(active() and depth() < 10):
 ##     spawn worker()
 
+import chronos/contextvars
 import ../reactive/scope
 import ../reactive/signal
 import ./core
-import ../cls
 
 template mountWhen*(cond: untyped, body: untyped): untyped =
   ## Reactive conditional mount. `cond` is re-evaluated whenever any
@@ -31,7 +31,7 @@ template mountWhen*(cond: untyped, body: untyped): untyped =
   ## scope's context here and restore it around the effect body so
   ## `spawn`s inside `body` parent to the right place and journal
   ## events attribute to the right task.
-  let mountWhenCtx = captureContext()
+  let mountWhenCtx = currentContext()
   var currentMount: Mount = nil
   createEffect proc() =
     withContext(mountWhenCtx):

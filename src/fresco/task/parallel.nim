@@ -15,11 +15,11 @@
 
 import chronos
 import ./core
-import ../cls
+
 import ../journal/events   # for `$` on TaskId
 import ../journal/log
 
-proc awaitParallel(mounts: seq[Mount]) {.task, async: (raises: [CatchableError]).} =
+proc awaitParallel(mounts: seq[Mount]) {.async: (raises: [CatchableError]).} =
   ## Wait for every Mount. On first failure: cancel siblings, drain
   ## their cancellation cascades, re-raise the original error.
   ##
@@ -79,42 +79,30 @@ template parallel*(body: untyped): untyped =
   ## the remaining are cancelled and the exception propagates. Must be
   ## called from an async context.
   ##
-  ## **Awaiting inside the parallel body is safe** as long as the
-  ## enclosing async proc is annotated `{.task.}` — fresco's CLS
-  ## substrate restores `parallelCollector` after every suspension,
-  ## so spawns from sibling coroutines that run during the suspension
-  ## don't end up joined to this group. Without `{.task.}` on the
-  ## enclosing proc, an interleaved `spawn` from another coroutine
-  ## would incorrectly land in our collector.
+  ## **Awaiting inside the parallel body is safe.** `parallelCollector`
+  ## is a chronos `contextVar`, so its binding propagates through
+  ## every `await` automatically; spawns from sibling coroutines that
+  ## ran during a suspension don't land in our collector.
   block:
     let collector = MountCollector()
-    let prev = parallelCollector
-    parallelCollector = collector
-    var bodyRaised = false
-    try:
-      body
-    except CatchableError:
-      bodyRaised = true
-      # Body raised after some spawns may have registered. Structured
-      # concurrency: cancel everything that was started, then re-raise
-      # so the caller sees the original failure. Cancellation is
-      # async (cancelSoon) — the spawned mounts' wireLifecycle
-      # callbacks will dispose their scopes when the futures finally
-      # resolve as cancelled. We don't await here (async-in-finally
-      # is unsafe under chronos); we only need the cancellation
-      # request issued before unwinding.
-      for m in collector.mounts:
-        if not m.future.finished: m.cancel()
-      parallelCollector = prev
-      raise
-    finally:
-      if not bodyRaised:
-        parallelCollector = prev
+    # Bind `collector` for the body only. The subsequent
+    # `await awaitParallel(...)` deliberately runs OUTSIDE this binding
+    # — spawns the awaiter machinery might do internally must NOT be
+    # joined back into our group.
+    withParallelCollector(collector):
+      try:
+        body
+      except CatchableError:
+        # Body raised after some spawns may have registered. Structured
+        # concurrency: cancel everything that was started, then re-raise
+        # so the caller sees the original failure. Cancellation is
+        # async (cancelSoon) — the spawned mounts' wireLifecycle
+        # callbacks will dispose their scopes when the futures finally
+        # resolve as cancelled. We don't await here (async-in-finally
+        # is unsafe under chronos); we only need the cancellation
+        # request issued before unwinding.
+        for m in collector.mounts:
+          if not m.future.finished: m.cancel()
+        raise
     if collector.mounts.len > 0:
-      # `taskAwait` (not bare `await`) — this await is emitted at
-      # template-expansion time, after the enclosing proc's `{.task.}`
-      # pragma has already walked the body, so task's rewriter never
-      # sees it. Without explicit CLS wrapping, `currentScope` and
-      # `currentSpeculative` after the parallel block would be
-      # whatever the dispatcher last left them as.
-      taskAwait awaitParallel(collector.mounts)
+      await awaitParallel(collector.mounts)

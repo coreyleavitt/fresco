@@ -19,7 +19,7 @@
 ##   import fresco
 ##   import chronos
 ##
-##   proc app(stream: InputStream, screen: Screen) {.task, async.} =
+##   proc app(stream: InputStream, screen: Screen) {.async.} =
 ##     signals:
 ##       count = 0
 ##       title = "demo"
@@ -37,7 +37,7 @@
 ##         Char('-'): count := count() - 1
 ##         after 1.seconds: discard          # idle tick
 ##
-## The `{.task, async.}` pragma combination is load-bearing: `task`
+## The `{.async.}` pragma combination is load-bearing: `task`
 ## must run *before* `async` (pragmas are processed left-to-right),
 ## so the CLS substrate gets to rewrite every `await` in the body
 ## before chronos transforms it into a state machine. Without `task`
@@ -80,13 +80,13 @@ export scope, signal, binding, context, speculative, animation, collection,
 
 # T4 — task
 import fresco/task/core
-import fresco/cls
+
 import fresco/task/receive
 import fresco/task/parallel
 import fresco/task/mount
 import fresco/task/hotkey
 import fresco/task/supervisor
-export core, cls, receive, parallel, mount, hotkey, supervisor
+export core, receive, parallel, mount, hotkey, supervisor
 
 # T4 — journal (v2.1 + v2.4)
 import fresco/journal/events as journal_events

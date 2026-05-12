@@ -11,9 +11,12 @@ srcDir        = "src"
 
 requires "nim >= 2.0.0"
 
-# Async runtime. Must match amoxtli (the primary downstream consumer)
-# and any other Nim CLI that already commits to chronos. Pin loosely.
-requires "chronos >= 4.0.0"
+# Async runtime. Pinned to our fork's `feat/contextvars` branch while
+# the upstream PR (continuation-local storage primitive — see
+# docs/rfc-chronos-contextvars.md) is in review. When upstream accepts,
+# this drops back to `requires "chronos >= <version-with-contextvars>"`.
+# amoxtli rides the same fork during the interim.
+requires "https://github.com/coreyleavitt/chronos.git#feat/contextvars"
 
 # Test runner. `nimble test` compiles each tests/**/*.nim file with
 # std/unittest. Run via `./dev test`. List individual test files here
@@ -45,7 +48,6 @@ task test, "run all tests":
     "tests/integration/test_termios_pty.nim",
     "tests/integration/test_input_pty.nim",
     "tests/integration/test_task.nim",
-    "tests/integration/test_cls.nim",
     "tests/integration/test_receive_pty.nim",
     "tests/integration/test_parallel.nim",
     "tests/integration/test_mount.nim",
