@@ -31,6 +31,18 @@ type
   SpeculativeScope* = ref object
     parent*: SpeculativeScope
     reverts: seq[proc() {.closure.}]   ## internal — populated via recordRevert
+    onRollbackHooks: seq[proc() {.closure.}]
+      ## Per-type post-revert hooks. Fire AFTER `reverts` drain on
+      ## rollback. Used by revertible types that batch their rollback
+      ## notification (e.g. CollectionSignal emits one `dkRollback`
+      ## delta per affected collection rather than M individual deltas).
+      ## Plain `Signal[T].set` uses `reverts` directly — scalar batching
+      ## adds nothing.
+    onCommitHooks: seq[proc() {.closure.}]
+      ## Per-type post-commit hooks. Fire on `commit()` BEFORE the
+      ## existing reverts-promotion. Used by revertible types that
+      ## maintain per-scope state to promote that state to the parent
+      ## scope (so an outer rollback still undoes inner-committed work).
     committed*: bool
 
 var currentSpeculative* {.threadvar.}: SpeculativeScope
@@ -48,6 +60,26 @@ proc recordRevert*(p: proc() {.closure.}) {.gcsafe.} =
   {.cast(gcsafe).}:
     if currentSpeculative != nil and not currentSpeculative.committed:
       currentSpeculative.reverts.add p
+
+proc onSpeculativeRollback*(p: proc() {.closure.}) {.gcsafe.} =
+  ## Register a hook to fire after all `reverts` drain on rollback.
+  ## Used by revertible types that batch their rollback notification.
+  ## No-op outside a speculative scope or after commit.
+  ##
+  ## Exported for cross-module use by `collection.nim`. Same contract
+  ## caveat as `recordRevert`: not yet a public extension surface.
+  {.cast(gcsafe).}:
+    if currentSpeculative != nil and not currentSpeculative.committed:
+      currentSpeculative.onRollbackHooks.add p
+
+proc onSpeculativeCommit*(p: proc() {.closure.}) {.gcsafe.} =
+  ## Register a hook to fire on `commit()`. Used by revertible types
+  ## that maintain per-scope state to promote it to the parent scope
+  ## (so the inner-committed work still rolls back if the outer scope
+  ## rolls back).
+  {.cast(gcsafe).}:
+    if currentSpeculative != nil and not currentSpeculative.committed:
+      currentSpeculative.onCommitHooks.add p
 
 proc rollback*(scope: SpeculativeScope) {.gcsafe.} =
   ## Run all queued reverts in reverse order. Reverts trigger observer
@@ -67,7 +99,21 @@ proc rollback*(scope: SpeculativeScope) {.gcsafe.} =
           stderr.writeLine("fresco speculative revert raised: " &
                            $e.name & ": " & e.msg)
         except IOError: discard
+    # Mark committed BEFORE firing the batched-notification hooks so
+    # that any observer fanout inside a hook can't push fresh reverts
+    # or per-type buffer entries that would become orphans (nothing
+    # would drain them). `recordRevert` and revertible types' capture
+    # helpers all short-circuit on `committed`.
     scope.committed = true
+    for h in scope.onRollbackHooks:
+      try: h()
+      except CatchableError as e:
+        try:
+          stderr.writeLine("fresco speculative rollback hook raised: " &
+                           $e.name & ": " & e.msg)
+        except IOError: discard
+    scope.onRollbackHooks.setLen(0)
+    scope.onCommitHooks.setLen(0)   # not firing them — but free the refs
 
 template speculative*(body: untyped): SpeculativeScope =
   ## Open a speculative frame, run `body`, return the frame. Inside
@@ -93,11 +139,23 @@ template speculative*(body: untyped): SpeculativeScope =
       # an outer rollback still undoes our writes. MVCC: an inner
       # commit only means "merge into the parent branch", not "make
       # canonical regardless of outer outcome."
+      # Fire per-type commit hooks first — they may promote per-scope
+      # state into the parent (e.g. CollectionSignal moves its inverse
+      # buffer up so an outer rollback still drains them).
+      for h in frame.onCommitHooks:
+        try: h()
+        except CatchableError as e:
+          try:
+            stderr.writeLine("fresco speculative commit hook raised: " &
+                             $e.name & ": " & e.msg)
+          except IOError: discard
+      frame.onCommitHooks.setLen(0)
       if frame.parent != nil:
         for r in frame.reverts:
           frame.parent.reverts.add r
       frame.committed = true
       frame.reverts.setLen(0)
+      frame.onRollbackHooks.setLen(0)   # no rollback after commit
     # Rollback + threadvar restore unified into nested finallys so any
     # exit path — normal return without commit, CatchableError, or
     # Defect — leaves the world consistent. The inner finally runs

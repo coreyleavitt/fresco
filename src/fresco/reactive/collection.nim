@@ -12,21 +12,22 @@
 ## apply incremental updates. Plain `notify` still fires too, so
 ## non-delta-aware observers keep working.
 ##
-## **Speculative scope support:** mutations inside a `speculative:`
-## block snapshot the prior items seq and record a revert closure, the
-## same way `Signal[T].set` does. Falling out of the block without
-## commit replays the reverts in reverse, restoring the collection's
-## pre-block state and firing a `dkReplace` delta so observers
-## re-render.
+## **Speculative scope support:** each mutation captures an O(1)
+## *inverse delta* (push ↔ remove-at-idx, remove ↔ insert-at-idx with
+## the prior value, etc.) into a per-collection per-scope buffer.
+## `clear` and `set` still snapshot the full prior seq — they're the
+## only two structurally-destructive ops. On rollback the buffer
+## applies in reverse and observers receive ONE batched `dkRollback`
+## delta carrying every inverse, not M individual reverse-deltas.
+## Total memory cost across M mutations is O(M) for the common cases,
+## not O(N×M).
 ##
 ## **Journal integration:** labeled mutations emit `ekCollectionDelta`
-## events. Unlabeled collections skip journaling (same rule as
-## `Signal[T].set`). The delta payload preserves enough information
-## for forward replay (insert/remove/update/clear/replace), but
-## bitemporal `stateAt` projection of collection state is not yet
-## implemented — reconstruction requires either replaying from initial
-## state or interleaving snapshots, both of which are future work
-## (see #38 for inverse-delta reverts).
+## events. On rollback, a single `ekCollectionRollback` event records
+## the entire reverted sequence per affected labeled collection — the
+## audit trail distinguishes user actions from system rollbacks.
+## Unlabeled collections skip journaling (same rule as
+## `Signal[T].set`).
 
 {.experimental: "callOperator".}
 
@@ -43,6 +44,8 @@ type
     dkUpdate
     dkClear
     dkReplace
+    dkRollback     ## Batched reverse of speculative-scope mutations. Carries
+                   ## the inverse ops in `rollbackOps`, applied right-to-left.
 
   Delta*[T] = object
     case kind*: DeltaKind
@@ -58,8 +61,19 @@ type
       discard
     of dkReplace:
       replaceVal*: seq[T]
+    of dkRollback:
+      rollbackOps*: seq[Delta[T]]   ## inverses in CHRONOLOGICAL order; the
+                                    ## applier walks them in reverse to undo
 
   DeltaHandler*[T] = proc(d: Delta[T]) {.closure.}
+
+  RollbackBufferEntry[T] = ref object
+    ## Per-collection per-scope buffer of captured inverses, chained
+    ## up through parent speculative frames so nested commit can
+    ## promote into the parent.
+    scope: SpeculativeScope
+    inverses: seq[Delta[T]]
+    next: RollbackBufferEntry[T]
 
   CollectionSignal*[T] = ref object of Subscribable
     items: seq[T]
@@ -72,6 +86,10 @@ type
       ## Unlabeled collections skip journaling — match the rule for
       ## unlabeled signals so the journal is consistent.
     deltaObservers: seq[DeltaHandler[T]]
+    rollbackHead: RollbackBufferEntry[T]
+      ## Top of the per-scope buffer chain; nil outside speculative
+      ## scopes. Mutated only by `captureInverse` and the registered
+      ## commit/rollback hooks.
 
 proc collection*[T](initial: seq[T] = @[], label = ""): CollectionSignal[T] =
   ## Constructor matching the `signal(initial)` naming for plain signals.
@@ -89,10 +107,43 @@ proc onDelta*[T](c: CollectionSignal[T], handler: DeltaHandler[T]) =
     let idx = captured.deltaObservers.find(h)
     if idx >= 0: captured.deltaObservers.del idx
 
+proc opRepr[T](d: Delta[T]): string =
+  ## Compact one-token repr of a non-rollback delta for the journal
+  ## rollback payload. Format: `kind[:idx[:val]]` joined with `;`.
+  ## Designed for forward replay — parseable without ambiguity since
+  ## the kind letter dictates which trailing fields are present.
+  case d.kind
+  of dkInsert:
+    let v = when compiles($d.insertVal): $d.insertVal else: ""
+    "i:" & $d.insertIdx & ":" & v
+  of dkRemove:  "r:" & $d.removeIdx
+  of dkUpdate:
+    let v = when compiles($d.updateVal): $d.updateVal else: ""
+    "u:" & $d.updateIdx & ":" & v
+  of dkClear:   "c"
+  of dkReplace: "p:" & $d.replaceVal.len
+  of dkRollback: ""   # rollback inverses never contain nested rollbacks
+
+proc applyDelta[T](c: CollectionSignal[T], d: Delta[T]) =
+  ## Apply `d` to the collection's items WITHOUT emitting observers or
+  ## journaling. Used by the rollback hook to restore state before
+  ## firing the single batched notification. For `dkRollback` walks
+  ## the inverse seq right-to-left (chronological reversal).
+  case d.kind
+  of dkInsert:  c.items.insert(d.insertVal, d.insertIdx)
+  of dkRemove:  c.items.delete(d.removeIdx)
+  of dkUpdate:  c.items[d.updateIdx] = d.updateVal
+  of dkClear:   c.items.setLen(0)
+  of dkReplace: c.items = d.replaceVal
+  of dkRollback:
+    for i in countdown(d.rollbackOps.high, 0):
+      applyDelta(c, d.rollbackOps[i])
+
 proc journalDelta[T](c: CollectionSignal[T], d: Delta[T]) =
-  ## Record this mutation in the journal. Skipped for unlabeled
-  ## collections (mirrors signal-write rule — projection only works
-  ## for labeled state).
+  ## Record this forward mutation in the journal. Skipped for
+  ## unlabeled collections. `dkRollback` is journaled via the
+  ## dedicated `ekCollectionRollback` event from the rollback hook,
+  ## not here.
   if c.label.len == 0: return
   case d.kind
   of dkInsert:
@@ -108,14 +159,25 @@ proc journalDelta[T](c: CollectionSignal[T], d: Delta[T]) =
   of dkReplace:
     let r = $d.replaceVal.len   # length-only repr — full repr could be huge
     journalEvent: jrnl.logCollectionDelta(taskTid, parentEvt, c.label, "replace", -1, r)
+  of dkRollback: discard
 
-proc emit[T](c: CollectionSignal[T], d: Delta[T]) =
-  ## Fan out to delta-aware handlers AND notify plain reactive
-  ## observers so a `createEffect`/`bindRows` that read `c.items` or
-  ## `c.len` re-runs on any mutation. The two channels are independent:
-  ## handlers see typed deltas, computations see "something changed."
-  ## Also journals the mutation if the collection has a label.
-  journalDelta(c, d)
+proc journalRollback[T](c: CollectionSignal[T], d: Delta[T]) =
+  ## Record a single rollback as one `ekCollectionRollback` event.
+  ## Skipped for unlabeled collections.
+  if c.label.len == 0: return
+  if d.kind != dkRollback: return
+  var ops = ""
+  for i, inv in d.rollbackOps:
+    if i > 0: ops.add ';'
+    ops.add opRepr(inv)
+  journalEvent:
+    jrnl.logCollectionRollback(taskTid, parentEvt, c.label, d.rollbackOps.len, ops)
+
+proc fanout[T](c: CollectionSignal[T], d: Delta[T]) =
+  ## Notify delta-aware handlers and trigger plain reactive
+  ## observers. No journaling — the caller decides which event
+  ## (`ekCollectionDelta` per forward op, `ekCollectionRollback`
+  ## once per rolled-back collection) to write.
   let snap = c.deltaObservers
   for h in snap:
     try: h(d)
@@ -124,6 +186,11 @@ proc emit[T](c: CollectionSignal[T], d: Delta[T]) =
       # signal.notify: a faulty observer shouldn't break siblings
       # or propagate out through the mutating call.
   notify(Subscribable(c))
+
+proc emit[T](c: CollectionSignal[T], d: Delta[T]) =
+  ## Fan out + journal a forward mutation.
+  journalDelta(c, d)
+  fanout(c, d)
 
 proc trackCollectionRead[T](c: CollectionSignal[T]) =
   ## Subscribe the current Computation (if any) to this collection.
@@ -153,92 +220,102 @@ proc len*[T](c: CollectionSignal[T]): int =
   trackCollectionRead(c)
   c.items.len
 
-# --- Delta-emitting ops --------------------------------------------------
+# --- Speculative-rollback machinery --------------------------------------
 
-template withRevert[T](c: CollectionSignal[T], body: untyped) =
-  ## Push a revert closure that restores `c.items` before running
-  ## `body`. Inside a `speculative:` block, falling out without
-  ## commit drains the closure and emits a `dkReplace` delta so
-  ## observers re-render against the restored state. **Outside a
-  ## speculative scope this is a zero-cost no-op (no copy, no
-  ## allocation) — the snapshot only happens when reversion is
-  ## actually possible.**
+proc captureInverse[T](c: CollectionSignal[T], inv: Delta[T]) =
+  ## Outside a speculative scope: zero-cost no-op. Inside one: append
+  ## `inv` to this collection's per-scope buffer, and on first mutation
+  ## in this scope register the commit/rollback hooks that promote or
+  ## drain the buffer.
   ##
-  ## **Snapshot semantics:** we capture the full prior items seq
-  ## rather than an inverse delta. For the v2.3 use case (small
-  ## collections, few mutations per block) the per-mutation O(N)
-  ## copy and O(N×M) memory across M mutations is acceptable. v2.4's
-  ## `ekCollectionDelta` journal integration will revisit this with
-  ## inverse-deltas (`dkInsert` ↔ `dkRemove` at the same index, etc.)
-  ## to amortize the cost.
-  ##
-  ## **Multi-mutation rollback** fires one `dkReplace` per mutation
-  ## (LIFO) — M mutations produce M re-render passes. Correct but
-  ## potentially inefficient; batch coalescing not implemented.
-  ##
-  ## The outer guard duplicates a check that `recordRevert` also
-  ## performs internally. The duplication is deliberate — it avoids
-  ## the seq-copy + closure allocation when there's no active frame.
-  ## If you change the condition here, change it in
-  ## `speculative.nim:recordRevert` too (single source of truth would
-  ## require always allocating, which defeats the point).
+  ## The first-mutation check (`rollbackHead == nil` or `scope mismatch`)
+  ## avoids re-registering hooks every mutation. Hooks fire exactly once
+  ## per (collection, scope) per scope-exit; subsequent mutations in the
+  ## same scope just append.
   if currentSpeculative != nil and not currentSpeculative.committed:
-    let priorItems = c.items   # plain copy — only when needed
-    let captured = c
-    recordRevert proc() =
-      captured.items = priorItems
-      emit(captured, Delta[T](kind: dkReplace, replaceVal: priorItems))
-  body
+    if c.rollbackHead == nil or c.rollbackHead.scope != currentSpeculative:
+      let entry = RollbackBufferEntry[T](
+        scope: currentSpeculative,
+        inverses: @[],
+        next: c.rollbackHead)
+      c.rollbackHead = entry
+      let captured = c
+      onSpeculativeRollback proc() =
+        # Head is guaranteed to be `entry` here: rollback hooks fire
+        # before any further mutation could re-target it, and nested
+        # scopes that committed/rolled-back already popped their entries.
+        let head = captured.rollbackHead
+        let batched = Delta[T](kind: dkRollback, rollbackOps: head.inverses)
+        applyDelta(captured, batched)
+        journalRollback(captured, batched)
+        fanout(captured, batched)
+        captured.rollbackHead = head.next
+      onSpeculativeCommit proc() =
+        # Promote inverses into the parent buffer if one exists so an
+        # outer rollback still undoes our work. At the outermost scope
+        # they're discarded — commit makes the writes canonical.
+        let head = captured.rollbackHead
+        if head.next != nil:
+          for inv in head.inverses: head.next.inverses.add inv
+        captured.rollbackHead = head.next
+    c.rollbackHead.inverses.add inv
+
+# --- Delta-emitting ops --------------------------------------------------
 
 proc push*[T](c: CollectionSignal[T], v: T) =
   ## Append `v`. Emits `dkInsert` with the appended index.
-  withRevert(c):
-    let idx = c.items.len
-    c.items.add v
-    emit(c, Delta[T](kind: dkInsert, insertIdx: idx, insertVal: v))
+  let idx = c.items.len
+  captureInverse(c, Delta[T](kind: dkRemove, removeIdx: idx))
+  c.items.add v
+  emit(c, Delta[T](kind: dkInsert, insertIdx: idx, insertVal: v))
 
 proc pop*[T](c: CollectionSignal[T]): T {.discardable.} =
   ## Remove and return the last element. **Asserts on empty.**
   doAssert c.items.len > 0, "pop on empty collection"
-  withRevert(c):
-    let idx = c.items.high
-    result = c.items[idx]
-    c.items.setLen(idx)
-    emit(c, Delta[T](kind: dkRemove, removeIdx: idx))
+  let idx = c.items.high
+  result = c.items[idx]
+  captureInverse(c, Delta[T](kind: dkInsert, insertIdx: idx, insertVal: result))
+  c.items.setLen(idx)
+  emit(c, Delta[T](kind: dkRemove, removeIdx: idx))
 
 proc insert*[T](c: CollectionSignal[T], idx: int, v: T) =
   ## Insert `v` at `idx` (valid range: `0 .. len`, inclusive — `len`
   ## inserts at the end). **Asserts on out-of-bounds.**
   doAssert idx in 0 .. c.items.len, "insert index out of bounds"
-  withRevert(c):
-    c.items.insert(v, idx)
-    emit(c, Delta[T](kind: dkInsert, insertIdx: idx, insertVal: v))
+  captureInverse(c, Delta[T](kind: dkRemove, removeIdx: idx))
+  c.items.insert(v, idx)
+  emit(c, Delta[T](kind: dkInsert, insertIdx: idx, insertVal: v))
 
 proc remove*[T](c: CollectionSignal[T], idx: int) =
   ## Remove the element at `idx`. **Asserts on out-of-bounds.**
   doAssert idx in 0 ..< c.items.len, "remove index out of bounds"
-  withRevert(c):
-    c.items.delete(idx)
-    emit(c, Delta[T](kind: dkRemove, removeIdx: idx))
+  let oldVal = c.items[idx]
+  captureInverse(c, Delta[T](kind: dkInsert, insertIdx: idx, insertVal: oldVal))
+  c.items.delete(idx)
+  emit(c, Delta[T](kind: dkRemove, removeIdx: idx))
 
 proc setAt*[T](c: CollectionSignal[T], idx: int, v: T) =
   ## Replace the element at `idx`. **Asserts on out-of-bounds.**
   doAssert idx in 0 ..< c.items.len, "setAt index out of bounds"
-  withRevert(c):
-    c.items[idx] = v
-    emit(c, Delta[T](kind: dkUpdate, updateIdx: idx, updateVal: v))
+  let oldVal = c.items[idx]
+  captureInverse(c, Delta[T](kind: dkUpdate, updateIdx: idx, updateVal: oldVal))
+  c.items[idx] = v
+  emit(c, Delta[T](kind: dkUpdate, updateIdx: idx, updateVal: v))
 
 proc clear*[T](c: CollectionSignal[T]) =
   ## Remove all elements. No-op on an already-empty collection
-  ## (no delta emitted in that case).
+  ## (no delta emitted in that case). One of two structurally-
+  ## destructive ops; its inverse captures the full prior seq (O(N)).
   if c.items.len == 0: return
-  withRevert(c):
-    c.items.setLen(0)
-    emit(c, Delta[T](kind: dkClear))
+  captureInverse(c, Delta[T](kind: dkReplace, replaceVal: c.items))
+  c.items.setLen(0)
+  emit(c, Delta[T](kind: dkClear))
 
 proc set*[T](c: CollectionSignal[T], newItems: seq[T]) =
   ## Wholesale replacement. Emits a dkReplace delta — handlers that
   ## want incremental updates should treat this as "redo from scratch."
-  withRevert(c):
-    c.items = newItems
-    emit(c, Delta[T](kind: dkReplace, replaceVal: newItems))
+  ## The other structurally-destructive op; inverse captures full
+  ## prior seq (O(N)).
+  captureInverse(c, Delta[T](kind: dkReplace, replaceVal: c.items))
+  c.items = newItems
+  emit(c, Delta[T](kind: dkReplace, replaceVal: newItems))

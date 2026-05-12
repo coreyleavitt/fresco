@@ -1,6 +1,6 @@
 {.experimental: "callOperator".}
 
-import std/unittest
+import std/[unittest, strutils]
 import fresco/reactive/scope
 import fresco/reactive/signal
 import fresco/reactive/collection
@@ -165,7 +165,7 @@ suite "CollectionSignal: speculative scope":
       commit()
     check c.get() == @[99, 2, 3, 4]
 
-  test "clear rolls back via dkReplace snapshot":
+  test "clear inside speculative is reversed by a dkReplace inverse":
     let c = collection(@["a", "b", "c"])
     discard speculative:
       c.clear()
@@ -178,6 +178,107 @@ suite "CollectionSignal: speculative scope":
       c.set(@[10, 20, 30])
       check c.get() == @[10, 20, 30]
     check c.get() == @[1, 2, 3]
+
+  test "M mutations + rollback fire ONE batched dkRollback with M inverses":
+    let c = collection(@[10, 20, 30])
+    var deltas: seq[Delta[int]] = @[]
+    discard createRoot:
+      onDelta(c, proc(d: Delta[int]) = deltas.add d)
+    let baseline = deltas.len    # zero, but defensive
+    discard speculative:
+      c.push(40)        # forward dkInsert
+      c.setAt(0, 99)    # forward dkUpdate
+      c.pop()           # forward dkRemove
+    # Forward deltas fired during the block; one dkRollback fires on exit.
+    let total = deltas.len - baseline
+    check total == 4    # 3 forward + 1 batched rollback
+    check deltas[^1].kind == dkRollback
+    check deltas[^1].rollbackOps.len == 3
+    # Inverses recorded chronologically: pop's inverse last, in the seq
+    check deltas[^1].rollbackOps[0].kind == dkRemove   # inverse-of-push
+    check deltas[^1].rollbackOps[1].kind == dkUpdate   # inverse-of-setAt (restores 10)
+    check deltas[^1].rollbackOps[1].updateVal == 10
+    check deltas[^1].rollbackOps[2].kind == dkInsert   # inverse-of-pop
+    check c.get() == @[10, 20, 30]
+
+  test "pop inside speculative + rollback restores the popped value":
+    let c = collection(@["a", "b", "c"])
+    discard speculative:
+      let v = c.pop()
+      check v == "c"
+      check c.get() == @["a", "b"]
+    check c.get() == @["a", "b", "c"]
+
+  test "setAt rollback restores prior value via dkUpdate inverse, not dkReplace":
+    let c = collection(@[1, 2, 3])
+    var deltas: seq[Delta[int]] = @[]
+    discard createRoot:
+      onDelta(c, proc(d: Delta[int]) = deltas.add d)
+    discard speculative:
+      c.setAt(1, 99)
+    # Two deltas total: forward dkUpdate, batched dkRollback containing one dkUpdate
+    check deltas[^1].kind == dkRollback
+    check deltas[^1].rollbackOps.len == 1
+    check deltas[^1].rollbackOps[0].kind == dkUpdate
+    check deltas[^1].rollbackOps[0].updateVal == 2
+    check c.get() == @[1, 2, 3]
+
+  test "nested: inner commit promotes inverses, outer rollback drains both":
+    let c = collection(@[0])
+    var batches: seq[Delta[int]] = @[]
+    discard createRoot:
+      onDelta(c, proc(d: Delta[int]) =
+        if d.kind == dkRollback: batches.add d)
+    discard speculative:
+      c.push(1)             # outer
+      discard speculative:
+        c.push(2)           # inner
+        c.push(3)           # inner
+        commit()
+      c.push(4)             # outer (after inner committed)
+    # Inner commit fired NO rollback batch.
+    # Outer rollback fired ONE batch with all 4 mutations' inverses.
+    check batches.len == 1
+    check batches[0].rollbackOps.len == 4
+    check c.get() == @[0]
+
+  test "nested: inner rollback fires its own batch; outer mutations intact":
+    let c = collection(@[0])
+    var batches: seq[Delta[int]] = @[]
+    discard createRoot:
+      onDelta(c, proc(d: Delta[int]) =
+        if d.kind == dkRollback: batches.add d)
+    discard speculative:
+      c.push(1)             # outer — sticks (commit on outer)
+      discard speculative:
+        c.push(2)           # inner — gets rolled back
+        c.push(3)           # inner — gets rolled back
+      # inner rolled back here; outer continues
+      c.push(4)             # outer — sticks
+      commit()
+    # One rollback batch from inner; nothing on outer (it committed).
+    check batches.len == 1
+    check batches[0].rollbackOps.len == 2
+    check c.get() == @[0, 1, 4]
+
+  test "multiple collections in same scope each emit their own dkRollback":
+    let a = collection[int]()
+    let b = collection[int]()
+    var aBatches, bBatches: seq[Delta[int]] = @[]
+    discard createRoot:
+      onDelta(a, proc(d: Delta[int]) =
+        if d.kind == dkRollback: aBatches.add d)
+      onDelta(b, proc(d: Delta[int]) =
+        if d.kind == dkRollback: bBatches.add d)
+    discard speculative:
+      a.push(1); a.push(2)
+      b.push(10); b.push(20); b.push(30)
+    check aBatches.len == 1
+    check aBatches[0].rollbackOps.len == 2
+    check bBatches.len == 1
+    check bBatches[0].rollbackOps.len == 3
+    check a.get().len == 0
+    check b.get().len == 0
 
 suite "CollectionSignal: edge cases":
 
@@ -252,3 +353,50 @@ suite "CollectionSignal: journal integration":
     c.push(1)
     c.push(2)
     check globalJournal.byKind(ekCollectionDelta).len == 0
+
+  test "rollback writes exactly ONE ekCollectionRollback per affected collection":
+    let c = collection[int](@[], label = "items")
+    discard speculative:
+      c.push(1)
+      c.push(2)
+      c.push(3)
+    let forwards = globalJournal.byKind(ekCollectionDelta)
+    let rollbacks = globalJournal.byKind(ekCollectionRollback)
+    check forwards.len == 3     # forward mutations still journal
+    check rollbacks.len == 1    # one boundary event
+    check rollbacks[0].rollbackLabel == "items"
+    check rollbacks[0].rollbackCount == 3
+    # opsRepr: ";".join three "r:idx" tokens
+    check rollbacks[0].rollbackOpsRepr.contains("r:")
+
+  test "two labeled collections in one rollback → two rollback events":
+    let a = collection[int](@[], label = "a")
+    let b = collection[int](@[], label = "b")
+    discard speculative:
+      a.push(1)
+      b.push(2)
+      b.push(3)
+    let rbs = globalJournal.byKind(ekCollectionRollback)
+    check rbs.len == 2
+    let byLabel = block:
+      var t: tuple[a, b: int]
+      for ev in rbs:
+        if ev.rollbackLabel == "a": t.a = ev.rollbackCount
+        elif ev.rollbackLabel == "b": t.b = ev.rollbackCount
+      t
+    check byLabel.a == 1
+    check byLabel.b == 2
+
+  test "unlabeled collection rollback skips journal":
+    let c = collection[int]()   # no label
+    discard speculative:
+      c.push(1)
+      c.push(2)
+    check globalJournal.byKind(ekCollectionRollback).len == 0
+
+  test "commit does NOT write a rollback event":
+    let c = collection[int](@[], label = "x")
+    discard speculative:
+      c.push(1)
+      commit()
+    check globalJournal.byKind(ekCollectionRollback).len == 0

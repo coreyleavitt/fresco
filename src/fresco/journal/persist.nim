@@ -20,7 +20,11 @@ import ./events
 import ./log
 
 const
-  JournalSchemaVersion* = 2
+  JournalSchemaVersion* = 3
+    ## v3 (#38): added `ekCollectionRollback` event variant for
+    ##           speculative-rollback audit trail (one event per
+    ##           affected collection per rollback, carrying the
+    ##           inverse ops in compact repr).
     ## v2 (#39): added `ekCollectionDelta` event variant.
     ## v1: initial schema.
     ## Bumped whenever the on-disk JSON shape changes incompatibly
@@ -77,6 +81,10 @@ proc toJson*(e: Event): JsonNode =
     result["collectionOp"]    = %e.collectionOp
     result["collectionIdx"]   = %e.collectionIdx
     result["collectionRepr"]  = %e.collectionRepr
+  of ekCollectionRollback:
+    result["rollbackLabel"]   = %e.rollbackLabel
+    result["rollbackCount"]   = %e.rollbackCount
+    result["rollbackOpsRepr"] = %e.rollbackOpsRepr
   of ekKeyReceived, ekKeyConsumed:
     result["keySummary"]  = %e.keySummary
   of ekSupervisorRestart:
@@ -131,6 +139,10 @@ proc fromJson*(n: JsonNode): Option[Event] =
     e.collectionOp    = n{"collectionOp"}.getStr("")
     e.collectionIdx   = n{"collectionIdx"}.getInt(-1)
     e.collectionRepr  = n{"collectionRepr"}.getStr("")
+  of ekCollectionRollback:
+    e.rollbackLabel   = n{"rollbackLabel"}.getStr("")
+    e.rollbackCount   = n{"rollbackCount"}.getInt(0)
+    e.rollbackOpsRepr = n{"rollbackOpsRepr"}.getStr("")
   of ekKeyReceived, ekKeyConsumed:
     e.keySummary = n{"keySummary"}.getStr("")
   of ekSupervisorRestart:

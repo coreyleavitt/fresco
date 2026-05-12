@@ -28,6 +28,7 @@ type
     ekTaskCancelled
     ekSignalWrite
     ekCollectionDelta
+    ekCollectionRollback
     ekKeyReceived
     ekKeyConsumed
     ekSupervisorRestart
@@ -59,6 +60,10 @@ type
       collectionOp*:    string        # "insert" / "remove" / "update" / "clear" / "replace"
       collectionIdx*:   int           # affected index, or -1 for clear/replace
       collectionRepr*:  string        # value repr for insert/update, length-str for replace, "" else
+    of ekCollectionRollback:
+      rollbackLabel*:   string        # collection identifier (or "")
+      rollbackCount*:   int           # number of inverse ops in this rollback
+      rollbackOpsRepr*: string        # compact `;`-joined repr of inverse ops; see collection.nim
     of ekKeyReceived, ekKeyConsumed:
       keySummary*:     string         # rendered KeyEvent
     of ekSupervisorRestart:

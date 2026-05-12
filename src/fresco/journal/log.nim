@@ -193,6 +193,20 @@ proc logCollectionDelta*(j: Journal, taskId: TaskId, parentId: EventId,
   ev.collectionRepr = repr
   j.append(ev)
 
+proc logCollectionRollback*(j: Journal, taskId: TaskId, parentId: EventId,
+                            label: string, count: int, opsRepr: string): EventId =
+  ## Record a single speculative rollback of one collection. `count`
+  ## is the number of inverse ops applied; `opsRepr` is a compact
+  ## `;`-joined repr per op (see `collection.nim` for the format) — enough
+  ## for forward replay without journaling each inverse as its own
+  ## `ekCollectionDelta`. Distinguishes "user mutated then rolled back"
+  ## from "user did N successive forward mutations" in the audit trail.
+  var ev = baseEvent(ekCollectionRollback, taskId, parentId)
+  ev.rollbackLabel = label
+  ev.rollbackCount = count
+  ev.rollbackOpsRepr = opsRepr
+  j.append(ev)
+
 proc logKeyReceived*(j: Journal, taskId: TaskId, parentId: EventId,
                      summary: string): EventId =
   var ev = baseEvent(ekKeyReceived, taskId, parentId)
