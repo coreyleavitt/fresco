@@ -1,14 +1,21 @@
 # RFC: Continuation-local storage for chronos
 
-**Status**: Draft v2 (pre-PR design document — supersedes draft v1)
+**Status**: Draft v2.1 (reconciled with as-built implementation)
 **Author**: Corey Leavitt
 **Targets**: github.com/status-im/nim-chronos
 
-## Why v2
+## Why v2.1
 
-A prior draft of this RFC was paired with a prototype implementation that drifted from the design in two architecturally-significant places: tag identity (designed: `distinct void` generative phantom types; implemented: `addr {.global.}: int`) and value storage (designed: pointer + macro-inlined accessors; implemented: `RootRef` + `ContextBox[T]` heap wrapper). Both drifts compounded into real concerns: ABI fragility across dyn-link boundaries, double heap allocation per bind, `cast(gcsafe)` blocks on the dispatcher hot path, lost POD-ness of `AsyncCallback`, sentinel-as-template instead of `const`.
+This document originally specified `AsyncCallback.context` as `pointer` with manual `GC_ref`/`GC_unref` paired with explicit `releaseCallbackContext` calls at every drop site. Code review against the implementation surfaced two real concerns with that design:
 
-This v2 RFC is the design we are building. The prototype branch has been wiped; the implementation will follow this document precisely.
+1. **The latent `sequtils.keepItIf` shallowCopy leak under `--mm:refc`** — `keepItIf`'s `shallowCopy` bypasses custom `=destroy`/`=copy`/`=sink` hooks, so any hook-based lifecycle scheme has a silent leak in `removeCallback`'s filter loop.
+2. **Contributor-discipline failure modes** — every new scheduling site needed to remember the manual `GC_ref` / `GC_unref` pair. The two-constructor split (`userCallback`/`internalCallback`) made capture discipline structural, but lifetime discipline at drop sites remained by-convention.
+
+v2.1 changes the field type from `pointer` (manual lifecycle) to `ref ContextNodeBase` (Nim's MM owns the lifecycle). The change touches one type declaration in `futures.nim` and deletes ~12 explicit `releaseCallbackContext` calls across the dispatcher; the rest of the RFC's surface (macro shape, two-constructor split, propagation semantics) is preserved.
+
+## Why v2 (historical)
+
+A prior draft of this RFC was paired with a prototype implementation that drifted from the design in two architecturally-significant places: tag identity (designed: `distinct void` generative phantom types; implemented: `addr {.global.}: int`) and value storage (designed: pointer + macro-inlined accessors; implemented: `RootRef` + `ContextBox[T]` heap wrapper). Both drifts compounded into real concerns: ABI fragility across dyn-link boundaries, double heap allocation per bind, `cast(gcsafe)` blocks on the dispatcher hot path, lost POD-ness of `AsyncCallback`, sentinel-as-template instead of `const`. v2 corrected these via slot-typed subtype storage. v2.1 (this document) closes the lifetime question.
 
 ## Summary
 
@@ -56,7 +63,7 @@ Chronos currently provides no primitive for this. fresco — a Nim terminal-UI k
 1. **Continuation-scoped, not thread-scoped.** A binding follows the logical task across suspensions.
 2. **Tasks inherit at spawn; mutations don't leak back.** Concurrent tasks can't interfere unless they explicitly share context.
 3. **Type-safe.** Reading a context binding returns the declared value type without `cast` or `Option` unwrapping in the common case.
-4. **Zero-overhead-when-unused.** Async procs that don't touch CLS pay near-zero runtime cost. `AsyncCallback` retains POD-ness so the dispatcher's hot path stays allocation-free.
+4. **Zero-overhead-when-unused.** Async procs that don't touch CLS pay near-zero runtime cost: one nil-ref field write at construction (`context: currentAsyncContext` with `currentAsyncContext == nil`), no heap allocation, no refcount op. `AsyncCallback`'s `context` is a native `ref` — Nim's MM (refc/orc/arc) does the refcount when there *is* a binding. The dispatcher hot path stays allocation-free.
 5. **Idiomatic Nim.** Single-form declaration; uniform call syntax (`name()`, not `name.get()`); compile-time type identity (not runtime object identity).
 6. **Collision-resistant by construction.** Two libraries declaring identically-named context vars don't silently interfere — type system distinguishes them.
 7. **Capture coverage is structural, not by-convention.** A type-system-enforced split between user-facing and internal callback construction makes it impossible to add a new user-facing scheduling API without thinking about context capture.
@@ -217,16 +224,42 @@ proc contextLookup[N: ContextNodeBase, T](default: T): T {.gcsafe, raises: [].} 
 
 ### Dispatcher integration
 
-`InternalAsyncCallback` gains a `context: pointer` field (NOT `ref`):
+`InternalAsyncCallback` gains a native `ref` field:
 
 ```nim
 type InternalAsyncCallback* = object
   function*: CallbackFunc
   udata*: pointer
-  context*: pointer       # cast[pointer](ContextNode); nil if no bindings
+  context*: ContextNodeBase   # native ref; nil if no bindings
 ```
 
-Storing as `pointer` keeps `AsyncCallback` POD: no refcount ops at construction, `SentinelCallback` returns to `const` (it was `const` pre-RFC; v1 drift had to demote it to a template), no `cast(gcsafe)` blocks on the dispatcher hot path. Lifetime management of the referenced `ContextNode` follows the existing `GC_ref(fut)` pattern in `internalContinue`: when a callback is scheduled, the context is `GC_ref`'d; when fired, `GC_unref`'d after the call.
+Lifetime is delegated to Nim's MM: every refc / arc / orc maintains the refcount automatically across assignment overwrite, seq element removal, future GC'd with pending callbacks, deque popFirst, `.reset()`, and container teardown. No manual `GC_ref` / `GC_unref` — they were error-prone (every new scheduling site needed to remember them) and inherited the latent `sequtils.keepItIf` shallowCopy bug under `--mm:refc`.
+
+`ContextNodeBase` is declared in `chronos/futures.nim` (alongside `InternalAsyncCallback`) so the field can be typed directly — declaring it in `internal/contextvars_impl.nim` (which imports `futures.nim`) would close a circular dependency.
+
+`SentinelCallback` is a no-arg `template` (not `const` or `let`):
+- `const X = AsyncCallback(...)` — Nim 2.x rejects `const` of an object containing a `ref` field, even when the ref is nil.
+- `let X = AsyncCallback(...)` — a module-level `let` containing a `ref` field is gcsafe-inaccessible from dispatcher procs like `poll`.
+- The template emits a fresh rvalue at every call site with `context: nil`. No global GC'd state to read, gcsafe-clean. `isSentinel` keeps full struct-equality (`acb == SentinelCallback()`); nil-ref comparison is pointer equality so the check stays cheap.
+
+The dispatcher's `processCallbacks` loop:
+
+```nim
+template processCallbacks(loop: untyped) =
+  while true:
+    let callable = loop.callbacks.popFirst()
+    if isSentinel(callable):
+      break
+    if not(isNil(callable.function)):
+      let chronosCtxPrev = currentAsyncContext
+      currentAsyncContext = callable.context
+      try:
+        callable.function(callable.udata)
+      finally:
+        currentAsyncContext = chronosCtxPrev
+```
+
+No `cast[ContextNodeBase]` (the field already has the right type), no `{.cast(gcsafe).}` wrapper (ref-typed reads from threadvars are gcsafe). When the loop iteration drops `callable`, Nim's MM releases the captured chain.
 
 ### Capture discipline: two-constructor split
 
@@ -234,24 +267,26 @@ The reason v1's review caught 10+ user-facing scheduling sites missing context c
 
 ```nim
 # In chronos/internal/contextvars_impl.nim:
-proc userCallback*(fn: CallbackFunc, udata: pointer = nil): AsyncCallback {.inline.} =
+proc userCallback*(fn: CallbackFunc, udata: pointer = nil): AsyncCallback {.inline, raises: [].} =
   ## Construct an AsyncCallback that fires user-supplied code. Captures
-  ## the current continuation-local context at construction time so the
+  ## the current continuation-local context at construction so the
   ## callback fires under the same contextVar bindings the registrant
   ## had at registration. Use this for every add*/callSoon-like site
-  ## that schedules user code to run.
-  AsyncCallback(function: fn, udata: udata,
-                context: cast[pointer](currentAsyncContext))
+  ## that schedules user code.
+  AsyncCallback(function: fn, udata: udata, context: currentAsyncContext)
 
-proc internalCallback*(fn: CallbackFunc, udata: pointer = nil): AsyncCallback {.inline.} =
+template internalCallback*(fn: CallbackFunc, ud: pointer = nil): AsyncCallback =
   ## Construct an AsyncCallback that fires chronos-internal scaffolding
   ## (IOCP completion handlers, idle-loop sentinels, fd-readiness
   ## trampolines that just complete user futures). No context capture —
   ## the chronos-internal code being scheduled doesn't read contextVars,
   ## and the user-visible callbacks downstream (the awaiters on whatever
   ## future the trampoline completes) already carry their own captured
-  ## context via addCallback.
-  AsyncCallback(function: fn, udata: udata, context: nil)
+  ## context via their original `addCallback`.
+  ##
+  ## Template (not proc) so it can appear in template-form rvalues —
+  ## chiefly `SentinelCallback` and other dispatcher-internal sites.
+  AsyncCallback(function: fn, udata: ud, context: nil)
 ```
 
 The raw `AsyncCallback(function: ..., udata: ...)` literal is internal-private. Every scheduling site uses one of the two named constructors. Adding a new `add*` API forces the author to pick — the wrong choice is loud rather than silent.
@@ -265,14 +300,19 @@ Site coverage:
 
 ```
 chronos/
+├── futures.nim                      # ContextNodeBase type declaration (alongside InternalAsyncCallback's
+│                                    #   `context: ContextNodeBase` field — co-located to break circular import)
 ├── contextvars.nim                  # PUBLIC: contextVar macro, AsyncContext, currentContext, withContext
 ├── internal/
-│   └── contextvars_impl.nim         # PRIVATE: ContextNode, currentAsyncContext threadvar,
-│                                    #   contextGetByTag/contextBindByTag, userCallback/internalCallback,
-│                                    #   setCurrentContext, GC_ref/unref helpers
+│   └── contextvars_impl.nim         # INTERNAL: currentAsyncContext threadvar,
+│                                    #   contextLookup / contextBindSlot generic helpers,
+│                                    #   userCallback / internalCallback constructors,
+│                                    #   chainLen / contextNodeBalance (debug-only test hooks)
 ```
 
 `chronos.nim` re-exports `contextvars`. The dispatcher code in `internal/asyncfutures.nim` + `internal/asyncengine.nim` imports `internal/contextvars_impl` for the primitives. Users see only the public surface; chronos's API stability guarantee scopes only what's in `chronos/contextvars.nim`.
+
+`ContextNodeBase` lives in `futures.nim` (not in `contextvars_impl.nim`) because `InternalAsyncCallback.context: ContextNodeBase` is a typed field — declaring the type in `contextvars_impl.nim` (which imports `futures.nim`) would close a circular dependency. The type is short (3 lines) and has no operations attached, so the placement is mechanical.
 
 ### Spawn-time inheritance
 
@@ -292,7 +332,7 @@ When an async proc is called for the first time, its initial run inherits the ca
 
 ## Benchmark plan
 
-The dispatcher gains: one pointer write at capture (in `userCallback`), two pointer writes at fire (save/restore around `cb.function(cb.udata)`), one ContextNode allocation per `withName` (heap), and one GC_ref/unref pair per scheduled-with-context callback.
+The dispatcher gains: one ref-field write at capture (in `userCallback`, with Nim's MM emitting `nimIncRef` only when the captured context is non-nil), two ref-field writes at fire (save/restore around `cb.function(cb.udata)`), one ContextNode allocation per `withName` (heap), and one auto-decref at iteration-end (Nim's MM emits `nimGCunref` when `callable` drops out of `processCallbacks`'s loop scope).
 
 To validate no regression on chronos's hot path:
 
@@ -328,8 +368,18 @@ Benchmarks land alongside the implementation; PR body includes results.
 - **`closeSocket(fd, aftercb)` / `closeHandle(fd, aftercb)`**: aftercb fires with registration-time context.
 - **`race()` and `allFutures()`**: combinators propagate context to their continuations.
 
+**Binder contract (MM-portable, no GC-timing dependency):**
+- `chainLen()` — direct walk of `currentAsyncContext`. After every balanced `withName` body the chain depth must return to baseline. Verified for normal exit, exception exit, and nested binders.
+- `contextNodeBalance` — debug-only threadvar incremented at slot push / decremented at slot pop in `contextBindSlot`. Suite-end check in `testutils.nim` (alongside `pendingFuturesCount`) catches any binder that pushed without popping.
+
+These replace finalizer-based leak probes that proved unreliable under `--mm:refc` (deferred finalizer dispatch). The native-ref design means per-drop refcount correctness is a Nim MM guarantee, not a chronos invariant; the binder-contract tests verify what chronos itself is responsible for.
+
+**Macro hygiene:**
+- `contextVar` accepts `nnkIdent`, `nnkPostfix`, AND `nnkSym` in arm names — required for composition from wrapper macros that build the name via `genSym` or process typed AST. The macro normalizes incoming names through `ident($name)` before emission so an `nskVar`-flavored symbol can still be used as a template name.
+
 **Meta:**
 - CI grep test: raw `AsyncCallback(function:` literal appears only in `chronos/internal/contextvars_impl.nim`. Any drift fails the test.
+- Static assertion: `InternalAsyncCallback.context is ContextNodeBase` — catches any regression to manual `pointer` lifecycle.
 
 ## Alternatives considered
 
@@ -349,7 +399,7 @@ Generate `var nameContextTag {.global.}: int` per declaration; use `addr nameCon
 
 ### C. `RootRef` + `ContextBox[T]` wrapper (v1's drift)
 
-Store erased values as `RootRef` pointing at a `ContextBox[T]` heap allocation. Two heap allocations per bind, unsound downcast (`ContextBox[T](r)` is a runtime-checked conversion that can theoretically raise `ObjectConversionDefect` despite the macro's invariant guaranteeing match). The pointer + macro-inlined cast in this design produces strictly less work and stronger type safety.
+Store erased values as `RootRef` pointing at a `ContextBox[T]` heap allocation. Two heap allocations per bind, unsound downcast (`ContextBox[T](r)` is a runtime-checked conversion that can theoretically raise `ObjectConversionDefect` despite the macro's invariant guaranteeing match). The slot-typed subtype design (one heap allocation per bind, value owned inline, `of`-based recovery using Nim's runtime type test) produces strictly less work and stronger type safety.
 
 ### D. Imperative `set` / `reset` / `Token` API
 
@@ -369,13 +419,25 @@ The "blanket capture" approach: rather than splitting into user/internal constru
 - IOCP completion repackaging (asyncengine.nim:658) doesn't need user context — capturing whatever-the-dispatcher-leaked context would be semantically wrong (the captured value has no meaning).
 - The split makes the *intent* of each site explicit. "Why are we capturing here?" becomes "because `userCallback` says we are." The blanket approach hides the intent.
 
+### H. `context: pointer` with manual `GC_ref` / `GC_unref` (this RFC's original design)
+
+`AsyncCallback.context` as a raw `pointer` field; `userCallback` does `GC_ref(currentAsyncContext)` at construction; explicit `releaseCallbackContext(cb)` calls at every drop site (`clearTimer`, `removeTimer`, `removeReader2`, `processCallbacks`-after-fire, `clearCallbacks`, `removeCallback`, etc.). Preserved `AsyncCallback`'s POD-ness and let `SentinelCallback` stay a `const`.
+
+Rejected after implementation review because:
+- **Latent leak under `--mm:refc`**: `sequtils.keepItIf` uses `shallowCopy` which bypasses custom `=destroy`/`=copy`/`=sink` hooks. `removeCallback`'s filter loop would silently leak the context ref of any callback past the first matching element.
+- **Contributor-discipline failure mode**: every new scheduling site needed to remember `GC_ref` at construction AND every new drop site needed to remember `releaseCallbackContext`. Capture had the two-constructor split for structural enforcement; release had no such structural enforcement.
+- **Reinventing `ref`**: properly maintaining the refcount across copies (deque slots, struct overwrites, container teardowns) requires defining `=destroy` + `=copy` + `=sink` hooks — at which point we've reinvented exactly what Nim's `ref` already does, paying per-copy hook dispatch instead of compiler-emitted incref/decref ops.
+
+The native `ref` design (chosen) inherits a language-level guarantee instead of asserting a chronos-level invariant; the failure modes above all become impossible.
+
 ## Risks and open questions
 
 1. **Persistent-map upgrade timing.** MVP uses a singly-linked stack of `ContextNode`s. For users with deep nesting (10+ bindings in a deep stack), this becomes O(n) per read. Upgrading to a HAMT or similar structure-shared persistent map is mechanical (API doesn't change). Defer until profiling justifies it.
 2. **Naming.** `contextVar` is the proposed name; `asyncLocal` (matches .NET prior art + chronos's `Async*` convention) is an alternative. Open question for chronos maintainers.
-3. **`getTypeId` portability.** The implementation relies on a stable per-type compile-time identifier. `system.hash(getType(T))` or equivalent — verify across Nim 1.6 / 2.0 / devel.
-4. **Cancellation-callback context** documented above (canceller's context, not cancellee's). Confirm with chronos maintainers; if they prefer cancellee's, the storage of `cancelCallback=` needs to change to `AsyncCallback`.
-5. **Closure iterator `yield` inside `withName`**: Nim's closure iterators preserve try/finally state across yields, so the binding restore on body exit fires correctly even after suspension. Explicit test for this in the test plan.
+3. **Cancellation-callback context** documented above (canceller's context, not cancellee's). Confirm with chronos maintainers; if they prefer cancellee's, the storage of `cancelCallback=` needs to change to `AsyncCallback`.
+4. **Closure iterator `yield` inside `withName`**: Nim's closure iterators preserve try/finally state across yields, so the binding restore on body exit fires correctly even after suspension. Covered by `binding survives multiple sequential awaits` and related tests.
+5. **Cycle risk via user-bound ref values.** `context: ContextNodeBase` is a native ref; if a user binds a value containing a `ref` back into something that holds the binding's owning future (rare but possible in pathological code), the cycle would leak under ARC but be reclaimed under ORC's cycle collector. Same property every other Nim `ref` field carries — not novel to this RFC. Chronos's existing position on refc/orc support governs.
+6. **Multi-thread embedders.** The threadvar `currentAsyncContext` is per-thread; chronos is single-thread-per-dispatcher. Multiple dispatchers running on multiple threads each have their own context chain. This is consistent with chronos's existing design and the v2 RFC's stated single-dispatcher-per-thread invariant.
 
 ## Prior art and references
 
@@ -388,9 +450,12 @@ The "blanket capture" approach: rather than splitting into user/internal constru
 
 ## Reference implementation
 
-The reference implementation will live at `github.com/coreyleavitt/chronos` in the `feat/contextvars` branch. The prior v1 branch was wiped (it drifted from this design); v2 is being built fresh against this RFC.
+The reference implementation lives at `github.com/coreyleavitt/chronos` in the `feat/contextvars` branch. Status:
+- v1 (manual tag id + RootRef box) wiped after code review.
+- v2 (slot-typed subtypes + `context: pointer` with manual `GC_ref`/`releaseCallbackContext`) implemented, then superseded by v2.1 after the latent-leak / contributor-discipline analysis.
+- v2.1 (current — native `ref` field, no manual lifecycle) implemented, 506 tests passing under `--mm:refc -d:chronosDebug -d:useSysAssert -d:useGcAssert`. ORC matrix run gated on Nim > 1.6 (chronos.nimble:67) — runs after refc passes.
 
-The downstream consumer is `fresco` — a Nim terminal-UI kernel — which has already migrated its CLS-using code to the user-facing surface (`contextVar` declarations + `withName` templates + `withContext` snapshot/restore). The migration is the integration test for the design; the surface this RFC specifies is preserved across the v1→v2 reimplementation.
+The downstream consumer is `fresco` — a Nim terminal-UI kernel — which migrated its CLS-using code to the user-facing surface (`contextVar` declarations + `withName` templates + `withContext` snapshot/restore). The migration is the integration test for the design; the surface this RFC specifies has been preserved across v1 → v2 → v2.1 reimplementations.
 
 ---
 
