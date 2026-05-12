@@ -31,7 +31,7 @@
 
 {.experimental: "callOperator".}
 
-import ./signal
+import ./subscribable
 import ./scope
 import ./speculative
 import ../journal/events

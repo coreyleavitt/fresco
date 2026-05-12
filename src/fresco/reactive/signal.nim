@@ -22,26 +22,16 @@
 
 import std/macros
 import ./scope
+import ./subscribable
+export subscribable
 import ./speculative
 import ../journal/events
 import ../journal/log
 
 type
-  Computation* = ref object
-    run*: proc() {.closure.}
-    sources*: seq[Subscribable]
-    disposed*: bool
-
-  Subscribable* = ref object of RootObj
-    ## Erased base for "anything observable" so a Computation can
-    ## hold a heterogeneous list of sources without generic infection.
-    observers*: seq[Computation]
-
   Signal*[T] = ref object of Subscribable
     val: T
     label*: string
-
-var currentComputation* {.threadvar.}: Computation
 
 # --- Signal -----------------------------------------------------------------
 
@@ -50,24 +40,6 @@ proc signal*[T](initial: T, label = ""): Signal[T] =
   ## used by the journal for `ekSignalWrite` events — unlabeled
   ## signals are excluded from state-restoration projection.
   Signal[T](val: initial, label: label)
-
-proc subscribe*(s: Subscribable, c: Computation) {.gcsafe.} =
-  ## Explicit static subscription: wire `c` as an observer of `s`
-  ## without going through the runtime `currentComputation` stack.
-  ## Used by the typed-macro layer (`tracked:`) to emit compile-time-
-  ## known dep edges.
-  {.cast(gcsafe).}:
-    if c.disposed: return
-    if c notin s.observers:
-      s.observers.add c
-      c.sources.add s
-
-proc trackRead(s: Subscribable) {.gcsafe.} =
-  {.cast(gcsafe).}:
-    if currentComputation == nil or currentComputation.disposed: return
-    if currentComputation notin s.observers:
-      s.observers.add currentComputation
-      currentComputation.sources.add s
 
 proc get*[T](s: Signal[T]): T {.gcsafe.} =
   ## Read the current value. When called inside a `createEffect` /
@@ -86,18 +58,6 @@ proc peek*[T](s: Signal[T]): T {.gcsafe.} =
 proc `()`*[T](s: Signal[T]): T {.gcsafe.} = s.get()
   ## Sugar — `count()` reads + tracks; same as `count.get()`.
 
-proc notify*(s: Subscribable) {.gcsafe, raises: [].} =
-  ## Snapshot observers first; a re-run may mutate the list.
-  {.cast(gcsafe).}:
-    let snap = s.observers
-    for c in snap:
-      if not c.disposed:
-        try: c.run()
-        except Exception: discard
-          # `c.run()` is a user closure — body can untyped-raise.
-          # Swallowing keeps notify deterministic; a faulty observer
-          # shouldn't break sibling observers or the writing task.
-
 proc setCore[T](s: Signal[T], newVal: T, journal: bool)
     {.gcsafe, raises: [].} =
   when compiles(s.val == newVal):
@@ -112,7 +72,7 @@ proc setCore[T](s: Signal[T], newVal: T, journal: bool)
   if currentSpeculative != nil and not currentSpeculative.committed:
     let captured = s
     let prior = s.val
-    recordRevert proc() =
+    onSpeculativeRevert proc() =
       captured.val = prior
       notify(captured)
   s.val = newVal
@@ -140,18 +100,6 @@ proc setUntracked*[T](s: Signal[T], newVal: T) {.gcsafe, raises: [].} =
   s.setCore(newVal, journal = false)
 
 # --- Computations -----------------------------------------------------------
-
-proc unsubscribeAll*(c: Computation) {.gcsafe.} =
-  ## Detach `c` from every signal it currently observes. Called by
-  ## `createEffect` before re-running (to rebuild deps cleanly) and
-  ## by the `onCleanup` emitted in `tracked:` blocks. Exported
-  ## because macro-emitted code lives in user scope; not typically
-  ## called by user code directly.
-  {.cast(gcsafe).}:
-    for src in c.sources:
-      let idx = src.observers.find(c)
-      if idx >= 0: src.observers.del(idx)
-    c.sources.setLen(0)
 
 proc createEffect*(body: proc() {.closure.}) {.gcsafe.} =
   ## Run `body` immediately, tracking signal reads; re-run on any

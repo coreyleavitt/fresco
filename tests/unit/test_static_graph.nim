@@ -2,6 +2,7 @@
 
 import std/[unittest, strformat]
 import fresco/reactive/scope
+import fresco/reactive/subscribable
 import fresco/reactive/signal
 import fresco/reactive/collection
 import fresco/reactive/static_graph
@@ -137,3 +138,72 @@ suite "tracked: static dependency tracking":
     check runs == 1
     count.set(1)
     check runs == 2     # would fail (still 1) before round-9 H1
+
+# --- #39: structural Subscribable detection -----------------------------
+
+suite "tracked: type-system-driven detection (#39)":
+
+  test "type alias of Signal[T] is detected via structural inheritance":
+    # Pre-#39, the walker matched type names with getTypeInst, so an
+    # alias `type AppCount = Signal[int]` resolved to the alias name
+    # and didn't match "Signal" — silent under-subscription.
+    # Post-#39, `when compiles(Subscribable(recv))` asks the type
+    # system: aliases resolve, and inheritance is honored.
+    type AppCount = Signal[int]
+    let c: AppCount = signal(0)
+    var runs = 0
+    discard createRoot:
+      tracked:
+        discard c()
+        inc runs
+    check runs == 1
+    c.set(1)
+    check runs == 2   # would stay 1 under the old name-comparison detection
+
+  test "user-defined Subscribable subtype is detected without macro edits":
+    # Pre-#39, adding a third Subscribable subtype required editing
+    # static_graph.nim's hardcoded `["Signal", "CollectionSignal"]`
+    # name list. Post-#39, the macro asks the type system structurally
+    # — no edit needed.
+    type
+      MyStore[T] = ref object of Subscribable
+        val: T
+    proc newStore[T](v: T): MyStore[T] = MyStore[T](val: v)
+    proc get[T](s: MyStore[T]): T =
+      trackRead(s)
+      s.val
+    proc `()`[T](s: MyStore[T]): T = s.get()
+    proc set[T](s: MyStore[T], v: T) =
+      s.val = v
+      notify(s)
+
+    let store = newStore(0)
+    var runs = 0
+    discard createRoot:
+      tracked:
+        discard store()
+        inc runs
+    check runs == 1
+    store.set(7)
+    check runs == 2
+
+  test "non-Subscribable receiver does not subscribe":
+    # `when compiles(Subscribable(recv))` filters out anything that
+    # isn't a Subscribable subtype — int, string, user objects, etc.
+    # The macro still walks the body; the type-system gate just drops
+    # the subscribe emission for non-trackable calls.
+    let count = signal(0)
+    var runs = 0
+    var s = "hello"
+    discard createRoot:
+      tracked:
+        # `s.len()` is a call with a non-Subscribable receiver. It
+        # should NOT cause the tracked body to subscribe to anything
+        # other than `count`. (We verify by mutating only `count`
+        # and seeing the expected re-fire count.)
+        discard s.len
+        discard count()
+        inc runs
+    check runs == 1
+    count.set(5)
+    check runs == 2

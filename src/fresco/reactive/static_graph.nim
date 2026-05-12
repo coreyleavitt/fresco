@@ -4,76 +4,56 @@
 ##     region.setRow(0, fmt"count: {count()}")
 ##     region.setRow(1, $total())
 ##
-## A typed macro walks the body's AST after Nim's semantic pass,
-## identifies every `()` or `.get()` / `.len` call whose receiver has
-## type `Signal[T]` or `CollectionSignal[T]`, and emits explicit
-## `subscribe(receiver, comp)` edges before the body runs. The body
+## A typed macro walks the body's AST after Nim's semantic pass and
+## emits explicit `subscribe(receiver, comp)` edges for every call
+## whose receiver structurally satisfies `Subscribable`. The body
 ## itself never touches the runtime `currentComputation` stack — dep
 ## edges are wired statically.
 ##
-## Conservative semantics: the macro subscribes to *every* signal it
-## can detect, including those only read in conditional branches.
-## Over-subscription is sound (the effect may over-fire on a dep that
-## isn't actually read in the current path) but never under-subscribes.
-## Indirect reads — `let s = getSignal(); s()` — aren't detectable;
-## those need plain `createEffect` so the runtime stack tracks them.
+## ## Detection is type-system-driven
 ##
-## Same dispose / cleanup semantics as `createEffect`: scope-bound
-## via onCleanup, so disposing the enclosing scope unsubscribes the
+## The macro doesn't carry a list of trackable types. For every
+## call-shaped expression `f(recv, ...)` in the body, it emits:
+##
+##   when compiles(subscribe(Subscribable(recv), comp)):
+##     subscribe(Subscribable(recv), comp)
+##
+## The type system decides per-call-site whether `recv` can be upcast
+## to `Subscribable` — i.e., whether `recv`'s type inherits from
+## `Subscribable`. This naturally handles type aliases
+## (`type AppCount = Signal[int]; let c: AppCount; tracked: ...c()...`
+## works), generic instances, and any future `ref object of
+## Subscribable` user-defined types without macro edits.
+##
+## ## Conservative over-subscription is intentional
+##
+## The walker considers every `nnkCall` with at least two children.
+## This over-subscribes:
+##   - on writes (`s.set(v)` subscribes to `s`) — benign, writes don't
+##     re-trigger the writer.
+##   - on conditional reads (subscribes to deps in branches the body
+##     doesn't currently take) — benign, the effect over-fires but
+##     produces correct output.
+## Indirect reads through helper procs (`let s = getSignal(); s()`) are
+## NOT detected — those need plain `createEffect` for runtime tracking.
+##
+## ## Cleanup
+##
+## Same dispose / cleanup semantics as `createEffect`: scope-bound via
+## onCleanup, so disposing the enclosing scope unsubscribes the
 ## computation from every source.
 
 import std/macros
 import ./scope
-import ./signal
-import ./collection
-
-proc trackableTypeName(t: NimNode): string =
-  ## If `t` is a `Signal[T]` or `CollectionSignal[T]` bracket-expr,
-  ## return the type name; otherwise empty string. Used by the
-  ## `tracked:` walker to recognize reactive receivers.
-  ##
-  ## Comparison is name-based on the type symbol. A user type named
-  ## `Signal` or `CollectionSignal` in scope would match the name but
-  ## would fail to compile in the subsequent `subscribe(...)` call
-  ## (the user type doesn't inherit from `Subscribable`), so the
-  ## failure is loud rather than silent.
-  ##
-  ## **Adding a new Subscribable subtype:** update this list AND
-  ## DESIGN.md R10. The `tracked:` macro will not detect reads of
-  ## the new type otherwise.
-  if t == nil or t.kind != nnkBracketExpr or t.len < 1: return ""
-  if t[0].kind != nnkSym: return ""
-  let name = $t[0]
-  if name == "Signal" or name == "CollectionSignal": name else: ""
-
-proc isReactiveRead(n: NimNode): bool =
-  ## True when `n` looks like a call against a `Signal[T]` or
-  ## `CollectionSignal[T]` receiver. Detects both `count()` (the `()`
-  ## operator) and `count.get()` / `coll.len` (UFCS).
-  ##
-  ## **Type-alias limitation:** uses `getTypeInst`, which preserves
-  ## type aliases as their alias name rather than resolving to the
-  ## canonical form. A user with `type AppCount = Signal[int]; let
-  ## c: AppCount = signal(0)` would have `c()` reads NOT detected by
-  ## `tracked:` — the alias name doesn't match "Signal". Workaround:
-  ## use plain `Signal[T]` types directly, or fall back to
-  ## `createEffect`. Switching to `getType` resolves aliases but
-  ## changes the AST shape (returns ref-of-object structure), which
-  ## breaks the common case.
-  if n.kind != nnkCall or n.len < 2: return false
-  let receiver = n[1]
-  var t: NimNode
-  try:
-    t = receiver.getTypeInst()
-  except CatchableError: return false
-  trackableTypeName(t).len > 0
+import ./subscribable
 
 const SyntheticKinds = {
   # Compiler-inserted nodes that wrap user expressions during the
-  # typed pass. We skip their *subtrees* so a Signal[T] receiver
-  # carried inside an implicit conversion or range check doesn't
-  # produce a spurious match. Expand this set if Nim adds new
-  # synthetic kinds in future releases.
+  # typed pass. We skip the synthetic node itself (its kind would
+  # never be `nnkCall`) but DO recurse into its children — they
+  # carry the actual user expressions that may include reactive
+  # reads. Expand this set if Nim adds new synthetic kinds in
+  # future releases.
   nnkHiddenCallConv,
   nnkHiddenStdConv,
   nnkHiddenSubConv,
@@ -89,31 +69,40 @@ const SyntheticKinds = {
 
 macro tracked*(body: typed): untyped =
   ## See module docstring.
-  var sigs: seq[NimNode] = @[]
+  var receivers: seq[NimNode] = @[]
   proc walk(n: NimNode) =
-    # Skip the synthetic node itself (its kind would never match
-    # `isReactiveRead`), but DO recurse into its children — they
-    # carry the actual user expressions that may include reactive
-    # reads. The earlier "return without recursing" form silently
-    # under-subscribed when a Signal read was wrapped in an implicit
-    # conversion (e.g., `count()` passed to a `Natural` parameter
-    # gets `nnkHiddenStdConv(nnkCall(count_op, count_sym))`).
-    if n.kind notin SyntheticKinds and isReactiveRead(n):
-      sigs.add n[1]
-    for child in n:
-      walk(child)
+    # Record the receiver of every call-shaped node. The `when compiles`
+    # guard in the emitted code filters down to actual Subscribable
+    # receivers — the walker doesn't need its own type detection.
+    if n.kind notin SyntheticKinds and n.kind == nnkCall and n.len >= 2:
+      receivers.add n[1]
+    for child in n: walk(child)
   walk(body)
+
+  if receivers.len == 0:
+    # Almost always a bug — the user wrote `tracked:` expecting reactive
+    # re-execution but the body contains no calls (so nothing to detect
+    # a Subscribable read on). Common culprits: forgetting `()` on a
+    # signal read, or hiding reads behind a helper proc. Emit a hint so
+    # the silent-degrade-to-run-once failure mode doesn't bite.
+    hint("tracked: block has no detected reactive reads — body will " &
+         "run once and never re-fire. Check that signal reads use " &
+         "call syntax (count() not count), and that they're not " &
+         "hidden behind helper procs (use createEffect for runtime " &
+         "tracking of indirect reads).", body)
 
   let compSym = genSym(nskLet, "comp")
   result = newStmtList()
   result.add quote do:
     let `compSym` = Computation()
-  for s in sigs:
-    # subscribe() takes a `Subscribable`; both `Signal[T]` and
-    # `CollectionSignal[T]` inherit from it, so the same call works
-    # for either.
+  for r in receivers:
+    # `when compiles` is the type-system gate. If `Subscribable(r)`
+    # compiles (because r's type inherits from Subscribable), the
+    # subscribe call is emitted; otherwise the branch is silently
+    # dropped at type-check time. Zero detection logic in the macro.
     result.add quote do:
-      subscribe(Subscribable(`s`), `compSym`)
+      when compiles(subscribe(Subscribable(`r`), `compSym`)):
+        subscribe(Subscribable(`r`), `compSym`)
   result.add quote do:
     `compSym`.run = proc() {.closure.} = `body`
     onCleanup proc() =

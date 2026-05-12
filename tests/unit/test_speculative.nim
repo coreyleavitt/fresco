@@ -114,10 +114,9 @@ suite "speculative":
       discard speculative:
         touched := 1
         # Synthesize a revert closure that raises a Defect when fired.
-        # `recordRevert` is the internal API used by signal.set; emulate
-        # by writing a signal whose revert path will produce a Defect.
-        # Simpler: write through a closure that we know raises on rollback.
-        recordRevert proc() = raise newException(Defect, "boom-in-revert")
+        # `onSpeculativeRevert` is the per-write extension hook (used
+        # internally by signal.set); push a closure we know will raise.
+        onSpeculativeRevert proc() = raise newException(Defect, "boom-in-revert")
     except Defect:
       caught = true
     check caught

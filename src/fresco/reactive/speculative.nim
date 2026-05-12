@@ -30,7 +30,9 @@
 type
   SpeculativeScope* = ref object
     parent*: SpeculativeScope
-    reverts: seq[proc() {.closure.}]   ## internal — populated via recordRevert
+    reverts: seq[proc() {.closure.}]
+      ## Per-write restore closures, populated by `onSpeculativeRevert`.
+      ## Drained LIFO on rollback.
     onRollbackHooks: seq[proc() {.closure.}]
       ## Per-type post-revert hooks. Fire AFTER `reverts` drain on
       ## rollback. Used by revertible types that batch their rollback
@@ -47,36 +49,56 @@ type
 
 var currentSpeculative* {.threadvar.}: SpeculativeScope
 
-proc recordRevert*(p: proc() {.closure.}) {.gcsafe.} =
-  ## Push a revert closure onto the active speculative frame. No-op
-  ## outside any speculative scope or after the frame committed.
+# --- Speculative extension surface ----------------------------------------
+##
+## These three procs form the complete contract for writing a revertible
+## reactive type. All are no-ops outside an active speculative scope or
+## after the scope has committed (so mutators can call them
+## unconditionally from their write paths).
+##
+## Pick `onSpeculativeRevert` for scalar / per-write types (Signal[T] —
+## the closure is small, batching adds nothing). Pick the rollback +
+## commit hook pair for structural / batched types (CollectionSignal[T] —
+## one notification per scope-exit instead of M per-mutation).
+
+proc onSpeculativeRevert*(p: proc() {.closure.}) {.gcsafe.} =
+  ## Push a per-write restore closure onto the active speculative
+  ## frame. The closure runs in LIFO order on rollback and MUST
+  ## restore prior state AND call `notify(self)` so dependent
+  ## computations re-run against the restored value.
   ##
-  ## Exported for cross-module use by `signal.setCore` and
-  ## `collection.withRevert`. There is no documented external
-  ## contract for user-defined revertible types yet; if you find
-  ## yourself calling this directly from user code, file an issue
-  ## with the use case so the extension surface can be designed
-  ## properly rather than relying on this implementation detail.
+  ## Reference impl: `signal.setCore` — captures the prior value by
+  ## closure, sets back + notifies on revert.
   {.cast(gcsafe).}:
     if currentSpeculative != nil and not currentSpeculative.committed:
       currentSpeculative.reverts.add p
 
 proc onSpeculativeRollback*(p: proc() {.closure.}) {.gcsafe.} =
-  ## Register a hook to fire after all `reverts` drain on rollback.
-  ## Used by revertible types that batch their rollback notification.
-  ## No-op outside a speculative scope or after commit.
+  ## Register a hook that fires ONCE per scope-exit on rollback, after
+  ## all per-write reverts have drained. Use this for types that batch
+  ## their rollback notification — multiple mutations in the scope
+  ## coalesce into one observer fire-up.
   ##
-  ## Exported for cross-module use by `collection.nim`. Same contract
-  ## caveat as `recordRevert`: not yet a public extension surface.
+  ## The hook itself is responsible for state restoration AND observer
+  ## notification — by the time it fires, the per-write reverts queue
+  ## is empty and the scope is marked committed (so the hook's own
+  ## fanout can't push fresh captures).
+  ##
+  ## Reference impl: `collection.captureInverse` — appends inverse
+  ## deltas to a per-scope buffer; the hook applies them in reverse
+  ## and emits one batched `dkRollback` delta.
   {.cast(gcsafe).}:
     if currentSpeculative != nil and not currentSpeculative.committed:
       currentSpeculative.onRollbackHooks.add p
 
 proc onSpeculativeCommit*(p: proc() {.closure.}) {.gcsafe.} =
-  ## Register a hook to fire on `commit()`. Used by revertible types
-  ## that maintain per-scope state to promote it to the parent scope
-  ## (so the inner-committed work still rolls back if the outer scope
-  ## rolls back).
+  ## Register a hook that fires ONCE per scope-exit on commit. Use
+  ## this for types that maintain per-scope state and need to promote
+  ## it to the parent speculative scope on commit, so an outer
+  ## rollback still undoes inner-committed work.
+  ##
+  ## Reference impl: `collection.captureInverse` — promotes the inner
+  ## scope's inverse buffer into the parent entry on commit.
   {.cast(gcsafe).}:
     if currentSpeculative != nil and not currentSpeculative.committed:
       currentSpeculative.onCommitHooks.add p
@@ -102,8 +124,9 @@ proc rollback*(scope: SpeculativeScope) {.gcsafe.} =
     # Mark committed BEFORE firing the batched-notification hooks so
     # that any observer fanout inside a hook can't push fresh reverts
     # or per-type buffer entries that would become orphans (nothing
-    # would drain them). `recordRevert` and revertible types' capture
-    # helpers all short-circuit on `committed`.
+    # would drain them). All three extension primitives
+    # (onSpeculativeRevert / onSpeculativeRollback / onSpeculativeCommit)
+    # short-circuit on `committed`.
     scope.committed = true
     for h in scope.onRollbackHooks:
       try: h()
