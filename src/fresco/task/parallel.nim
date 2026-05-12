@@ -22,10 +22,6 @@ import ../journal/log
 proc awaitParallel(mounts: seq[Mount]) {.async: (raises: [CatchableError]).} =
   ## Wait for every Mount. On first failure: cancel siblings, drain
   ## their cancellation cascades, re-raise the original error.
-  ##
-  ## `{.task.}` is required: the sibling-failure journaling inside the
-  ## drain loop reads `currentScope` via `journalEvent`, and that
-  ## must survive the `await race(futs)` suspensions.
   var pending = mounts
   while pending.len > 0:
     var futs: seq[FutureBase] = @[]

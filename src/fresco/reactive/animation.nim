@@ -113,10 +113,6 @@ proc step(a: Animation, now: Moment): bool =
   return false
 
 proc clockLoop() {.async.} =
-  # No `{.task.}` — clockLoop reads no CLS vars itself, and `step()`
-  # uses `withScope(a.originScope)` synchronously around the terminal
-  # frame's journaled `set` call (intermediates use `setUntracked`
-  # which skips journaling). CLS save/restore here would do nothing.
   while true:
     let now = Moment.now()
     var i = 0

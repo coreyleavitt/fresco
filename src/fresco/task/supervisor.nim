@@ -137,11 +137,6 @@ proc run*(s: Supervisor) {.async: (raises: [CatchableError]).} =
   ## terminal state (lcTemporary done, or lcTransient exited cleanly,
   ## or rate limit escalated). Cancellation propagates: cancelling the
   ## supervisor task cancels every child.
-  ##
-  ## `{.task.}` is required: `spawn` reads `currentScope` to parent
-  ## the child mount, and every `journalEvent` inside the loop reads
-  ## `currentScope.taskId` / `lastEventId`. Both must survive the
-  ## `await race(futs)` and the cascade-drain awaits.
 
   # Start each child once.
   for child in s.children:

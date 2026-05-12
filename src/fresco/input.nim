@@ -146,9 +146,6 @@ proc stop*(s: InputStream) {.gcsafe, raises: [].} =
   restoreTermios(s.snapshot)
 
 proc finalizeEsc(s: InputStream) {.async.} =
-  # No `{.task.}` — finalizeEsc reads no CLS vars after its single
-  # await; the pragma would add captureContext/restoreContext that
-  # do nothing useful.
   let myGen = s.escGen
   try:
     await sleepAsync(s.escTimeout)

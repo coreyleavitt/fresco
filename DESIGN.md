@@ -81,7 +81,7 @@ Pure infrastructure. No user-facing API. Re-exported only as primitives for T2-T
 
 **Allowed dependency exceptions:** `input.nim` (T1) and `hotkey.nim` (T4 but tier-mixed) import:
 
-- `fresco/cls` — the continuation-local storage substrate. CLS is layer-0 (like `chronos` itself); any async-suspending code needs context preservation across `await`. Located at `src/fresco/cls.nim`, not under any tier directory, to make the layering explicit.
+- `chronos/contextvars` — the continuation-local storage primitive. Provided by chronos (in our fork; upstream PR pending — see `docs/rfc-chronos-contextvars.md`). Any async-suspending code that reads `currentScope` / `currentSpeculative` / `parallelCollector` needs context preservation across `await`, which the dispatcher now handles automatically. There was previously a fresco-side `cls.nim` substrate doing this with macro rewriting; it has been deleted in favor of the chronos primitive.
 - `fresco/journal/{events,log}` — journal attribution for input events. Journals are layer-0 audit infrastructure; restricting them to T4 would mean T1 code can't record its own events.
 
 These are the only cross-tier deps; any new ones need DESIGN.md approval.
@@ -119,9 +119,8 @@ src/fresco/
 │   ├── collection.nim      # CollectionSignal[T] + Delta[T]
 │   ├── static_graph.nim    # `tracked:` typed macro — compile-time dep extraction
 │   └── capabilities.nim    # capability markers + `requires` macro
-├── cls.nim                 # continuation-local storage — TaskContext + {.task.} pragma + taskAwait (layer-0)
 ├── task/
-│   ├── types.nim           # Mount, MountCollector, parallelCollector — pure data, no async (layer-0 split so cls can import without dragging in core's lifecycle machinery)
+│   ├── types.nim           # Mount, MountCollector, parallelCollector — pure data, no async (layer-0 split so low-level modules can reach the types without dragging in lifecycle machinery)
 │   ├── core.nim            # task primitive, spawn / spawnRetry / spawnCatch (re-exports types)
 │   ├── receive.nim         # selective receive runtime — pattern arms + after timeout
 │   ├── parallel.nim        # parallel: block — structured-concurrency group await
@@ -144,7 +143,8 @@ Notes on collapsed modules vs the original sketch:
 - `journal/time.nim` → bitemporal projection lives directly in `journal/log.nim`.
 - `context/provide.nim` → `reactive/context.nim`.
 - `macros/*` → each DSL macro is co-located with the runtime module it expands to (`receive` macro in `task/receive.nim`, `region` macro in `reactive/binding.nim`, `supervisor` macro in `task/supervisor.nim`, etc.). No separate macros directory.
-- `task/types.nim` → new layer-0 split (added during v2.x review). Holds `Mount`, `MountCollector`, and `parallelCollector` — pure data, no async machinery. Exists so `cls.nim` (continuation-local storage substrate) can import these types without dragging in `task/core.nim`'s lifecycle code. `core.nim` re-exports `types` so existing imports of `task/core` see the same surface.
+- `task/types.nim` → layer-0 split holding `Mount`, `MountCollector`, and `parallelCollector` — pure data, no async machinery. Exists so low-level modules can reach these types without dragging in `task/core.nim`'s lifecycle code. `core.nim` re-exports `types` so existing imports of `task/core` see the same surface.
+- `cls.nim` → **removed**. fresco previously carried a continuation-local storage substrate (`{.task.}` pragma + `taskAwait` helper + `TaskContext`) implementing CLS via macro-rewriting around chronos's `await`. v3 replaced this with chronos's native `contextVar` primitive — three threadvars (`currentScope`, `currentSpeculative`, `parallelCollector`) became `contextVar` declarations in their respective modules. The substrate, pragma-order rule, and ~150 lines of macro infrastructure all collapsed into ~3 lines per declaration.
 
 ---
 

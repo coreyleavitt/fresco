@@ -258,10 +258,6 @@ macro receive*(stream: untyped, body: untyped): untyped =
     # discards it; the timer path runs `afterBody`.
     chain = quote do: discard
 
-  # The awaits this macro emits are invisible to the enclosing
-  # `{.task.}` rewriter (macros expand after pragma processing).
-  # Use `await` for explicit CLS save/restore.
-
   if afterDur == nil:
     result = quote do:
       let `evSym` = await `stream`.nextKey()
