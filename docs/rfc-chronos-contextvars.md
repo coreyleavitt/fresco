@@ -73,20 +73,21 @@ contextVar:
 ```
 
 A pragma-style macro that declares one or more context variables in a block. Generates:
-- A unique compile-time tag type (`distinct void` — fresh per declaration; the type system guarantees collision detection at compile time)
+- A unique slot type (`ref object of ContextNodeBase` with a `value: T` field — fresh per declaration; the type system guarantees collision detection because two declarations with the same name produce types with the same name)
 - A typed reader `name()` returning `T`
 - A scoped binder `withName(v): body` that introduces a binding for the dynamic extent of `body`
 
 Generated code (sketch, per arm):
 
 ```nim
-type CurrentUserTag = distinct void
+type CurrentUserSlot = ref object of ContextNodeBase
+  value: User
 
 template currentUser*(): User =
-  contextGetByTag(CurrentUserTag, User, anonymous)
+  contextLookup[CurrentUserSlot, User](anonymous)
 
 template withCurrentUser*(v: User, body: untyped) =
-  contextBindByTag(CurrentUserTag, User, v, body)
+  contextBindSlot[CurrentUserSlot, User](v, body)
 ```
 
 Single-line form is also accepted: `contextVar var currentUser: User = anonymous` (no block).
@@ -163,42 +164,56 @@ This matches Python contextvars and .NET ExecutionContext semantics.
 
 ## Implementation
 
-### Tag identity: `distinct void` per declaration
+### Tag identity AND value storage: distinct ref-object subtypes per declaration
 
-The `contextVar` macro generates a unique tag type per arm:
+Each `contextVar` arm emits a distinct `ref object` subtype of a shared `ContextNodeBase`. The value lives **inside the node** (`value: T` field), not at the address of a stack local. The "tag" is the type itself — the dispatcher's lookup uses Nim's runtime type test (`of`).
 
 ```nim
 contextVar:
   var currentUser: User = anonymous
-# expands to:
-type CurrentUserTag = distinct void
-template currentUser*(): User = contextGetByTag(CurrentUserTag, User, anonymous)
+# expands to (in module scope):
+type CurrentUserSlot = ref object of ContextNodeBase
+  value: User
+template currentUser*(): User =
+  contextLookup[CurrentUserSlot, User](anonymous)
 template withCurrentUser*(v: User, body: untyped) =
-  contextBindByTag(CurrentUserTag, User, v, body)
+  contextBindSlot[CurrentUserSlot, User](v, body)
 ```
 
-Each `distinct void` declaration produces a fresh type. The dispatcher's lookup uses the type's compile-time identity (via `getTypeId(T)` or equivalent — implementation detail of `contextGetByTag`/`contextBindByTag`).
-
-**Why not `addr {.global.}: int`** (the v1 drift): global-address identity is fragile across dynamic-library boundaries (each loaded copy gets a distinct address; two consumers of the same library wrapping the same `contextVar` could end up with different keys for the same binding) and theoretically vulnerable to link-time deduplication. Compile-time type identity is link-stable and ABI-stable by construction.
-
-**Why not a runtime `ContextVar` object** (the Python design): a runtime object with identity-based keying requires per-declaration allocation and indirect lookup. Nim's type system carries the identity natively — no allocation, no indirection, no runtime object to construct or store.
-
-### Value storage: pointer + macro-inlined accessors
-
-`ContextNode` stores values as `pointer`, not as `ref` or `RootRef`. The macro-generated accessors `currentUser()` and `withCurrentUser(v, body)` know `T` at compile time and emit the cast inline.
+The chain is a linked list of `ContextNodeBase`:
 
 ```nim
-type ContextNode = ref object
-  tag: pointer            # type-tag identity (typeId of the declaration's tag type)
-  valueRef: pointer       # erased value pointer; reader casts back to T
-  next: ContextNode
+type ContextNodeBase* = ref object of RootObj
+  next: ContextNodeBase
 ```
 
-Binding pushes a node with `cast[pointer](addr boundLocal)` (or similar — depending on whether `T` is value-typed or ref-typed; implementation may need a small inline buffer for value-typed bindings to avoid stack-escape). Reading walks the chain, finds the matching tag, casts back to `T`.
+Each declaration extends it with a `value: T` field. The walker uses `of` to find the matching node:
 
-**Why not `RootRef` + `ContextBox[T]` wrapper** (the v1 drift): double heap allocation per bind (one for `ContextBox[T]`, one for `ContextNode`). Unsound type recovery (`ContextBox[T](r)` is a runtime-checked downcast that theoretically can raise `ObjectConversionDefect`). `RootRef` indirection contributes nothing the macro-emitted inline cast doesn't already provide more directly.
+```nim
+proc contextLookup[N: ContextNodeBase, T](default: T): T {.gcsafe, raises: [].} =
+  var node = currentAsyncContext
+  while node != nil:
+    if node of N:
+      return N(node).value
+    node = node.next
+  default
+```
 
-**Per-bind cost**: one `ContextNode` allocation. For value-typed `T` that fits in a pointer, the value lives in `valueRef` directly (cast-based). For value-typed `T` larger than a pointer, the value lives in a stack-local that the `withName` template captures by `addr` for the dynamic extent of its body (Nim's `try/finally` lifetime guarantee makes this safe). For ref-typed `T`, the ref is stored in `valueRef` via `cast[pointer]`.
+**This simultaneously addresses three concerns**:
+
+1. **Tag identity is link-stable and type-system-driven.** No compile-time counter (which is per-module-instantiation in Nim and could collide across modules in incremental compilation). No `addr {.global.}: int` (which is per-loaded-copy under dynamic linking). The type identity is what Nim's type system carries — there is no separate runtime tag.
+
+2. **Cross-module collision detection is structural.** Two modules each declaring `var currentUser: User = anonymous` each emit a type named `CurrentUserSlot`. If both are simultaneously in scope (e.g., consumed by a third module that imports both), Nim's type-checker fails with a name-collision error rather than silently sharing an integer tag. The "compile-time collision detection" property the design promises is provided by the type system, not by hand-rolled tag bookkeeping.
+
+3. **Snapshot via `currentContext()` is sound for any T.** The value is owned by the node (`N(node).value`). A snapshot that outlives the original binder keeps the chain alive via Nim's normal refcounting; reading the value returns a copy (for value types) or the shared reference (for ref types). No stack-local addresses involved, so no use-after-free for value-typed bindings.
+
+**Why not `distinct void` tag types + pointer-to-stack-local value storage** (the v2 first-implementation drift): the v2 RFC originally specified this, but a code-review pass revealed two structural defects:
+- A compile-time int counter (the actual implementation that v2 settled into) is per-module-instantiation in Nim, so two modules' identically-named contextVars could silently share a tag id under incremental compilation or order-dependent module compilation. The "compile-time collision detection" claim was false.
+- Storing `valueRef` as `addr` of a stack local in the `withName(v): body` template's expansion is sound only as long as the node is popped before the local's frame returns. `currentContext()` deliberately captures the chain past the binder's exit — read-through-snapshot then dereferences freed stack memory for value-typed bindings.
+
+**Why not `RootRef` + `ContextBox[T]` heap wrapper** (the v1 drift): two heap allocations per bind (`ContextBox[T]` + the chain node) and unsound `ContextBox[T](r)` downcast (`ObjectConversionDefect` is theoretically possible). The current design has one heap allocation per bind — the slot itself — with the value owned inline; type recovery via `of` is the Nim runtime's checked type test.
+
+**Per-bind cost**: one `Slot` allocation. Value is owned by the slot, no boxing layer. Reads walk the chain doing one `of` check per node until matched.
 
 ### Dispatcher integration
 
