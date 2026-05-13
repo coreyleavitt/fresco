@@ -60,6 +60,7 @@ task test, "run all tests":
     "tests/integration/test_supervisor_onerror.nim",
     "tests/integration/test_supervisor_restart.nim",
     "tests/integration/test_supervisor_strategies.nim",
+    "tests/integration/test_supervisor_pools.nim",
     "tests/integration/test_animation.nim",
     "tests/integration/test_persist.nim",
     "tests/integration/test_topology.nim",

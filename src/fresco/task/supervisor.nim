@@ -15,13 +15,16 @@
 ## proc invocation. The supervisor calls the factory each time it
 ## (re)starts the child.
 
-import std/macros
+import std/[macros, tables]
 import chronos
 import ./core
+import ./group
 
 import ../reactive/scope
 import ../journal/events as jev
 import ../journal/log
+
+export group
 
 type
   Lifecycle* = enum
@@ -34,11 +37,6 @@ type
     ssOneForAll      ## any failure → cancel all siblings, restart all
     ssRestForOne     ## any failure → cancel this child + all *later* siblings
                     ## (declaration order), restart that group
-
-  ChildFactory* = proc(): Future[void] {.closure, gcsafe, raises: [].}
-    ## Must not raise synchronously and must be gcsafe. An `{.async.}`
-    ## proc call site satisfies this — the proc body's raises are
-    ## encoded in the returned Future, not at the call.
 
   ErrorAction* = enum
     eaRestart       ## restart the child (subject to maxRestarts window)
@@ -78,11 +76,36 @@ type
     mount: Mount
     restartTimes: seq[Moment]
 
+  AdoptedGroup = ref object
+    name: string
+    group: TaskGroup
+    lifecycle: Lifecycle
+    maxRestarts: int
+    within: Duration
+    restartTimes: seq[Moment]
+    mountFactories: Table[ptr Mount, ChildFactory]
+      ## Indexed by the raw Mount ref's memory address (Mount is a
+      ## ref object; using the ref pointer is stable for its lifetime
+      ## and avoids requiring `hash` for Mount itself).
+    members: seq[Mount]
+      ## Snapshot of the group's current members from the supervisor's
+      ## perspective. Updated by the spawn hook on add and by the
+      ## supervisor on restart. Kept separately from the group's own
+      ## member list because the group's auto-remove callback fires
+      ## eagerly on member finish (clearing the group's view) while
+      ## the supervisor needs to retain the factory until it has
+      ## decided whether to restart.
+
   Supervisor* = ref object
     strategy*: Strategy
     maxRestarts*: int
     within*: Duration
     children: seq[ChildState]
+    adoptedGroups: seq[AdoptedGroup]
+    wakeup: Future[void]
+      ## Completed by adopted-group spawn hooks to wake the run-loop
+      ## race when new members are added. Re-created at the top of
+      ## each iteration.
 
   SupervisorEscalation* = object of CatchableError
     childName*: string
@@ -117,6 +140,11 @@ proc addChild*(s: Supervisor, name: string,
                     factory: factory, onError: onError,
                     onRestart: onRestart))
 
+proc hasAdoptedMembers(s: Supervisor): bool =
+  for ag in s.adoptedGroups:
+    if ag.members.len > 0: return true
+  false
+
 proc shouldRestart(lifecycle: Lifecycle, failed: bool): bool =
   case lifecycle
   of lcPermanent: true
@@ -132,6 +160,43 @@ proc trimWindow(times: var seq[Moment], now: Moment, window: Duration) =
   if keep > 0:
     times = times[keep ..< times.len]
 
+proc adopt*(s: Supervisor, g: TaskGroup, name: string,
+            lifecycle = lcTemporary,
+            maxRestarts = 5,
+            within = 10.seconds) =
+  ## Adopt a TaskGroup as a supervised pool. The supervisor watches
+  ## the group's members through its run loop; on member finish it
+  ## applies `lifecycle` (lcTemporary: never restart; lcTransient:
+  ## restart on failure only; lcPermanent: always restart) and uses
+  ## the per-pool `maxRestarts`/`within` rate window to escalate
+  ## crash storms.
+  ##
+  ## Pools are only valid under `ssOneForOne` — pool members are an
+  ## independent cascade domain (they don't cascade to named children
+  ## or to each other regardless of strategy). Calling `adopt` on a
+  ## supervisor with another strategy is a `Defect`.
+  doAssert s.strategy == ssOneForOne,
+    "task group adoption requires ssOneForOne supervisor strategy"
+  for ag in s.adoptedGroups:
+    doAssert ag.name != name,
+      "duplicate adopted group name: " & name
+  for c in s.children:
+    doAssert c.spec.name != name,
+      "adopted group name collides with named child: " & name
+  let ag = AdoptedGroup(name: name, group: g, lifecycle: lifecycle,
+                       maxRestarts: maxRestarts, within: within)
+  s.adoptedGroups.add ag
+  let supRef = s
+  let agRef = ag
+  g.setSpawnHook(proc(m: Mount, factory: ChildFactory)
+                 {.gcsafe, raises: [].} =
+    agRef.mountFactories[cast[ptr Mount](m)] = factory
+    agRef.members.add m
+    # Wake the run loop so the new member joins the race.
+    if supRef.wakeup != nil and not supRef.wakeup.finished:
+      try: supRef.wakeup.complete()
+      except CatchableError: discard)
+
 proc run*(s: Supervisor) {.async: (raises: [CatchableError]).} =
   ## Run the supervisor loop. Returns when every child has reached a
   ## terminal state (lcTemporary done, or lcTransient exited cleanly,
@@ -142,17 +207,79 @@ proc run*(s: Supervisor) {.async: (raises: [CatchableError]).} =
   for child in s.children:
     child.mount = spawn child.spec.factory()
 
-  while s.children.len > 0:
-    # Wait for any child to finish.
-    var futs: seq[FutureBase] = @[]
+  while s.children.len > 0 or s.hasAdoptedMembers():
+    # Re-create the wakeup future each iteration. Spawn hooks on
+    # adopted groups complete it to bring the loop back to re-snapshot
+    # member futures (so a newly-spawned member that synchronously
+    # crashes is observed without waiting for an unrelated event).
+    s.wakeup = newFuture[void]("supervisor.wakeup")
+
+    var futs: seq[FutureBase] = @[s.wakeup.FutureBase]
     for child in s.children:
       futs.add child.mount.future.FutureBase
+    for ag in s.adoptedGroups:
+      for m in ag.members:
+        futs.add m.future.FutureBase
     let winner = await race(futs)
 
+    # Wakeup fired (new member spawned) — re-snapshot the race set.
+    if winner == s.wakeup.FutureBase:
+      continue
+
+    # Locate the winner: named child, adopted-group member, or neither
+    # (already-handled phantom).
     var idx = -1
     for i, child in s.children:
       if child.mount.future.FutureBase == winner: idx = i; break
-    if idx < 0: continue
+
+    if idx < 0:
+      # Adopted-group member finished. Handle and continue.
+      var poolHandled = false
+      for ag in s.adoptedGroups:
+        var memberIdx = -1
+        for i, m in ag.members:
+          if m.future.FutureBase == winner: memberIdx = i; break
+        if memberIdx < 0: continue
+        poolHandled = true
+        let finishedMount = ag.members[memberIdx]
+        let factoryPtr = cast[ptr Mount](finishedMount)
+        let factory = ag.mountFactories.getOrDefault(factoryPtr)
+        let failed = finishedMount.future.failed
+        # Remove from supervisor's view (group auto-removes too).
+        ag.members.delete(memberIdx)
+        ag.mountFactories.del(factoryPtr)
+
+        if shouldRestart(ag.lifecycle, failed) and factory != nil:
+          # Rate window: aggregate across the pool.
+          let now = Moment.now()
+          ag.restartTimes.add now
+          trimWindow(ag.restartTimes, now, ag.within)
+          if ag.restartTimes.len > ag.maxRestarts:
+            var err = newException(SupervisorEscalation,
+              "adopted group '" & ag.name & "' exceeded " &
+              $ag.maxRestarts & " restarts in " & $ag.within)
+            err.childName = ag.name
+            journalEvent:
+              jrnl.logSupervisorEscalate(taskTid, parentEvt,
+                                         ag.name, err.msg)
+            # Cancel everything before escalating.
+            for c in s.children:
+              if not c.mount.future.finished: c.mount.cancel()
+            for ag2 in s.adoptedGroups:
+              for m in ag2.members:
+                if not m.future.finished: m.cancel()
+            raise err
+          # Restart the member via the group: the spawn hook re-records
+          # the (new) mount + factory and completes wakeup so the loop
+          # picks it up next iteration.
+          journalEvent:
+            jrnl.logSupervisorRestart(taskTid, parentEvt, ag.name,
+                                      ag.restartTimes.len)
+          discard ag.group.spawn(factory)
+        break
+      if not poolHandled: continue
+      continue
+
     let child = s.children[idx]
     let failed = child.mount.future.failed
 
@@ -283,20 +410,31 @@ proc run*(s: Supervisor) {.async: (raises: [CatchableError]).} =
 # --- Topology introspection ----------------------------------------------
 
 type
+  NodeKind* = enum
+    nkChild        ## named child registered via `addChild`
+    nkPool         ## summary node for an adopted TaskGroup
+    nkPoolMember   ## individual live member of an adopted TaskGroup
+
   TopologyNode* = object
     name*: string
     lifecycle*: Lifecycle
     running*: bool
     taskId*: jev.TaskId
     restartCount*: int
+    kind*: NodeKind
+    poolName*: string   ## set when `kind == nkPoolMember`
+    poolSize*: int      ## set when `kind == nkPool` (live member count)
+    poolMax*: int       ## set when `kind == nkPool` (configured maxSize)
 
 proc topology*(s: Supervisor): seq[TopologyNode] =
-  ## Snapshot of the supervisor's children — name, lifecycle, whether
-  ## the current mount is still running, the latest taskId, and a
-  ## count of restarts in the active sliding window. Useful for
-  ## devtools panels and external monitoring (metrics, logs).
+  ## Snapshot of the supervisor's tree: named children first, then for
+  ## each adopted group one `nkPool` summary followed by one
+  ## `nkPoolMember` per live member. Member names use the synthetic
+  ## form `"<poolName>#<taskId>"`. Useful for devtools panels and
+  ## external monitoring.
   for child in s.children:
     var node = TopologyNode(
+      kind: nkChild,
       name: child.spec.name,
       lifecycle: child.spec.lifecycle,
       restartCount: child.restartTimes.len)
@@ -305,6 +443,26 @@ proc topology*(s: Supervisor): seq[TopologyNode] =
       if child.mount.scope != nil:
         node.taskId = child.mount.scope.taskId
     result.add node
+  for ag in s.adoptedGroups:
+    result.add TopologyNode(
+      kind: nkPool,
+      name: ag.name,
+      lifecycle: ag.lifecycle,
+      restartCount: ag.restartTimes.len,
+      poolSize: ag.members.len,
+      poolMax: ag.group.maxSize)
+    for m in ag.members:
+      var node = TopologyNode(
+        kind: nkPoolMember,
+        lifecycle: ag.lifecycle,
+        poolName: ag.name)
+      if m.scope != nil:
+        node.taskId = m.scope.taskId
+        node.name = ag.name & "#" & $m.scope.taskId.uint64
+      else:
+        node.name = ag.name & "#?"
+      node.running = not m.future.finished
+      result.add node
 
 # --- Declarative supervisor: block ---------------------------------------
 

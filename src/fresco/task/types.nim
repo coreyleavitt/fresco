@@ -20,6 +20,11 @@ type
       ## from a live Mount without a journal query. Used by `parallel:`
       ## for concurrent-failure naming.
 
+  ChildFactory* = proc(): Future[void] {.closure, gcsafe, raises: [].}
+    ## Reusable spawn closure: invokes the underlying async proc each
+    ## time it's called. Supervisor and TaskGroup both use this shape
+    ## (closures capture per-call args; the factory itself takes none).
+
   MountCollector* = ref object
     ## Heap-allocated collector for `parallel:` blocks. Holding it as a
     ## ref (not a raw pointer to a stack-allocated seq) means we can
