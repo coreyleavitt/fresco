@@ -332,6 +332,8 @@ This is the one deliberate exception to the two-constructor split's "internal tr
 
 **Thread interaction**: chronos's dispatcher is single-thread-per-loop. Each dispatcher has its own current-context (threadvar). Threads don't share context. CLS is per-dispatcher.
 
+**Windows IOCP — `addProcess2` / `addSignal2` propagation gap (known limitation)**: On Linux (epoll) and macOS/BSD (kqueue), `addProcess2` and `addSignal2` use `userCallback` correctly and the user callback fires under the registrant's context. On Windows, both APIs route through `registerWaitable` which stores `cb` as a bare `CallbackFunc` in `CompletionData` (no context captured at registration), then wraps it via `internalCallback` at the IOCP completion site (no context restored at fire time). Result: user callbacks scheduled via these two APIs on Windows see whatever context the dispatcher last set, not the registration-time context. This is a pre-existing structural issue in the Windows IOCP path that the contextvars RFC inherits; fixing it requires adding a `context: ContextNodeBase` field to `CompletionData` and threading capture/restore through `registerWaitable`. Deferred until a Windows CI environment is available to verify. TODO comment marked in `asyncengine.nim` at the completion site.
+
 ## Benchmark plan
 
 The dispatcher gains: one ref-field write at capture (in `userCallback`, with Nim's MM emitting `nimIncRef` only when the captured context is non-nil), two ref-field writes at fire (save/restore around `cb.function(cb.udata)`), one ContextNode allocation per `withName` (heap), and one auto-decref at iteration-end (Nim's MM emits `nimGCunref` when `callable` drops out of `processCallbacks`'s loop scope).
