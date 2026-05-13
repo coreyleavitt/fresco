@@ -17,6 +17,8 @@
 import std/macros
 import ../screen
 import ./signal
+import ./scope
+import ./collection
 
 template bindRow*(region: Region, idx: int, body: untyped) =
   ## Re-evaluate `body` (a string-yielding expression) on every tracked
@@ -38,6 +40,95 @@ template bindRows*(region: Region, slice: HSlice[int, int],
       for i in 0 .. (hi - lo):
         let line = if i < lines.len: lines[i] else: ""
         region.setRow(lo + i, line)
+
+# --- Differential binding for CollectionSignal -----------------------------
+#
+# `bindRows` re-evaluates its whole body on every signal change. For a
+# CollectionSignal that emits typed deltas, that's wasteful: a single
+# `push` should produce a single new row, not a re-lay of every item.
+# `bindCollection` subscribes to deltas and applies them incrementally.
+# Fixed window from `items[0]` — see issue #28; scroll-to-end is v3.1.
+
+proc bindCollection*[T](region: Region, slice: HSlice[int, int],
+                        c: CollectionSignal[T],
+                        fmt: proc(x: T): string {.closure.}) =
+  ## Lay `c` across `slice` of `region`; on each delta, apply the
+  ## minimal row update. Row `slice.a + i` displays `fmt(items[i])`
+  ## for `i < min(items.len, slice.len)`; rows beyond items.len are
+  ## blank. Formatter calls are O(1) per delta (new item only) for
+  ## the differential ops; O(items.len) for dkReplace/dkRollback.
+  let lo = slice.a
+  let hi = slice.b
+  if hi < lo: return
+  let winLen = hi - lo + 1
+
+  # Cache formatted strings for the visible window only. Items past
+  # `winLen` are never formatted — they're off-screen. The cache
+  # mirrors the visible portion of the collection: `cache[i]` is the
+  # rendered text of `items[i]` for `i < min(items.len, winLen)`.
+  var cache: seq[string] = @[]
+
+  proc fmtVisible(items: seq[T]) =
+    # Rebuild cache from `items`, formatting only the visible prefix.
+    cache.setLen(0)
+    let n = min(items.len, winLen)
+    for i in 0 ..< n:
+      cache.add fmt(items[i])
+
+  proc layRow(i: int) =
+    if i < 0 or i >= winLen: return
+    let line = if i < cache.len: cache[i] else: ""
+    region.setRow(lo + i, line)
+
+  proc layAll() =
+    for i in 0 ..< winLen:
+      layRow(i)
+
+  # Initial lay.
+  fmtVisible(c.get())
+  layAll()
+
+  # Subscribe to deltas — scope-bound via onDelta's internal onCleanup.
+  c.onDelta proc(d: Delta[T]) =
+    case d.kind
+    of dkInsert:
+      if d.insertIdx >= winLen: return       # off-screen — nothing to do
+      cache.insert(fmt(d.insertVal), d.insertIdx)
+      if cache.len > winLen: cache.setLen(winLen)
+      for i in d.insertIdx ..< winLen:
+        layRow(i)
+    of dkRemove:
+      if d.removeIdx >= winLen: return       # off-screen
+      if d.removeIdx < cache.len: cache.delete(d.removeIdx)
+      # If items had more than winLen entries, removing one in the
+      # window pulled `items[winLen]` into the visible range — we
+      # have to format it (it wasn't cached before).
+      let items = c.get()
+      if items.len >= winLen and cache.len < winLen:
+        cache.add fmt(items[winLen - 1])
+      for i in d.removeIdx ..< winLen:
+        layRow(i)
+    of dkUpdate:
+      if d.updateIdx >= winLen: return       # off-screen
+      if d.updateIdx < cache.len:
+        cache[d.updateIdx] = fmt(d.updateVal)
+      layRow(d.updateIdx)
+    of dkClear:
+      cache.setLen(0)
+      layAll()
+    of dkReplace:
+      fmtVisible(d.replaceVal)
+      layAll()
+    of dkRollback:
+      # Collection has already applied the inverses; re-derive cache
+      # from the current state. Formatter cost is O(winLen).
+      fmtVisible(c.get())
+      layAll()
+
+template bindCollection*[T](region: Region, slice: HSlice[int, int],
+                            c: CollectionSignal[T]) =
+  ## Convenience overload using `$T` as the formatter.
+  bindCollection(region, slice, c, proc(x: T): string = $x)
 
 proc resolveBackIndex(rIdent, expr: NimNode): NimNode =
   ## Rewrite `^N` (from-end index) to `rIdent.height - N`. Leaves
@@ -110,7 +201,14 @@ macro region*(r: untyped, body: untyped): untyped =
         error("region: `rows` arm needs an HSlice (`A..B`, `A..<B`, " &
               "`A..^B`) — got `" & arm[1].repr & "`", arm[1])
       let slice = resolveSliceEnds(r, arm[1])
+      # Dispatch: if the body is a CollectionSignal, route to the
+      # differential `bindCollection`; otherwise the seq[string]-yielding
+      # `bindRows`. Detection is via `when compiles(...)` — Nim resolves
+      # the right overload at the call site.
       result.add quote do:
-        bindRows(`r`, `slice`, `armBody`)
+        when compiles(bindCollection(`r`, `slice`, `armBody`)):
+          bindCollection(`r`, `slice`, `armBody`)
+        else:
+          bindRows(`r`, `slice`, `armBody`)
     else:
       error("region: unknown arm `" & head.repr & "` (expected `row`/`rows`)", head)

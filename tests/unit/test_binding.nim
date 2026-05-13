@@ -5,6 +5,8 @@ import fresco/screen
 import fresco/reactive/scope
 import fresco/reactive/signal
 import fresco/reactive/binding
+import fresco/reactive/collection
+import fresco/reactive/speculative
 
 suite "bindRow":
 
@@ -96,3 +98,204 @@ suite "bindRows":
     check r.target[1] == "only-one"
     check r.target[2] == ""
     check r.target[3] == ""
+
+suite "bindCollection":
+
+  test "initial layout: rows populated from items[0]; formatter called once per item":
+    let s = newScreen(10, 20)
+    let r = newRegion(s, 0, 0, 5, 20)
+    let c = collection(@[1, 2, 3])
+    var fmtCalls = 0
+    proc fmt(x: int): string =
+      inc fmtCalls
+      $x
+    discard createRoot:
+      bindCollection r, 0..<5, c, fmt
+    check r.target == @["1", "2", "3", "", ""]
+    check fmtCalls == 3
+
+  test "push: one new item, one formatter call (acceptance #28)":
+    # The load-bearing test: a single push() produces a single
+    # setRow at the new item's row, not a full re-lay. We assert
+    # this via formatter-call count — naive bindRows re-evaluates
+    # every item per change.
+    let s = newScreen(10, 20)
+    let r = newRegion(s, 0, 0, 5, 20)
+    let c = collection(@[1, 2, 3])
+    var fmtCalls = 0
+    proc fmt(x: int): string =
+      inc fmtCalls
+      $x
+    discard createRoot:
+      bindCollection r, 0..<5, c, fmt
+    fmtCalls = 0    # reset after initial lay
+    c.push(4)
+    check r.target == @["1", "2", "3", "4", ""]
+    check fmtCalls == 1
+
+  test "pop: clears the freed row; zero new formatter calls":
+    let s = newScreen(10, 20)
+    let r = newRegion(s, 0, 0, 5, 20)
+    let c = collection(@[10, 20, 30])
+    var fmtCalls = 0
+    proc fmt(x: int): string =
+      inc fmtCalls
+      $x
+    discard createRoot:
+      bindCollection r, 0..<5, c, fmt
+    fmtCalls = 0
+    discard c.pop()
+    check r.target == @["10", "20", "", "", ""]
+    check fmtCalls == 0     # no new formatting — pop is a structural op
+
+  test "setAt: one row updated; one formatter call":
+    let s = newScreen(10, 20)
+    let r = newRegion(s, 0, 0, 5, 20)
+    let c = collection(@[1, 2, 3])
+    var fmtCalls = 0
+    proc fmt(x: int): string =
+      inc fmtCalls
+      $x
+    discard createRoot:
+      bindCollection r, 0..<5, c, fmt
+    fmtCalls = 0
+    c.setAt(1, 99)
+    check r.target == @["1", "99", "3", "", ""]
+    check fmtCalls == 1
+
+  test "insert in middle: trailing rows shift; one new formatter call":
+    let s = newScreen(10, 20)
+    let r = newRegion(s, 0, 0, 5, 20)
+    let c = collection(@[1, 2, 3])
+    var fmtCalls = 0
+    proc fmt(x: int): string =
+      inc fmtCalls
+      $x
+    discard createRoot:
+      bindCollection r, 0..<5, c, fmt
+    fmtCalls = 0
+    c.insert(1, 99)
+    check r.target == @["1", "99", "2", "3", ""]
+    check fmtCalls == 1     # only the inserted item formatted
+
+  test "remove in middle: trailing rows shift; zero formatter calls":
+    let s = newScreen(10, 20)
+    let r = newRegion(s, 0, 0, 5, 20)
+    let c = collection(@[1, 2, 3, 4])
+    var fmtCalls = 0
+    proc fmt(x: int): string =
+      inc fmtCalls
+      $x
+    discard createRoot:
+      bindCollection r, 0..<5, c, fmt
+    fmtCalls = 0
+    c.remove(1)
+    check r.target == @["1", "3", "4", "", ""]
+    check fmtCalls == 0
+
+  test "clear blanks every row in slice":
+    let s = newScreen(10, 20)
+    let r = newRegion(s, 0, 0, 5, 20)
+    let c = collection(@[1, 2, 3])
+    discard createRoot:
+      bindCollection r, 0..<5, c, proc(x: int): string = $x
+    c.clear()
+    check r.target == @["", "", "", "", ""]
+
+  test "set (replace): re-lays slice; formatter called per new item":
+    let s = newScreen(10, 20)
+    let r = newRegion(s, 0, 0, 5, 20)
+    let c = collection(@[1, 2, 3])
+    var fmtCalls = 0
+    proc fmt(x: int): string =
+      inc fmtCalls
+      $x
+    discard createRoot:
+      bindCollection r, 0..<5, c, fmt
+    fmtCalls = 0
+    c.set(@[100, 200])
+    check r.target == @["100", "200", "", "", ""]
+    check fmtCalls == 2
+
+  test "items exceed window: only first slice.len render":
+    let s = newScreen(10, 20)
+    let r = newRegion(s, 0, 0, 3, 20)
+    let c = collection(@[1, 2, 3, 4, 5])
+    var fmtCalls = 0
+    proc fmt(x: int): string =
+      inc fmtCalls
+      $x
+    discard createRoot:
+      bindCollection r, 0..<3, c, fmt
+    # Only the first 3 items get formatted into the visible window.
+    check r.target == @["1", "2", "3"]
+    check fmtCalls == 3     # NOT 5
+
+  test "update beyond window: no setRow, no formatter call":
+    let s = newScreen(10, 20)
+    let r = newRegion(s, 0, 0, 3, 20)
+    let c = collection(@[1, 2, 3, 4, 5])
+    var fmtCalls = 0
+    proc fmt(x: int): string =
+      inc fmtCalls
+      $x
+    discard createRoot:
+      bindCollection r, 0..<3, c, fmt
+    fmtCalls = 0
+    let before = r.target
+    c.setAt(4, 99)              # idx 4 is off-screen (window is 0..<3)
+    check r.target == before
+    check fmtCalls == 0
+
+  test "dkRollback after speculative scope re-lays correctly":
+    let s = newScreen(10, 20)
+    let r = newRegion(s, 0, 0, 5, 20)
+    let c = collection(@[1, 2, 3])
+    discard createRoot:
+      bindCollection r, 0..<5, c, proc(x: int): string = $x
+      discard speculative:
+        c.push(4)
+        c.push(5)
+        c.setAt(0, 99)
+        # body exits without commit → rollback
+    # All speculative mutations reverted; cache + region back to initial.
+    check c.get() == @[1, 2, 3]
+    check r.target == @["1", "2", "3", "", ""]
+
+  test "region DSL routes CollectionSignal body to bindCollection":
+    # `rows A..B: collection` should dispatch to bindCollection
+    # (differential), not bindRows (full re-eval).
+    let s = newScreen(10, 20)
+    let r = newRegion(s, 0, 0, 5, 20)
+    let c = collection(@[1, 2, 3])
+    discard createRoot:
+      region(r):
+        rows 0..4: c
+    check r.target == @["1", "2", "3", "", ""]
+    c.push(4)
+    check r.target == @["1", "2", "3", "4", ""]
+
+  test "region DSL routes Signal[seq[string]] body to bindRows":
+    # Backwards-compat: the body is a string-yielding expression,
+    # not a CollectionSignal. Should go through bindRows.
+    let s = newScreen(10, 20)
+    let r = newRegion(s, 0, 0, 5, 20)
+    let items = signal(@["a", "b"])
+    discard createRoot:
+      region(r):
+        rows 0..4: items()
+    check r.target == @["a", "b", "", "", ""]
+    items.set(@["x"])
+    check r.target == @["x", "", "", "", ""]
+
+  test "scope death deregisters handler":
+    let s = newScreen(10, 20)
+    let r = newRegion(s, 0, 0, 3, 20)
+    let c = collection(@[1, 2])
+    let root = createRoot:
+      bindCollection r, 0..<3, c, proc(x: int): string = $x
+    check r.target == @["1", "2", ""]
+    dispose(root)
+    let before = r.target
+    c.push(3)                   # should NOT update — handler deregistered
+    check r.target == before
