@@ -134,7 +134,7 @@ Only these symbols are exported from `chronos/contextvars`:
 ```nim
 macro contextVar*(body: untyped): untyped
 
-type AsyncContext* = object                  # opaque snapshot
+type AsyncContext* = distinct ContextNodeBase  # opaque snapshot (ref semantics so it keeps the chain alive past the binder)
 proc currentContext*(): AsyncContext
 template withContext*(ctx: AsyncContext, body: untyped)
 ```
@@ -316,7 +316,9 @@ chronos/
 
 ### Spawn-time inheritance
 
-When an async proc is called for the first time, its initial run inherits the caller's context naturally (the caller's threadvar is current; the iterator runs synchronously). When the iterator yields a future, `futureContinue` wraps the yield in save/restore so the iterator's context bindings don't leak to the caller's threadvar. The capture happens at the `addCallback` inside `futureContinue` (line 399 of asyncfutures.nim).
+When an async proc is called for the first time, its initial run inherits the caller's context naturally (the caller's threadvar is current; the iterator runs synchronously). When the iterator yields a future, `futureContinue` wraps the body in save/restore (line 399 of asyncfutures.nim) so the iterator's context bindings don't leak to the caller's threadvar. The capture of the iterator's context happens at the `addCallback` inside `futureContinue` (line 418): `next.addCallback(CallbackFunc(internalContinue), cast[pointer](fut))` routes through `userCallback`, capturing the iterator's `currentAsyncContext` at suspension. On resume, `processCallbacks` restores that captured context before invoking `internalContinue`, so the iterator resumes under the same bindings it had at the yield point.
+
+This is the one deliberate exception to the two-constructor split's "internal trampolines use `internalCallback`" rule. `internalContinue` is technically an internal trampoline, but the capture is load-bearing here — it's what carries the iterator's per-yield context across suspension. Other internal trampolines (`internalCallTick`'s `CallbackFunc` overloads, `idleAsync`'s completion stub, IOCP completion repackaging) correctly use `internalCallback`.
 
 ### Cancellation callback
 
