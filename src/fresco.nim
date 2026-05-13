@@ -37,11 +37,10 @@
 ##         Char('-'): count := count() - 1
 ##         after 1.seconds: discard          # idle tick
 ##
-## The `{.async.}` pragma combination is load-bearing: `task`
-## must run *before* `async` (pragmas are processed left-to-right),
-## so the CLS substrate gets to rewrite every `await` in the body
-## before chronos transforms it into a state machine. Without `task`
-## the reactive `currentScope` is silently lost across every suspend.
+## Plain `{.async.}` is enough — `currentScope` is a chronos
+## contextVar (since #40), so the binding propagates through every
+## `await` automatically. No `{.task.}` pragma, no `taskAwait`
+## helper, no fresco-side CLS substrate.
 ##
 ## Re-exports the T4 reactive + task surface plus the underlying
 ## T1-T3 primitives needed at user code: KeyEvent constructors,

@@ -6,10 +6,9 @@ written to print obvious visual pass/fail cues. These don't run under
 
 | File | Exercises | Pass cue |
 |---|---|---|
-| `ex01_input_loop.nim` | Raw-mode stdin → KeyEvent decoder | Every key you press prints its semantic name on the next line. Arrows, function keys, Ctrl/Alt combos, `/`, and ESC all decode correctly. Ctrl-C quits cleanly with the terminal restored. |
-| `ex02_select.nim` | Select widget | Arrow keys / j-k / number keys all navigate; Enter picks; Ctrl-C and Esc cancel; `/` enters slash mode and typing + Enter returns the command. |
-| `ex03_status_line.nim` | Status widget (DECSTBM scroll region) | 30 lines of `output line N` scroll past while the bottom row continuously updates `streaming N/30`. The status row never gets clobbered. |
-| `ex04_permission_prompt.nim` | Composite: select-under-header | Looks like recall's permission prompt. Pick any option; outcome prints below. |
+| `ex01_input_loop.nim` | Raw-mode stdin → KeyEvent decoder | Every key you press prints its semantic name. Arrows, function keys, Ctrl/Alt combos, `/`, and ESC all decode correctly. Ctrl-C quits cleanly with the terminal restored. |
+| `ex02_counter.nim` | End-to-end reactive loop — input → Signal write → region binding → render | A two-line panel shows `count: N`. Pressing `+`/`-` updates it in place (no scrollback churn). `q` or Ctrl-C quits with the terminal restored. Exercises the full kernel: cbreak + signal handlers, region render diff, Signal reactivity, `receive` pattern matching. |
+| `ex03_devtools.nim` | Journal introspection while a supervisor runs two worker tasks | Watch ekTaskSpawned / ekSignalWrite / ekTaskCompleted / ekSupervisorTerminate events scroll past on stderr; final topology snapshot shows all children completed. Run without a TTY: `nim r --path:src examples/ex03_devtools.nim 2>&1 \| less`. |
 
 ## Run
 
@@ -18,7 +17,7 @@ From the repo root, inside the dev container:
 ```
 ./dev shell
 # then, inside:
-nim r --hints:off --path:src examples/ex01_input_loop.nim
+nim r --hints:off --path:src examples/ex02_counter.nim
 ```
 
 The examples write the UI to stderr and only print structured results to

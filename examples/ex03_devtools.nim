@@ -15,7 +15,10 @@ import chronos
 import fresco
 import fresco/reactive/signal
 
-proc demoWorker(id: int) {.task, async.} =
+proc demoWorker(id: int) {.async.} =
+  # `{.task.}` pragma was deleted in #40 — chronos's contextVar
+  # primitive propagates `currentScope` through `await` automatically;
+  # plain `{.async.}` is enough.
   signals:
     count = 0
   for i in 1 .. 5:
@@ -25,8 +28,10 @@ proc demoWorker(id: int) {.task, async.} =
 proc main() {.async: (raises: [Exception]).} =
   globalJournal = newJournal()
   let sup = newSupervisor()
-  sup.addChild("workerA", lcTemporary, proc(): Future[void] = demoWorker(1))
-  sup.addChild("workerB", lcTemporary, proc(): Future[void] = demoWorker(2))
+  sup.addChild("workerA", lcTemporary,
+               proc(): Future[void] {.async.} = await demoWorker(1))
+  sup.addChild("workerB", lcTemporary,
+               proc(): Future[void] {.async.} = await demoWorker(2))
 
   let m = spawn sup.run()
 
