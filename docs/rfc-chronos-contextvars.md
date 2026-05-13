@@ -314,13 +314,13 @@ chronos/
 │                                    #   chainLen / contextNodeBalance (debug-only test hooks)
 ```
 
-`chronos.nim` re-exports `contextvars`. The dispatcher code in `internal/asyncfutures.nim` + `internal/asyncengine.nim` imports `internal/contextvars_impl` for the primitives. Users see only the public surface; chronos's API stability guarantee scopes only what's in `chronos/contextvars.nim`.
+`contextvars` is an explicit opt-in import: users write `import chronos/contextvars` to get the macro + snapshot/restore surface. `import chronos` (which transitively pulls in the dispatcher via `asyncloop`) does NOT pull in `contextvars` — CLS is orthogonal to the core dispatcher, and many consumers won't need it. The dispatcher code in `internal/asyncfutures.nim` + `internal/asyncengine.nim` imports `internal/contextvars_impl` for the primitives. Users see only the public surface; chronos's API stability guarantee scopes only what's in `chronos/contextvars.nim`.
 
 `ContextNodeBase` lives in `futures.nim` (not in `contextvars_impl.nim`) because `InternalAsyncCallback.context: ContextNodeBase` is a typed field — declaring the type in `contextvars_impl.nim` (which imports `futures.nim`) would close a circular dependency. The type is short (3 lines) and has no operations attached, so the placement is mechanical.
 
 ### Spawn-time inheritance
 
-When an async proc is called for the first time, its initial run inherits the caller's context naturally (the caller's threadvar is current; the iterator runs synchronously). When the iterator yields a future, `futureContinue` wraps the body in save/restore (line 399 of asyncfutures.nim) so the iterator's context bindings don't leak to the caller's threadvar. The capture of the iterator's context happens at the `addCallback` inside `futureContinue` (line 418): `next.addCallback(CallbackFunc(internalContinue), cast[pointer](fut))` routes through `userCallback`, capturing the iterator's `currentAsyncContext` at suspension. On resume, `processCallbacks` restores that captured context before invoking `internalContinue`, so the iterator resumes under the same bindings it had at the yield point.
+When an async proc is called for the first time, its initial run inherits the caller's context naturally (the caller's threadvar is current; the iterator runs synchronously). When the iterator yields a future, `futureContinue` wraps the body in save/restore (around line 400 of asyncfutures.nim — locate the `let chronosCtxPrev = currentAsyncContext` save in `futureContinue`'s body) so the iterator's context bindings don't leak to the caller's threadvar. The capture of the iterator's context happens at the `addCallback` inside `futureContinue` (around line 420 — `next.addCallback(CallbackFunc(internalContinue), cast[pointer](fut))`): the call routes through `userCallback`, capturing the iterator's `currentAsyncContext` at suspension. On resume, `processCallbacks` restores that captured context before invoking `internalContinue`, so the iterator resumes under the same bindings it had at the yield point.
 
 This is the one deliberate exception to the two-constructor split's "internal trampolines use `internalCallback`" rule. `internalContinue` is technically an internal trampoline, but the capture is load-bearing here — it's what carries the iterator's per-yield context across suspension. Other internal trampolines (`internalCallTick`'s `CallbackFunc` overloads, `idleAsync`'s completion stub, IOCP completion repackaging) correctly use `internalCallback`.
 
@@ -363,8 +363,7 @@ Benchmarks land alongside the implementation; PR body includes results.
 - Repeated binding of the same var
 
 **Async / integration:**
-- Binding survives single await
-- Binding survives multiple sequential awaits
+- Binding survives N sequential awaits (single-await is the N=1 degenerate case; the multi-await test is the regression guard)
 - **Real concurrent isolation**: two tasks with interleaved suspensions, each verifies its own binding after each yield. v1's test was sequential (taskA fully completed before taskB's check); v2 must actually interleave.
 - Child task inherits parent's context at spawn
 - Child's nested binding doesn't leak back to parent
