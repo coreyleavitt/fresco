@@ -265,6 +265,9 @@ No `cast[ContextNodeBase]` (the field already has the right type), no `{.cast(gc
 
 The reason v1's review caught 10+ user-facing scheduling sites missing context capture is that capture was *by-convention* — every `AsyncCallback(function: ..., udata: ...)` literal had to remember `context: currentAsyncContext`. v2 makes the responsibility structural via two named constructors:
 
+> *Type-name note*: the implementation declares the concrete type as `InternalAsyncCallback` in `chronos/futures.nim`, with `AsyncCallback* = InternalAsyncCallback` re-exported from `chronos/internal/asyncengine.nim`. The two names refer to the same type; this RFC uses `AsyncCallback` in code samples for readability. Source code in `contextvars_impl.nim` uses the concrete name directly because it imports `futures.nim` (not `asyncengine.nim`).
+
+
 ```nim
 # In chronos/internal/contextvars_impl.nim:
 proc userCallback*(fn: CallbackFunc, udata: pointer = nil): AsyncCallback {.inline, raises: [].} =
@@ -292,9 +295,10 @@ template internalCallback*(fn: CallbackFunc, ud: pointer = nil): AsyncCallback =
 The raw `AsyncCallback(function: ..., udata: ...)` literal is internal-private. Every scheduling site uses one of the two named constructors. Adding a new `add*` API forces the author to pick — the wrong choice is loud rather than silent.
 
 Site coverage:
-- `userCallback`: `addCallback` (both branches), `callSoon(cb, data)`, `setTimer`, `cancelSoon`'s aftercb, `addReader2`/`addWriter2`, `addSignal2`/`addProcess2`, `callIdle`, `internalCallTick`, `closeSocket(fd, aftercb)`, `closeHandle(fd, aftercb)`
-- `internalCallback`: IOCP completion repackaging (line 658), aftercb close hooks where they're chronos-internal trampolines, `SentinelCallback`, idle-loop dispatch internals
-- A CI grep test verifies the raw `AsyncCallback(function:` literal appears ONLY in the two constructor definitions themselves; any drift triggers test failure.
+- `userCallback`: `addCallback` (both branches), `callSoon(cb, data)`, `setTimer`, `cancelSoon`'s aftercb, `addReader2`/`addWriter2`, `addSignal2`/`addProcess2`, `callIdle`, `closeSocket(fd, aftercb)`, `closeHandle(fd, aftercb)`.
+- `internalCallback`: `internalCallTick`'s `CallbackFunc` overloads, `idleAsync`'s completion-stub trampoline, IOCP completion repackaging (asyncengine.nim ~line 661), `SentinelCallback`, idle-loop dispatch internals.
+- Deliberate exception: `internalContinue` (the iterator pump's resume trampoline) is registered via `addCallback`, which routes through `userCallback`. The capture is load-bearing — it carries the iterator's per-yield context across suspension. See §Spawn-time inheritance.
+- A CI grep test (`(Internal)?AsyncCallback\(\n?\s*function:` PCRE multi-line) verifies the raw constructor form appears ONLY in `chronos/internal/contextvars_impl.nim`; any drift triggers test failure.
 
 ### Module split
 
@@ -368,7 +372,8 @@ Benchmarks land alongside the implementation; PR body includes results.
 - Multiple value types coexist on same context chain
 - **Cancellation across `withName` body**: `withCurrentUser(authed): try: await work() except CancelledError: check currentUser() == authed`
 - **`addReader` inside `withName`**: fresco's actual use case — register an fd-readiness callback inside a binding, fire it, verify the callback sees the binding.
-- **`callSoon` / `callIdle` / `internalCallTick` direct binding**: each user-facing scheduler captures correctly.
+- **`callSoon` / `callIdle` direct binding**: each user-facing scheduler captures correctly under the registrant's context.
+- **`internalCallTick` context-blind**: regression test that confirms `internalCallTick`'s `CallbackFunc` overloads do NOT capture context (per the two-constructor split — `internalCallTick` is an internal-trampoline scheduler).
 - **`closeSocket(fd, aftercb)` / `closeHandle(fd, aftercb)`**: aftercb fires with registration-time context.
 - **`race()` and `allFutures()`**: combinators propagate context to their continuations.
 
@@ -457,7 +462,7 @@ The native `ref` design (chosen) inherits a language-level guarantee instead of 
 The reference implementation lives at `github.com/coreyleavitt/chronos` in the `feat/contextvars` branch. Status:
 - v1 (manual tag id + RootRef box) wiped after code review.
 - v2 (slot-typed subtypes + `context: pointer` with manual `GC_ref`/`releaseCallbackContext`) implemented, then superseded by v2.1 after the latent-leak / contributor-discipline analysis.
-- v2.1 (current — native `ref` field, no manual lifecycle) implemented, 506 tests passing under `--mm:refc -d:chronosDebug -d:useSysAssert -d:useGcAssert`. ORC matrix run gated on Nim > 1.6 (chronos.nimble:67) — runs after refc passes.
+- v2.1 (current — native `ref` field, no manual lifecycle) implemented, 513 of 517 tests passing under `--mm:refc -d:chronosDebug -d:useSysAssert -d:useGcAssert`. Remaining: 1 pre-existing environment-dependent failure (`getProcessEnvironment` USER env in docker), 3 skipped. ORC matrix run gated on Nim > 1.6 (chronos.nimble:67) — runs after refc passes.
 
 The downstream consumer is `fresco` — a Nim terminal-UI kernel — which migrated its CLS-using code to the user-facing surface (`contextVar` declarations + `withName` templates + `withContext` snapshot/restore). The migration is the integration test for the design; the surface this RFC specifies has been preserved across v1 → v2 → v2.1 reimplementations.
 
