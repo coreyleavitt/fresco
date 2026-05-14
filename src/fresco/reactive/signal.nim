@@ -25,6 +25,7 @@ import ./scope
 import ./subscribable
 export subscribable
 import ./speculative
+import ./restoration
 import ../journal/events
 import ../journal/log
 
@@ -39,7 +40,14 @@ proc signal*[T](initial: T, label = ""): Signal[T] =
   ## Construct a Signal holding `initial`. The optional `label` is
   ## used by the journal for `ekSignalWrite` events — unlabeled
   ## signals are excluded from state-restoration projection.
-  Signal[T](val: initial, label: label)
+  ##
+  ## If `pendingRestoration` (see `fresco/reactive/restoration`)
+  ## contains `label`, the journal-staged value replaces `initial`
+  ## (read-and-remove). Empty labels and labels not in the staging
+  ## table short-circuit at one table lookup — non-restoration
+  ## paths pay no perceptible cost.
+  let effective = consumeRestoration(label, initial)
+  Signal[T](val: effective, label: label)
 
 proc get*[T](s: Signal[T]): T {.gcsafe.} =
   ## Read the current value. When called inside a `createEffect` /
