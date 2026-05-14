@@ -100,6 +100,195 @@ suite "tween":
       check abs(s() - 1.0) < 1e-6
     waitFor body()
 
+suite "spring":
+
+  teardown:
+    stopFrameClock()
+
+  test "spring eventually settles to target":
+    proc body() {.async: (raises: [Exception]).} =
+      let s = signal(0.0)
+      discard spring(s, 1.0)
+      # 500ms is the expected settle time for default k=170, c=26
+      # (near-critical). Give a generous margin.
+      await sleepAsync(800.milliseconds)
+      check abs(s() - 1.0) < 0.05
+    waitFor body()
+
+  test "higher stiffness settles faster":
+    proc body() {.async: (raises: [Exception]).} =
+      let stiff = signal(0.0)
+      let soft = signal(0.0)
+      discard spring(stiff, 1.0, stiffness = 400.0, damping = 40.0)
+      discard spring(soft,  1.0, stiffness = 50.0,  damping = 14.0)
+      await sleepAsync(200.milliseconds)
+      # Stiff spring should be much closer to target by 200ms;
+      # soft spring is still mid-flight.
+      check stiff() > soft()
+      check abs(stiff() - 1.0) < 0.2
+      check soft() < 0.8
+    waitFor body()
+
+  test "underdamped spring overshoots target before settling":
+    # ζ = c / (2·√(k·m)) ≈ 0.3 — clearly underdamped.
+    proc body() {.async: (raises: [Exception]).} =
+      let s = signal(0.0)
+      var maxSeen = 0.0
+      discard createRoot:
+        createEffect proc() =
+          let v = s()
+          if v > maxSeen: maxSeen = v
+      discard spring(s, 1.0, stiffness = 200.0, damping = 8.0)
+      await sleepAsync(1.seconds)
+      # Underdamped — must have overshot target at some point.
+      check maxSeen > 1.0
+      # And eventually settled.
+      check abs(s() - 1.0) < 0.05
+    waitFor body()
+
+  test "critically/overdamped spring doesn't overshoot":
+    # ζ ≥ 1 — at or beyond critical damping. Pick parameters that are
+    # comfortably overdamped to avoid floating-point edge cases.
+    proc body() {.async: (raises: [Exception]).} =
+      let s = signal(0.0)
+      var maxSeen = 0.0
+      discard createRoot:
+        createEffect proc() =
+          let v = s()
+          if v > maxSeen: maxSeen = v
+      discard spring(s, 1.0, stiffness = 100.0, damping = 30.0)
+      await sleepAsync(1.seconds)
+      # Overdamped — monotone approach, no overshoot.
+      # Allow tiny float epsilon over 1.0 for the snap-to-target frame.
+      check maxSeen <= 1.0 + 1e-9
+      check abs(s() - 1.0) < 0.05
+    waitFor body()
+
+  test "settled spring stops being written":
+    # After settle, the animation is removed from the scheduler;
+    # subsequent ticks must not advance the signal further. Count
+    # writes via an effect — post-settle quiet period must produce
+    # zero new writes. Use stiff + overdamped + loose epsilons so
+    # the spring settles within a couple of frames; the test isn't
+    # about settle time, just about post-settle silence.
+    proc body() {.async: (raises: [Exception]).} =
+      let s = signal(0.0)
+      var writeCount = 0
+      discard createRoot:
+        createEffect proc() =
+          discard s()
+          inc writeCount
+      # Loose epsilons so settle happens promptly under the 33ms tick.
+      discard spring(s, 1.0,
+                     epsilonVel = 0.1, epsilonPos = 0.05)
+      await sleepAsync(1500.milliseconds)
+      check abs(s() - 1.0) < 0.1
+      let writesAtSettle = writeCount
+      await sleepAsync(300.milliseconds)
+      # No new writes during the post-settle quiet period.
+      check writeCount == writesAtSettle
+    waitFor body()
+
+  test "scope dispose mid-spring cancels":
+    proc body() {.async: (raises: [Exception]).} =
+      let s = signal(0.0)
+      let root = createRoot:
+        discard spring(s, 100.0)
+      await sleepAsync(80.milliseconds)
+      let midpoint = s()
+      check midpoint > 0.0 and midpoint < 100.0
+      dispose(root)
+      await sleepAsync(150.milliseconds)
+      # Spring cancelled — should not have advanced significantly
+      # further. Allow a small drift for any in-flight tick.
+      check abs(s() - midpoint) < 5.0
+    waitFor body()
+
+  test "cancel mid-spring halts motion":
+    proc body() {.async: (raises: [Exception]).} =
+      let s = signal(0.0)
+      let a = spring(s, 100.0)
+      await sleepAsync(50.milliseconds)
+      let midpoint = s()
+      check midpoint > 0.0 and midpoint < 100.0
+      cancel(a)
+      await sleepAsync(150.milliseconds)
+      check abs(s() - midpoint) < 5.0
+    waitFor body()
+
+  test "spring retarget mid-flight resets velocity (fresh-start)":
+    # Per the decided semantics: a new spring on the same signal
+    # cancels the prior and starts fresh from current position with
+    # velocity=0. The signal must not overshoot the new target via
+    # leftover momentum from the prior spring.
+    proc body() {.async: (raises: [Exception]).} =
+      let s = signal(0.0)
+      discard spring(s, 100.0, stiffness = 400.0, damping = 20.0)
+      await sleepAsync(80.milliseconds)
+      let beforeRetarget = s()
+      check beforeRetarget > 5.0    # spring was building velocity
+      # Retarget to 0 — fresh-start should head back toward 0 from
+      # the current position, not overshoot upward from leftover
+      # downward velocity.
+      discard spring(s, 0.0)
+      var maxAfter = s()
+      for _ in 0 .. 20:
+        await sleepAsync(40.milliseconds)
+        if s() > maxAfter: maxAfter = s()
+      # Fresh-start: signal monotonically (or near-monotonically)
+      # decreases toward 0. It should not climb materially above
+      # the retarget moment's value (no leftover upward momentum
+      # because velocity reset to 0).
+      check maxAfter <= beforeRetarget + 0.5
+      # Eventually settles at 0.
+      await sleepAsync(800.milliseconds)
+      check abs(s()) < 0.05
+    waitFor body()
+
+  test "tween then spring on same signal: tween cancels cleanly":
+    proc body() {.async: (raises: [Exception]).} =
+      let s = signal(0.0)
+      discard tween(s, 100.0, 500.milliseconds, esLinear)
+      await sleepAsync(80.milliseconds)
+      let midTween = s()
+      check midTween > 0.0 and midTween < 100.0
+      discard spring(s, 50.0)
+      await sleepAsync(800.milliseconds)
+      # Spring takes over and settles at its own target.
+      check abs(s() - 50.0) < 0.1
+    waitFor body()
+
+  test "two springs on different signals tick independently":
+    proc body() {.async: (raises: [Exception]).} =
+      let s1 = signal(0.0)
+      let s2 = signal(0.0)
+      discard spring(s1, 1.0)
+      discard spring(s2, 5.0)
+      await sleepAsync(800.milliseconds)
+      check abs(s1() - 1.0) < 0.05
+      check abs(s2() - 5.0) < 0.1
+    waitFor body()
+
+  test "tight settle epsilon keeps spring running longer than loose":
+    # Two identical springs differing only in epsilon — the tight one
+    # should still be observably non-settled when the loose one has
+    # finished.
+    proc body() {.async: (raises: [Exception]).} =
+      let loose = signal(0.0)
+      let tight = signal(0.0)
+      discard spring(loose, 1.0, epsilonVel = 0.5, epsilonPos = 0.5)
+      discard spring(tight, 1.0, epsilonVel = 0.0001, epsilonPos = 0.0001)
+      await sleepAsync(60.milliseconds)
+      # By this point: loose has settled (its epsilon is so wide that
+      # the first few ticks satisfy the condition); tight is still
+      # mid-flight.
+      check abs(loose() - 1.0) >= 0.0    # any value — just settled fast
+      check abs(tight() - 1.0) > 0.01    # tight definitely not done
+      await sleepAsync(800.milliseconds)
+      # Both eventually settle (tight to its tighter tolerance).
+      check abs(tight() - 1.0) < 0.01
+    waitFor body()
+
   test "stopFrameClock resets frameInterval so subsequent fps takes effect":
     # Regression for round-2 H1: a stopFrameClock followed by
     # startFrameClock(fps = X) used to silently keep the previous

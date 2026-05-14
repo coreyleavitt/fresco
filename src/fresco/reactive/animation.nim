@@ -27,19 +27,46 @@ type
     esOutCubic
     esInOutCubic
 
+  AnimKind* = enum
+    akTween
+    akSpring
+
   Animation* = ref object
     target: Signal[float]
-    startVal, endVal: float
-    startMono: Moment
-    duration: Duration
-    easing: Easing
     cancelled: bool
     originScope: Scope
-      ## Scope current when `tween` was called. Restored around the
-      ## terminal frame's `set` so its journal entry attributes to
+      ## Scope current when the animation was created. Restored around
+      ## the terminal frame's `set` so the journal entry attributes to
       ## the task that originated the animation, not to whichever
-      ## coroutine the dispatcher last left in `currentScope` when
-      ## the frame clock ticked.
+      ## coroutine the dispatcher last left in `currentScope` when the
+      ## frame clock ticked.
+    case kind: AnimKind
+    of akTween:
+      startVal, endVal: float
+      startMono: Moment
+      duration: Duration
+      easing: Easing
+    of akSpring:
+      springTarget: float
+        ## The rest position the spring is pulling toward.
+      position, velocity: float
+        ## Current physical state. `position` is mirrored into the
+        ## bound signal each frame (via setUntracked); `velocity` is
+        ## internal and not exposed.
+      stiffness, damping: float
+        ## Spring constants. Mass is fixed at 1.0 by convention; tune
+        ## stiffness/damping for feel. Damping ratio
+        ## ζ = damping / (2·√(stiffness·mass)); ζ=1 is critically
+        ## damped (no overshoot, fastest settle). Defaults 170/26
+        ## give ζ≈0.999 (near-critical) and a ~500ms settle for a
+        ## unit step.
+      epsilonVel, epsilonPos: float
+        ## Settle thresholds: spring completes when |velocity| <
+        ## epsilonVel AND |position - springTarget| < epsilonPos.
+      lastTickMono: Moment
+        ## Used to compute real dt per step. Real dt (clamped to
+        ## 100ms) is more accurate than the nominal frameInterval
+        ## when the dispatcher is busy and frame ticks drift.
 
 const DefaultFPS* = 30
 
@@ -81,36 +108,66 @@ proc applyEasing*(t: float, easing: Easing): float =
     if t < 0.5: 4.0 * t * t * t
     else: 1.0 - pow(-2.0 * t + 2.0, 3) / 2.0
 
+proc settledOriginSet(a: Animation, value: float) =
+  ## Terminal-frame write: re-enter the origin scope so the journal
+  ## entry attributes to the originating task, not to whichever
+  ## coroutine left `currentScope` set on the frame tick.
+  if a.originScope != nil:
+    withScope(a.originScope):
+      a.target.set(value)
+  else:
+    a.target.set(value)
+
 proc step(a: Animation, now: Moment): bool =
   ## Advance one frame. Returns true when the animation completes.
   ##
   ## Intermediate frames use `setUntracked` (no journal entry) — they
   ## are interpolation noise that would bloat the log without semantic
-  ## value. The **terminal frame** uses `set` wrapped in
-  ## `withScope(a.originScope)` so the settled value journals under
-  ## the task that originated the tween, not under whichever coroutine
-  ## the dispatcher last left in `currentScope` when the clock ticked.
+  ## value. The terminal frame routes through `settledOriginSet` so
+  ## the settled value journals under the origin task's scope.
   ##
-  ## **Disposed-origin invariant:** `tween` registers an `onCleanup`
-  ## against the origin scope that sets `a.cancelled = true`. If
-  ## `originScope` is disposed before the duration elapses, that
-  ## cleanup fires first, the next clock tick's `if a.cancelled`
-  ## guard returns true, and the terminal `set` never runs against
-  ## a disposed scope.
+  ## **Disposed-origin invariant:** `tween`/`spring` register an
+  ## `onCleanup` against the origin scope that sets `a.cancelled = true`.
+  ## If `originScope` is disposed before the animation completes, that
+  ## cleanup fires first, the next clock tick's `if a.cancelled` guard
+  ## returns true, and the terminal write never runs against a disposed
+  ## scope.
   if a.cancelled: return true
-  let elapsed = now - a.startMono
-  if elapsed >= a.duration:
-    if a.originScope != nil:
-      withScope(a.originScope):
-        a.target.set(a.endVal)
-    else:
-      a.target.set(a.endVal)
-    return true
-  let t = elapsed.nanoseconds.float / a.duration.nanoseconds.float
-  let eased = applyEasing(t, a.easing)
-  let v = a.startVal + (a.endVal - a.startVal) * eased
-  a.target.setUntracked(v)
-  return false
+  case a.kind
+  of akTween:
+    let elapsed = now - a.startMono
+    if elapsed >= a.duration:
+      settledOriginSet(a, a.endVal)
+      return true
+    let t = elapsed.nanoseconds.float / a.duration.nanoseconds.float
+    let eased = applyEasing(t, a.easing)
+    let v = a.startVal + (a.endVal - a.startVal) * eased
+    a.target.setUntracked(v)
+    return false
+  of akSpring:
+    # Real dt clamped to 100ms — protects against pathological velocity
+    # spikes if the dispatcher hung for a long time between ticks.
+    var dtNs = (now - a.lastTickMono).nanoseconds
+    a.lastTickMono = now
+    const MaxDtNs = 100_000_000  # 100ms
+    if dtNs > MaxDtNs: dtNs = MaxDtNs
+    if dtNs <= 0: return false   # zero/negative dt — no-op
+    let dt = dtNs.float / 1_000_000_000.0
+    # Semi-implicit Euler: update velocity first, then position with
+    # the NEW velocity. Stable across the UI-relevant (k, c) range at
+    # 30 FPS — explicit Euler overshoots at high stiffness.
+    let force = -a.stiffness * (a.position - a.springTarget) -
+                 a.damping * a.velocity
+    a.velocity += force * dt
+    a.position += a.velocity * dt
+    # Settle: both velocity AND position within tolerance.
+    if abs(a.velocity) < a.epsilonVel and
+       abs(a.position - a.springTarget) < a.epsilonPos:
+      a.position = a.springTarget    # snap to exact rest
+      settledOriginSet(a, a.springTarget)
+      return true
+    a.target.setUntracked(a.position)
+    return false
 
 proc clockLoop() {.async.} =
   while true:
@@ -173,6 +230,7 @@ proc tween*(s: Signal[float], target: float,
   for a in frameAnimations:
     if a.target == s: a.cancelled = true
   result = Animation(
+    kind: akTween,
     target: s,
     startVal: s.peek(),                   # no dep registration
     endVal: target,
@@ -184,6 +242,47 @@ proc tween*(s: Signal[float], target: float,
   # Tie lifetime to the registering scope: a scope dispose mid-tween
   # cancels the animation so it stops writing to a signal whose
   # observers may already be gone.
+  let captured = result
+  onCleanup proc() = captured.cancelled = true
+  startFrameClock()
+
+proc spring*(s: Signal[float], target: float,
+             stiffness = 170.0, damping = 26.0,
+             epsilonVel = 0.01, epsilonPos = 0.01): Animation
+             {.discardable.} =
+  ## Physics-based animation: a damped harmonic oscillator pulls `s`
+  ## toward `target`. Defaults give ~500ms settle for a unit step,
+  ## near-critical damping (no overshoot).
+  ##
+  ## Settle condition: |velocity| < `epsilonVel` AND
+  ## |position - target| < `epsilonPos`. On settle, position snaps
+  ## to exact target and the animation completes.
+  ##
+  ## **Retarget semantics:** if a spring or tween is already in flight
+  ## against `s`, it's cancelled (last-write-wins). The new spring
+  ## starts from `s`'s current value with velocity = 0. To preserve
+  ## momentum from a prior in-flight spring, the caller would need
+  ## a future `rtPreserve` opt-in — not in v3 since fresco's TUI
+  ## use cases are state-transition-driven, not gesture-driven.
+  ##
+  ## Scope binding mirrors `tween`: a scope dispose mid-spring
+  ## cancels via the onCleanup hook.
+  for a in frameAnimations:
+    if a.target == s: a.cancelled = true
+  let now = Moment.now()
+  result = Animation(
+    kind: akSpring,
+    target: s,
+    springTarget: target,
+    position: s.peek(),                   # start from current value
+    velocity: 0.0,                        # fresh-start semantics
+    stiffness: stiffness,
+    damping: damping,
+    epsilonVel: epsilonVel,
+    epsilonPos: epsilonPos,
+    lastTickMono: now,
+    originScope: currentScope)
+  frameAnimations.add result
   let captured = result
   onCleanup proc() = captured.cancelled = true
   startFrameClock()
