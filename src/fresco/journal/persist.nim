@@ -95,6 +95,10 @@ proc toJson*(e: Event): JsonNode =
     result["escalateReason"] = %e.escalateReason
   of ekSupervisorTerminate:
     result["terminateName"] = %e.terminateName
+  of ekSignalRestored:
+    result["restoredLabel"]      = %e.restoredLabel
+    result["restoredRepr"]       = %e.restoredRepr
+    result["restoredFromTaskId"] = %uint32(e.restoredFromTaskId)
 
 proc parseKind(s: string): Option[EventKind] =
   for k in EventKind:
@@ -153,6 +157,10 @@ proc fromJson*(n: JsonNode): Option[Event] =
     e.escalateReason = n{"escalateReason"}.getStr("")
   of ekSupervisorTerminate:
     e.terminateName = n{"terminateName"}.getStr("")
+  of ekSignalRestored:
+    e.restoredLabel       = n{"restoredLabel"}.getStr("")
+    e.restoredRepr        = n{"restoredRepr"}.getStr("")
+    e.restoredFromTaskId  = TaskId(n{"restoredFromTaskId"}.getInt(0).uint32)
   some(e)
 
 # --- File-backed Journal -------------------------------------------------

@@ -3,7 +3,7 @@
 
 {.experimental: "callOperator".}
 
-import std/[unittest, tables]
+import std/[unittest, tables, strutils]
 import chronos
 import fresco/journal/events
 import fresco/journal/log
@@ -12,6 +12,29 @@ import fresco/reactive/signal
 import fresco/reactive/restoration
 import fresco/task/core
 import fresco/task/supervisor
+
+# Module-level types + restore overload for the #46 test. Has to live
+# at module scope (not inside the test body) — Nim's `mixin` symbol
+# resolution looks at module-level names, not nested procs.
+type Color = enum cRed, cGreen, cBlue
+
+proc `$`*(c: Color): string =
+  case c
+  of cRed: "red"
+  of cGreen: "green"
+  of cBlue: "blue"
+
+proc restore*(s: string, _: typedesc[Color]): Color =
+  case s
+  of "red": cRed
+  of "green": cGreen
+  of "blue": cBlue
+  else: raise newException(ValueError, "unknown color: " & s)
+
+type Box = object
+  width, height: int
+
+proc `$`*(b: Box): string = $b.width & "x" & $b.height
 
 suite "supervisor onRestart":
 
@@ -232,4 +255,118 @@ suite "supervisor orReplayJournal":
       sup.addChild("c", lcTransient, child, onRestart = orReplayJournal)
       await sup.run()
       check stagingEmpty
+    waitFor body()
+
+  test "successful restoration emits an ekSignalRestored journal event":
+    proc body() {.async: (raises: [Exception]).} =
+      var attempts = 0
+      proc child(): Future[void] {.async.} =
+        inc attempts
+        let count = signal(0, label = "count")
+        count.set(attempts * 100)
+        await sleepAsync(1.milliseconds)
+        if attempts < 2:
+          raise newException(IOError, "again")
+      let sup = newSupervisor(maxRestarts = 5, within = 1.seconds)
+      sup.addChild("c", lcTransient, child, onRestart = orReplayJournal)
+      await sup.run()
+      # Find the restoration audit event.
+      var found = false
+      for ev in globalJournal.events:
+        if ev.kind == ekSignalRestored:
+          check ev.restoredLabel == "count"
+          check ev.restoredRepr == "100"
+          found = true
+      check found
+    waitFor body()
+
+  test "parse failure does not emit ekSignalRestored":
+    pendingRestoration = {"broken": "not-a-number"}.toTable
+    pendingRestorationSource = TaskId(0)
+    let baselineCount = globalJournal.events.len
+    let s = signal(42, label = "broken")
+    check s.peek() == 42       # fallback used (already covered)
+    var restoredEventCount = 0
+    for ev in globalJournal.events[baselineCount ..< globalJournal.events.len]:
+      if ev.kind == ekSignalRestored: inc restoredEventCount
+    check restoredEventCount == 0
+
+  test "ekSignalRestored carries correct sourceTaskId, label, and repr":
+    proc body() {.async: (raises: [Exception]).} =
+      var attempts = 0
+      var firstTaskId = TaskId(0)
+      var secondTaskId = TaskId(0)
+      proc child(): Future[void] {.async.} =
+        inc attempts
+        if attempts == 1:
+          firstTaskId = currentScope.taskId
+        else:
+          secondTaskId = currentScope.taskId
+        let count = signal(0, label = "count")
+        count.set(attempts * 7)
+        await sleepAsync(1.milliseconds)
+        if attempts < 2:
+          raise newException(IOError, "again")
+      let sup = newSupervisor(maxRestarts = 5, within = 1.seconds)
+      sup.addChild("c", lcTransient, child, onRestart = orReplayJournal)
+      await sup.run()
+      var ev: Event
+      var found = false
+      for e in globalJournal.events:
+        if e.kind == ekSignalRestored:
+          ev = e
+          found = true
+          break
+      check found
+      check ev.taskId == secondTaskId          # new task
+      check ev.restoredFromTaskId == firstTaskId   # prior task
+      check ev.restoredLabel == "count"
+      check ev.restoredRepr == "7"
+    waitFor body()
+
+  test "custom enum restored via user-defined `restore` overload":
+    # Color + its `restore` overload are defined at module scope above.
+    # The signal constructor's `when compiles(restore(repr, T))` picks
+    # them up via the template's `mixin restore`.
+    pendingRestoration = {"theme": "blue"}.toTable
+    pendingRestorationSource = TaskId(0)
+    let theme = signal(cRed, label = "theme")
+    check theme.peek() == cBlue
+    check "theme" notin pendingRestoration
+
+  test "custom type WITHOUT `restore` overload falls back silently":
+    # `Box` is defined at module scope above but has no `restore`
+    # overload; consumeRestoration falls through to the initial value.
+    pendingRestoration = {"size": "10x20"}.toTable
+    pendingRestorationSource = TaskId(0)
+    let b = signal(Box(width: 1, height: 1), label = "size")
+    check b.peek() == Box(width: 1, height: 1)
+    # Entry was still consumed (read-and-remove semantics).
+    check "size" notin pendingRestoration
+
+  test "filtered orReplayJournal stages only labels passing the predicate":
+    proc body() {.async: (raises: [Exception]).} =
+      var attempts = 0
+      var seen = initTable[string, int]()
+      proc child(): Future[void] {.async.} =
+        inc attempts
+        let kept = signal(0, label = "ui.count")
+        let dropped = signal(0, label = "net.bytes")
+        seen["ui.count"] = kept()
+        seen["net.bytes"] = dropped()
+        kept.set(attempts * 11)
+        dropped.set(attempts * 99)
+        await sleepAsync(1.milliseconds)
+        if attempts < 2:
+          raise newException(IOError, "again")
+      let sup = newSupervisor(maxRestarts = 5, within = 1.seconds)
+      # Only restore labels starting with "ui."
+      sup.addChild("c", lcTransient, child,
+                   onRestart = orReplayJournal(
+                     proc(l: string): bool = l.startsWith("ui.")))
+      await sup.run()
+      # `ui.count` was filtered IN and restored → second-attempt sees 11.
+      check seen["ui.count"] == 11
+      # `net.bytes` was filtered OUT → second-attempt sees declared 0.
+      check seen["net.bytes"] == 0
     waitFor body()

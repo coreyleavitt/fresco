@@ -47,10 +47,11 @@ suite "persist: round-trip":
     discard j.logSupervisorRestart(t, NoEvent, "worker", 2)
     discard j.logSupervisorEscalate(t, NoEvent, "worker", "too many")
     discard j.logSupervisorTerminate(t, NoEvent, "worker")
+    discard j.logSignalRestored(t, NoEvent, "count", "42", TaskId(99))
     close(j)
 
     let j2 = openJournal(path)
-    check j2.events.len == 11
+    check j2.events.len == 12
     let kinds = block:
       var s: seq[EventKind] = @[]
       for e in j2.events: s.add e.kind
@@ -59,13 +60,19 @@ suite "persist: round-trip":
       ekTaskSpawned, ekTaskCancelled, ekTaskFailed,
       ekSignalWrite, ekCollectionDelta, ekCollectionRollback,
       ekKeyReceived, ekKeyConsumed,
-      ekSupervisorRestart, ekSupervisorEscalate, ekSupervisorTerminate
+      ekSupervisorRestart, ekSupervisorEscalate, ekSupervisorTerminate,
+      ekSignalRestored
     ]
-    # Spot-check the new variant's payload survives the round-trip.
+    # Spot-check the rollback variant's payload survives.
     let rb = j2.events[5]
     check rb.rollbackLabel == "items"
     check rb.rollbackCount == 2
     check rb.rollbackOpsRepr == "r:0;r:1"
+    # Spot-check the restored variant's payload survives.
+    let rs = j2.events[11]
+    check rs.restoredLabel == "count"
+    check rs.restoredRepr == "42"
+    check rs.restoredFromTaskId == TaskId(99)
     close(j2)
 
   test "corrupt line at EOF is skipped, prior events survive":

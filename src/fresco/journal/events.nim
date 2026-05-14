@@ -34,6 +34,7 @@ type
     ekSupervisorRestart
     ekSupervisorEscalate
     ekSupervisorTerminate
+    ekSignalRestored
 
   Event* = object
     id*:        EventId
@@ -74,6 +75,11 @@ type
       escalateReason*: string
     of ekSupervisorTerminate:
       terminateName*:       string
+    of ekSignalRestored:
+      restoredLabel*:        string    # signal label (always non-empty —
+                                       # unlabeled signals don't restore)
+      restoredRepr*:         string    # the value being applied as initial
+      restoredFromTaskId*:   TaskId    # prior task whose write is replayed
 
 # --- Distinct-type plumbing ----------------------------------------------
 

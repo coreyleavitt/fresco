@@ -175,6 +175,21 @@ proc logSignalWrite*(j: Journal, taskId: TaskId, parentId: EventId,
   ev.writeRepr = valueRepr
   j.append(ev)
 
+proc logSignalRestored*(j: Journal, taskId: TaskId, parentId: EventId,
+                       label, valueRepr: string,
+                       fromTaskId: TaskId): EventId =
+  ## Record an `orReplayJournal`-driven state restoration. `taskId` is
+  ## the new task receiving the restored value; `fromTaskId` is the
+  ## prior task whose `ekSignalWrite` was replayed. Audit trail —
+  ## the value itself also lands in the journal via the new task's
+  ## subsequent `ekSignalWrite` calls; this event distinguishes
+  ## "restored from prior" from "freshly set."
+  var ev = baseEvent(ekSignalRestored, taskId, parentId)
+  ev.restoredLabel = label
+  ev.restoredRepr = valueRepr
+  ev.restoredFromTaskId = fromTaskId
+  j.append(ev)
+
 proc logCollectionDelta*(j: Journal, taskId: TaskId, parentId: EventId,
                          label, op: string, idx: int, repr: string): EventId =
   ## Record one CollectionSignal mutation. `op` is one of "insert" /
