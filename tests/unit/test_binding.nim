@@ -299,3 +299,108 @@ suite "bindCollection":
     let before = r.target
     c.push(3)                   # should NOT update — handler deregistered
     check r.target == before
+
+suite "bindCollection: wmFromEnd (tail-window, #41)":
+
+  test "tracer: filled collection in wmFromEnd shows the LAST winLen items":
+    # winLen = 3, items = [1..6]. wmFromStart would show [1,2,3];
+    # wmFromEnd shows [4,5,6] — the last 3.
+    let s = newScreen(10, 20)
+    let r = newRegion(s, 0, 0, 3, 20)
+    let c = collection(@[1, 2, 3, 4, 5, 6])
+    proc fmt(x: int): string = $x
+    discard createRoot:
+      bindCollection(r, 0..<3, c, fmt, mode = wmFromEnd)
+    check r.target == @["4", "5", "6"]
+
+  test "wmFromEnd before fill: rows populate top-down from row 0":
+    let s = newScreen(10, 20)
+    let r = newRegion(s, 0, 0, 5, 20)
+    let c = collection(@[10, 20])
+    discard createRoot:
+      bindCollection(r, 0..<5, c, proc(x: int): string = $x, mode = wmFromEnd)
+    check r.target == @["10", "20", "", "", ""]
+
+  test "push when filled shifts window forward by one":
+    let s = newScreen(10, 20)
+    let r = newRegion(s, 0, 0, 3, 20)
+    let c = collection(@[1, 2, 3])
+    discard createRoot:
+      bindCollection(r, 0..<3, c, proc(x: int): string = $x, mode = wmFromEnd)
+    check r.target == @["1", "2", "3"]
+    c.push(4)
+    check r.target == @["2", "3", "4"]   # 1 pushed off the top
+    c.push(5)
+    check r.target == @["3", "4", "5"]
+
+  test "push before fill: appears at next row, no shift":
+    let s = newScreen(10, 20)
+    let r = newRegion(s, 0, 0, 5, 20)
+    let c = collection(@[1, 2])
+    discard createRoot:
+      bindCollection(r, 0..<5, c, proc(x: int): string = $x, mode = wmFromEnd)
+    c.push(3)
+    check r.target == @["1", "2", "3", "", ""]   # still top-down
+    c.push(4)
+    check r.target == @["1", "2", "3", "4", ""]
+    c.push(5)
+    check r.target == @["1", "2", "3", "4", "5"]
+    # Now filled; next push shifts.
+    c.push(6)
+    check r.target == @["2", "3", "4", "5", "6"]
+
+  test "pop on overfilled collection reveals previously-off-screen item":
+    let s = newScreen(10, 20)
+    let r = newRegion(s, 0, 0, 3, 20)
+    let c = collection(@[1, 2, 3, 4, 5])
+    discard createRoot:
+      bindCollection(r, 0..<3, c, proc(x: int): string = $x, mode = wmFromEnd)
+    check r.target == @["3", "4", "5"]
+    discard c.pop()
+    # items now [1,2,3,4]; tail = [2,3,4]. Previously-off-screen 2 revealed.
+    check r.target == @["2", "3", "4"]
+
+  test "dkClear empties the window":
+    let s = newScreen(10, 20)
+    let r = newRegion(s, 0, 0, 3, 20)
+    let c = collection(@[1, 2, 3, 4, 5])
+    discard createRoot:
+      bindCollection(r, 0..<3, c, proc(x: int): string = $x, mode = wmFromEnd)
+    c.clear()
+    check r.target == @["", "", ""]
+
+  test "wmFromStart (default) regression: behavior unchanged":
+    let s = newScreen(10, 20)
+    let r = newRegion(s, 0, 0, 3, 20)
+    let c = collection(@[1, 2, 3, 4, 5, 6])
+    discard createRoot:
+      bindCollection(r, 0..<3, c, proc(x: int): string = $x)   # no mode arg
+    check r.target == @["1", "2", "3"]    # from-start: first 3
+
+  test "ANSI emission: push on filled wmFromEnd emits scroll + one row, not N rows":
+    # The #41 acceptance criterion: a single push on a filled
+    # tail-window region produces a single visible-row update, not
+    # winLen row repaints. Verified by counting CUP (cursor-to)
+    # commands in the flush output:
+    #   - Naive O(winLen) path would emit `winLen` CUP sequences
+    #   - Optimized scroll path emits ONE CUP for the new bottom row
+    #     (plus DECSTBM set/reset which use 'r' suffix, not 'H')
+    let s = newScreen(10, 20)
+    let r = newRegion(s, 0, 0, 5, 20)
+    let c = collection(@[1, 2, 3, 4, 5])  # exactly fills winLen=5
+    discard createRoot:
+      bindCollection(r, 0..<5, c, proc(x: int): string = $x, mode = wmFromEnd)
+    discard s.flush()    # drain initial-lay emissions
+
+    c.push(6)
+    let bytes = s.flush()
+
+    # Count CUP terminators ('H') — each cursor-to ends with H.
+    var cupCount = 0
+    for ch in bytes:
+      if ch == 'H': inc cupCount
+    check cupCount == 1
+    # Sanity: the scroll-region commands were emitted (DECSTBM uses 'r').
+    check 'r' in bytes
+    # Sanity: the new value made it into the bottom row.
+    check r.target == @["2", "3", "4", "5", "6"]

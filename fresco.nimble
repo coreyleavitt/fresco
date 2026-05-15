@@ -46,6 +46,7 @@ task test, "run all tests":
     "tests/unit/test_capset.nim",
     "tests/unit/test_static_supervisor.nim",
     "tests/unit/test_register_cap.nim",
+    "tests/unit/test_devtools.nim",
   ]
   let integrationTests = @[
     "tests/integration/test_termios_pty.nim",
@@ -67,6 +68,7 @@ task test, "run all tests":
     "tests/integration/test_animation.nim",
     "tests/integration/test_persist.nim",
     "tests/integration/test_timewarp.nim",
+    "tests/integration/test_devtools_panel.nim",
     "tests/integration/test_topology.nim",
   ]
   for t in unitTests & integrationTests:

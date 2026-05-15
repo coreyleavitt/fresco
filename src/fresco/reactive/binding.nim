@@ -49,30 +49,53 @@ template bindRows*(region: Region, slice: HSlice[int, int],
 # `bindCollection` subscribes to deltas and applies them incrementally.
 # Fixed window from `items[0]` — see issue #28; scroll-to-end is v3.1.
 
+type WindowMode* = enum
+  wmFromStart  ## visible window starts at items[0] (default; legacy behavior)
+  wmFromEnd    ## visible window is the tail — last `winLen` items
+
 proc bindCollection*[T](region: Region, slice: HSlice[int, int],
                         c: CollectionSignal[T],
-                        fmt: proc(x: T): string {.closure.}) =
+                        fmt: proc(x: T): string {.closure.},
+                        mode: WindowMode = wmFromStart) =
   ## Lay `c` across `slice` of `region`; on each delta, apply the
-  ## minimal row update. Row `slice.a + i` displays `fmt(items[i])`
-  ## for `i < min(items.len, slice.len)`; rows beyond items.len are
-  ## blank. Formatter calls are O(1) per delta (new item only) for
-  ## the differential ops; O(items.len) for dkReplace/dkRollback.
+  ## minimal row update.
+  ##
+  ## **mode = wmFromStart** (default): row `slice.a + i` displays
+  ## `fmt(items[i])` for `i < min(items.len, slice.len)`; rows
+  ## beyond `items.len` are blank.
+  ##
+  ## **mode = wmFromEnd**: the visible window is the *tail* of the
+  ## collection. When `items.len >= winLen`, row `slice.a + i`
+  ## displays `fmt(items[items.len - winLen + i])`. When the
+  ## collection isn't yet filled, the window degrades to wmFromStart
+  ## (items appear top-down from row 0). A push when filled shifts
+  ## every visible row's content forward by one; the render layer
+  ## may optimize this via scroll-region primitives (see #41).
+  ##
+  ## Formatter calls are O(1) per delta (new item only) for the
+  ## differential ops in wmFromStart; O(winLen) for dkReplace /
+  ## dkRollback / push-when-filled-in-wmFromEnd.
   let lo = slice.a
   let hi = slice.b
   if hi < lo: return
   let winLen = hi - lo + 1
 
-  # Cache formatted strings for the visible window only. Items past
-  # `winLen` are never formatted — they're off-screen. The cache
-  # mirrors the visible portion of the collection: `cache[i]` is the
-  # rendered text of `items[i]` for `i < min(items.len, winLen)`.
+  # Cache formatted strings for the visible window only. In wmFromEnd
+  # mode the cache mirrors items[items.len - winLen ..< items.len];
+  # in wmFromStart mode it mirrors items[0 ..< min(items.len, winLen)].
   var cache: seq[string] = @[]
 
+  proc visibleStartIndex(itemsLen: int): int =
+    case mode
+    of wmFromStart: 0
+    of wmFromEnd:   max(0, itemsLen - winLen)
+
   proc fmtVisible(items: seq[T]) =
-    # Rebuild cache from `items`, formatting only the visible prefix.
+    # Rebuild cache by formatting the currently-visible slice of items.
     cache.setLen(0)
-    let n = min(items.len, winLen)
-    for i in 0 ..< n:
+    let start = visibleStartIndex(items.len)
+    let stop = min(items.len, start + winLen)
+    for i in start ..< stop:
       cache.add fmt(items[i])
 
   proc layRow(i: int) =
@@ -90,40 +113,77 @@ proc bindCollection*[T](region: Region, slice: HSlice[int, int],
 
   # Subscribe to deltas — scope-bound via onDelta's internal onCleanup.
   c.onDelta proc(d: Delta[T]) =
-    case d.kind
-    of dkInsert:
-      if d.insertIdx >= winLen: return       # off-screen — nothing to do
-      cache.insert(fmt(d.insertVal), d.insertIdx)
-      if cache.len > winLen: cache.setLen(winLen)
-      for i in d.insertIdx ..< winLen:
-        layRow(i)
-    of dkRemove:
-      if d.removeIdx >= winLen: return       # off-screen
-      if d.removeIdx < cache.len: cache.delete(d.removeIdx)
-      # If items had more than winLen entries, removing one in the
-      # window pulled `items[winLen]` into the visible range — we
-      # have to format it (it wasn't cached before).
+    case mode
+    of wmFromStart:
+      case d.kind
+      of dkInsert:
+        if d.insertIdx >= winLen: return     # off-screen — nothing to do
+        cache.insert(fmt(d.insertVal), d.insertIdx)
+        if cache.len > winLen: cache.setLen(winLen)
+        for i in d.insertIdx ..< winLen:
+          layRow(i)
+      of dkRemove:
+        if d.removeIdx >= winLen: return     # off-screen
+        if d.removeIdx < cache.len: cache.delete(d.removeIdx)
+        # If items had more than winLen entries, removing one in the
+        # window pulled `items[winLen]` into the visible range — we
+        # have to format it (it wasn't cached before).
+        let items = c.get()
+        if items.len >= winLen and cache.len < winLen:
+          cache.add fmt(items[winLen - 1])
+        for i in d.removeIdx ..< winLen:
+          layRow(i)
+      of dkUpdate:
+        if d.updateIdx >= winLen: return     # off-screen
+        if d.updateIdx < cache.len:
+          cache[d.updateIdx] = fmt(d.updateVal)
+        layRow(d.updateIdx)
+      of dkClear:
+        cache.setLen(0)
+        layAll()
+      of dkReplace:
+        fmtVisible(d.replaceVal)
+        layAll()
+      of dkRollback:
+        fmtVisible(c.get())
+        layAll()
+    of wmFromEnd:
       let items = c.get()
-      if items.len >= winLen and cache.len < winLen:
-        cache.add fmt(items[winLen - 1])
-      for i in d.removeIdx ..< winLen:
-        layRow(i)
-    of dkUpdate:
-      if d.updateIdx >= winLen: return       # off-screen
-      if d.updateIdx < cache.len:
-        cache[d.updateIdx] = fmt(d.updateVal)
-      layRow(d.updateIdx)
-    of dkClear:
-      cache.setLen(0)
-      layAll()
-    of dkReplace:
-      fmtVisible(d.replaceVal)
-      layAll()
-    of dkRollback:
-      # Collection has already applied the inverses; re-derive cache
-      # from the current state. Formatter cost is O(winLen).
-      fmtVisible(c.get())
-      layAll()
+      # Fast path: push-at-end on an already-filled tail-window. The
+      # only thing that changes visually is that row 0's content is
+      # gone, every row shifts up by one, and the new item appears at
+      # the bottom. Emit a single DECSTBM scroll-up + paint the new
+      # bottom row — total ANSI = scroll command + one row's worth,
+      # regardless of winLen. Conditions:
+      #   - insert at the new last index (items.len - 1)
+      #   - previous length (items.len - 1) >= winLen, so the window
+      #     was already filled (every push would otherwise extend
+      #     down rather than scroll)
+      if d.kind == dkInsert and
+         d.insertIdx == items.len - 1 and
+         items.len > winLen:
+        cache.delete(0)
+        cache.add fmt(d.insertVal)
+        # Queue the DECSTBM scroll BEFORE the row updates. At flush:
+        # (1) scrollUpRegion emits the scroll command and shifts the
+        # renderer's cached snapshot up; (2) layAll updates the
+        # region's logical target to the new visible content. The
+        # standard target-vs-cache diff then sees rows 0..winLen-2
+        # as unchanged (cache shifted to match target) and emits
+        # only row winLen-1 (the new bottom). Net ANSI: scroll
+        # command + one row's worth of paint.
+        region.scrollUp(1)
+        layAll()
+      else:
+        # All other deltas in tail mode: any of them can shift the
+        # visible slice in either direction. Re-derive cache from
+        # items and lay every row. Formatter cost: O(winLen).
+        case d.kind
+        of dkReplace:
+          fmtVisible(d.replaceVal)
+        else:
+          fmtVisible(items)
+        layAll()
 
 template bindCollection*[T](region: Region, slice: HSlice[int, int],
                             c: CollectionSignal[T]) =

@@ -1,29 +1,37 @@
-## Minimal devtools panel — observes the global journal in real time
-## and prints each event as it arrives. Demonstrates the introspection
-## surface v2.4 exposes:
+## Devtools panel (#36) — live introspection UI built using fresco.
 ##
-##   - globalJournal carries every state mutation, task lifecycle
-##     transition, supervisor decision, and key dispatch.
-##   - byKind / byTask / lastWritesByLabel / stateAt are the queries
-##     a real devtools panel uses.
+##   ./dev shell
+##   nim r --hints:off --path:src examples/ex03_devtools.nim
 ##
-## Visual check: spawn some demo tasks; watch the journal scroll past
-## with TaskSpawned / StateWrite / TaskCompleted events.
+## Three vertical regions:
+##   - Top third:    supervisor task tree (live)
+##   - Middle third: tail-window journal stream (last N events)
+##   - Bottom third: time-warp scrubber
+##
+## Hotkeys:
+##   q              quit
+##   ← / →          step the scrubber; rewindTo each cursor position
+##   Escape         resumeLive (return to head state)
+##   Enter          pin the cursor's event for causal inspection
+##
+## The host demo spawns a couple of background workers that mutate
+## signals; you can scrub through their history and watch the
+## reactive state revert / replay.
 
-import std/strformat
+{.experimental: "callOperator".}
+
 import chronos
 import fresco
+import fresco/terminal/termios
+import fresco/devtools/panel
 import fresco/reactive/signal
 
 proc demoWorker(id: int) {.async.} =
-  # `{.task.}` pragma was deleted in #40 — chronos's contextVar
-  # primitive propagates `currentScope` through `await` automatically;
-  # plain `{.async.}` is enough.
   signals:
     count = 0
-  for i in 1 .. 5:
-    count := i
-    await sleepAsync(80.milliseconds)
+  for i in 1 .. 20:
+    count := id * 1000 + i
+    await sleepAsync(120.milliseconds)
 
 proc main() {.async: (raises: [Exception]).} =
   globalJournal = newJournal()
@@ -32,38 +40,23 @@ proc main() {.async: (raises: [Exception]).} =
                proc(): Future[void] {.async.} = await demoWorker(1))
   sup.addChild("workerB", lcTemporary,
                proc(): Future[void] {.async.} = await demoWorker(2))
+  let supRun = spawn sup.run()
 
-  let m = spawn sup.run()
+  withCbreak:
+    stderr.write altScreenEnter()
+    defer:
+      stderr.write altScreenLeave()
+      stderr.flushFile()
 
-  # Print events as they're appended. Polling is a teaching simplification;
-  # a real devtools panel would subscribe to a change signal on the
-  # journal length or render reactively.
-  var lastSeen = 0
-  for _ in 0 .. 30:
-    while lastSeen < globalJournal.len:
-      let e = globalJournal[lastSeen]
-      var summary = $e.kind & " task=" & $e.taskId
-      case e.kind
-      of ekSignalWrite:
-        summary &= " " & e.signalLabel & "=" & e.writeRepr
-      of ekTaskSpawned:
-        summary &= " " & e.spawnedName
-      of ekSupervisorRestart, ekSupervisorTerminate, ekSupervisorEscalate:
-        summary &= " " & (if e.kind == ekSupervisorRestart: e.restartName
-                          elif e.kind == ekSupervisorTerminate: e.terminateName
-                          else: e.escalateName)
-      else: discard
-      stderr.writeLine fmt"[{e.id}] {summary}"
-      inc lastSeen
-    if m.future.finished: break
-    await sleepAsync(40.milliseconds)
+    let stream = newInputStream(cint(0))
+    start(stream)
+    defer: stop(stream)
 
-  let snap = sup.topology()
-  stderr.writeLine ""
-  stderr.writeLine "topology after run:"
-  if snap.len == 0:
-    stderr.writeLine "  (all children completed)"
-  for n in snap:
-    stderr.writeLine fmt"  {n.name} lifecycle={n.lifecycle} running={n.running} restarts={n.restartCount}"
+    let screen = newScreen()
+    await runDevtoolsPanel(globalJournal, @[sup], stream, screen)
+
+  # Panel exited via 'q'. Wait for workers to finish so the demo
+  # ends cleanly rather than killing tasks mid-flight.
+  await supRun.future
 
 waitFor main()

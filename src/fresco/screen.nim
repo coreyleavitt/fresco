@@ -42,6 +42,12 @@ type
     row*, col*, height*, width*: int
     target*: seq[string]
     pending*: bool
+    pendingScroll*: int
+      ## When non-zero, the next flush emits a DECSTBM scroll-up of
+      ## the region by this many lines BEFORE running the target diff.
+      ## Reset to 0 after flushing. Used by `bindCollection` in
+      ## wmFromEnd mode to optimize tail-append into one ANSI scroll
+      ## command + one row paint instead of N row repaints.
 
   Screen* = ref object
     fd*: cint
@@ -100,11 +106,27 @@ proc flush*(s: Screen): string =
   ## Returns the ANSI bytes needed to bring the screen to the target
   ## state defined by all currently-pending regions. Idempotent: a
   ## second flush with no `set()` between them returns "".
+  ##
+  ## A region with `pendingScroll != 0` first emits a DECSTBM
+  ## scroll command (and updates the renderer's cache accordingly)
+  ## before the standard target diff. The intended use: tail-append
+  ## in `bindCollection(mode = wmFromEnd)` — emits one scroll + one
+  ## new-row paint instead of N row repaints.
   result = ""
   for r in s.regions:
+    if r.pendingScroll != 0:
+      result &= s.renderer.scrollUpRegion(
+        r.row, r.row + r.height - 1, r.pendingScroll)
+      r.pendingScroll = 0
     if not r.pending: continue
     result &= s.renderer.render(r.row, r.col, r.target)
     r.pending = false
+
+proc scrollUp*(r: Region, n: int = 1) =
+  ## Queue a scroll-up of this region by `n` lines. Takes effect on
+  ## the next `flush()`. Used by tail-window bindings; not typically
+  ## a direct caller concern.
+  if n > 0: r.pendingScroll = n
 
 proc paint*(s: Screen) =
   ## Convenience: flush + write the resulting bytes to `s.fd`. Most

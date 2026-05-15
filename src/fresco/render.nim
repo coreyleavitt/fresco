@@ -55,3 +55,37 @@ proc render*(r: Renderer, row, col: int,
     result &= line
     r.current[absRow] = line
     r.known[absRow] = true
+
+proc scrollUpRegion*(r: Renderer, topRow, botRow, n: int): string =
+  ## Emit ANSI to scroll the contents of rows [topRow, botRow]
+  ## up by `n` lines using DECSTBM. After the emission, rows
+  ## `[topRow, botRow-n]` show what was in `[topRow+n, botRow]`;
+  ## rows `[botRow-n+1, botRow]` are now blank (the terminal cleared
+  ## them as it scrolled them in).
+  ##
+  ## Updates the Renderer's cached snapshot to match the terminal's
+  ## post-scroll state — so callers can immediately follow up with
+  ## `render(...)` to paint only the newly-revealed bottom rows,
+  ## without spurious diffs on the now-shifted rows above.
+  ##
+  ## Rows are 0-based; ANSI CUP/DECSTBM are 1-based and the
+  ## conversion happens here. No-op for `n <= 0` or zero-height ranges.
+  if n <= 0 or topRow > botRow: return ""
+  if topRow < 0 or botRow >= r.height: return ""
+  let shiftN = min(n, botRow - topRow + 1)
+  # `CSI n S` (scrollUp) operates on the scroll region's contents
+  # regardless of current cursor position — no CUP needed here. The
+  # subsequent `render(...)` for changed rows emits its own CUP
+  # explicitly, so cursor placement is well-defined after the scroll.
+  result = setScrollRegion(topRow + 1, botRow + 1) &
+           scrollUp(shiftN) &
+           resetScrollRegion()
+  # Update the cache to mirror the new terminal contents:
+  # row[topRow + i] now holds what was at row[topRow + i + shiftN]
+  # for i in 0 .. botRow-topRow-shiftN. Bottom shiftN rows become "".
+  for i in topRow .. botRow - shiftN:
+    r.current[i] = r.current[i + shiftN]
+    r.known[i]   = r.known[i + shiftN]
+  for i in botRow - shiftN + 1 .. botRow:
+    r.current[i] = ""
+    r.known[i] = true       # terminal cleared, so cache reflects that

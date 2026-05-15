@@ -44,6 +44,36 @@ proc clearScreenBelow*(): string = CSI & "0J"
 proc altScreenEnter*(): string = CSI & "?1049h"
 proc altScreenLeave*(): string = CSI & "?1049l"
 
+# --- Scroll region (DECSTBM) ----------------------------------------------
+#
+# CSI top;bot r sets the scroll region to rows [top, bot] (1-based,
+# inclusive). Inside that region, IND (newline past bottom), RI
+# (reverse-newline past top), CSI n S (scroll up), CSI n T (scroll
+# down) shift the region's contents and discard rows pushed out.
+# Rows outside the region are untouched.
+#
+# **Process-global state.** Setting the scroll region affects every
+# subsequent terminal operation, so callers must reset it (CSI r)
+# before continuing to paint other parts of the screen. fresco's
+# render layer brackets every scroll emission with set/reset.
+
+proc setScrollRegion*(top, bot: int): string =
+  ## Confine subsequent scroll operations to rows [top, bot]
+  ## (1-based inclusive). Cursor is moved to (1,1) after this by
+  ## terminal convention; render layer compensates with an explicit
+  ## CUP after the scroll command.
+  CSI & $top & ";" & $bot & "r"
+
+proc resetScrollRegion*(): string = CSI & "r"
+  ## Restore the scroll region to the full screen.
+
+proc scrollUp*(n: int = 1): string = CSI & $n & "S"
+  ## Shift the current scroll region's contents up by `n` lines.
+  ## Top `n` lines are discarded; bottom `n` lines blanked.
+
+proc scrollDown*(n: int = 1): string = CSI & $n & "T"
+  ## Shift the current scroll region's contents down by `n` lines.
+
 # --- Styles / SGR ----------------------------------------------------------
 
 type Color* = enum
