@@ -12,7 +12,7 @@ suite "capabilities":
     let child = newScope(root)
     withScope(child):
       # Should not raise.
-      requires(FsReadCap)
+      assertCap(FsReadCap)
     dispose(root)
 
   test "missing cap raises MissingProviderError":
@@ -21,7 +21,7 @@ suite "capabilities":
       provide FsReadCap()
     withScope(root):
       expect MissingProviderError:
-        requires(FsWriteCap)
+        assertCap(FsWriteCap)
     dispose(root)
 
   test "requires accepts multiple caps":
@@ -31,7 +31,7 @@ suite "capabilities":
       provide NetworkCap()
       provide ProcessCap()
     withScope(root):
-      requires(FsReadCap, NetworkCap, ProcessCap)
+      assertCap(FsReadCap, NetworkCap, ProcessCap)
     dispose(root)
 
   test "first missing cap among many raises":
@@ -42,7 +42,7 @@ suite "capabilities":
       provide ProcessCap()
     withScope(root):
       expect MissingProviderError:
-        requires(FsReadCap, NetworkCap, ProcessCap)
+        assertCap(FsReadCap, NetworkCap, ProcessCap)
     dispose(root)
 
   test "child scope can grant additional caps not in parent":
@@ -52,9 +52,9 @@ suite "capabilities":
     let inner = newScope(outer)
     withScope(inner):
       provide NetworkCap()
-      requires(FsReadCap, NetworkCap)   # inherits + adds
+      assertCap(FsReadCap, NetworkCap)   # inherits + adds
     # Back in outer scope, NetworkCap is gone.
     withScope(outer):
       expect MissingProviderError:
-        requires(NetworkCap)
+        assertCap(NetworkCap)
     dispose(outer)
