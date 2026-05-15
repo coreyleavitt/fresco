@@ -293,6 +293,48 @@ suite "CollectionSignal: edge cases":
     c.clear()    # already empty
     check observerRuns == baseline   # no fire
 
+  test "delta handler that mutates during rollback fanout doesn't corrupt state":
+    # Reentrancy guard: when a rollback hook fires the dkRollback delta
+    # to handlers, a handler may legitimately call `push`/`setAt`/etc
+    # on the same collection (e.g., to record the rollback in a sibling
+    # collection, or trigger a state-machine transition). Those calls
+    # re-enter `captureInverse`. The protection is in speculative.nim:
+    # `scope.committed` is set BEFORE onRollbackHooks fire, so
+    # `captureInverse`'s `not committed` gate short-circuits and no
+    # orphan rollback entry is pushed onto `c.rollbackHead`.
+    #
+    # Without this protection, the head pop at the end of the rollback
+    # hook would pop the *new* (mid-hook) entry, leaving the original
+    # entry stuck on the head — a memory leak and a state-machine bug
+    # waiting for the next scope's rollback.
+    let c = collection[int]()
+    var sawReentrantInsert = false
+    var firedOnce = false
+    onDelta(c, proc(d: Delta[int]) =
+      if d.kind == dkRollback and not firedOnce:
+        # Mid-rollback: mutate the same collection. Must not crash,
+        # must not leave c.rollbackHead non-nil. Fire only on the
+        # FIRST rollback the handler sees, otherwise subsequent
+        # cycles would keep re-injecting 999.
+        firedOnce = true
+        c.push(999)
+      elif d.kind == dkInsert and d.insertVal == 999:
+        sawReentrantInsert = true)
+    discard speculative:
+      c.push(1)
+      c.push(2)
+    check sawReentrantInsert            # handler's reentrant push fired
+    check c.get() == @[999]             # rolled-back to [], then push(999)
+    # Second rollback cycle: if the first had left an orphan entry on
+    # c.rollbackHead, captureInverse's "head.scope != currentSpeculative"
+    # check would still see the stale entry and the inverses for
+    # this scope's writes would attach to it — the rollback would
+    # either no-op or pop the wrong batch.
+    discard speculative:
+      c.push(50)
+      c.push(60)
+    check c.get() == @[999]             # both pushes rolled back cleanly
+
   test "pop on empty asserts":
     let c = collection[int]()
     expect AssertionDefect:
