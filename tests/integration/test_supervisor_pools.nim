@@ -311,12 +311,39 @@ suite "task group: supervisor adoption":
       except CancelledError: discard
     waitFor body()
 
-  # Test #14 (spawn-from-inside-member wakeup): the wakeup mechanism
-  # IS implemented (supervisor's race includes `s.wakeup`; spawn hook
-  # completes it). It's exercised implicitly by the lcPermanent restart
-  # test — the restart calls `ag.group.spawn`, which goes through the
-  # hook, completes wakeup, and the next race iteration observes the
-  # new member's future. Adding an explicit "spawn from inside a
-  # member" test triggered a SIGSEGV in fresco's contextVar reader
-  # (`nimIncRefCyclic` on a Scope ref) — a separate issue worth
-  # investigating but not blocking the pool feature. Deferred.
+  test "spawn from inside a pool member into the same group (wakeup + #42 regression)":
+    # Regression for #42: an adopted pool member that spawns into its
+    # own group after an `await` used to SIGSEGV in `nimIncRefCyclic`
+    # — the chronos contextvars substrate stored the binding's value
+    # as `addr` of a stack local in the binder (`withScope`), and
+    # when the binder was a synchronous proc (`group.spawn`) the
+    # stack frame ended before the captured callback's continuation
+    # fired, leaving a dangling pointer. The fix on the chronos fork
+    # moves the value into a heap-allocated `ContextNodeT[T]` ref
+    # object so the address is stable for the node's full lifetime.
+    proc body() {.async: (raises: [Exception]).} =
+      let sup = newSupervisor()
+      let g = newTaskGroup(maxSize = 4)
+      sup.adopt(g, "workers", lifecycle = lcTemporary)
+
+      var memberSpawned = false
+      proc siblingBody() {.async.} = await sleepAsync(1.milliseconds)
+      let siblingFactory: proc(): Future[void] {.closure, gcsafe, raises: [].} =
+        proc(): Future[void] {.closure, gcsafe, raises: [].} = siblingBody()
+
+      proc memberBody() {.async.} =
+        await sleepAsync(5.milliseconds)
+        # The historical crash site — fresco.spawn template's read
+        # of `currentScope` (a chronos contextVar) returned a Scope
+        # ref backed by freed stack memory.
+        discard g.spawn(siblingFactory)
+        memberSpawned = true
+      let memberFactory: proc(): Future[void] {.closure, gcsafe, raises: [].} =
+        proc(): Future[void] {.closure, gcsafe, raises: [].} = memberBody()
+
+      discard g.spawn(memberFactory)
+      let runMount = spawn sup.run()
+      # Both members are lcTemporary; loop exits when both finish.
+      try: await runMount.future
+      except CatchableError: discard
+      check memberSpawned
