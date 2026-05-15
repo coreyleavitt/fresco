@@ -20,7 +20,7 @@ The wedge is **kernel-plus-one-API**: solve the hard parts (raw-mode TTY, render
 - **Async**: chronos (matches amoxtli; no std/asyncdispatch)
 - **Rendering**: ANSI escape sequences (no curses dependency, no termcap parsing)
 - **Layout**: region-based (caller specifies row/col bounds; fresco renders within them)
-- **License**: MIT
+- **License**: Apache 2.0
 - **Distribution**: Nimble package; sibling-library to amoxtli
 
 ---

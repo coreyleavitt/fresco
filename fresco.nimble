@@ -3,7 +3,7 @@
 version       = "0.0.1"
 author        = "Corey Leavitt"
 description   = "Terminal-UI kernel: raw-mode input + region-based rendering + reactive task system."
-license       = "MIT"
+license       = "Apache-2.0"
 srcDir        = "src"
 
 # Library only — no `bin` line. Callers depend on `fresco` and import

@@ -9,7 +9,7 @@ Conventions for AI coding agents working on this repository (we dogfood `amoxtli
 - Language: **Nim 2.x**. Async via **chronos** (not std/asyncdispatch). GC: ARC/ORC.
 - Rendering: ANSI escape sequences (no curses).
 - Distribution: Nimble package (`fresco`).
-- License: MIT.
+- License: Apache 2.0.
 
 ## Coding conventions
 
