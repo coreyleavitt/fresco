@@ -289,6 +289,99 @@ suite "spring":
       check abs(tight() - 1.0) < 0.01
     waitFor body()
 
+  test "spring at 4 fps still settles cleanly (dt-independent)":
+    # Semi-implicit Euler with dt=250ms and defaults k=170, c=26 hits
+    # c·dt ≈ 6.5, well past the stability limit (~2) — value would
+    # blow up. The analytical integrator evaluates x(t) from t=0 each
+    # frame, so the trajectory is independent of how often we sample
+    # it; a 4fps clock lands on the same settling curve as 30fps.
+    proc body() {.async: (raises: [Exception]).} =
+      stopFrameClock()
+      startFrameClock(4)
+      let s = signal(0.0)
+      discard spring(s, 1.0)
+      await sleepAsync(1500.milliseconds)
+      check abs(s() - 1.0) < 0.1
+    waitFor body()
+
+suite "spring: multi-DoF":
+
+  teardown:
+    stopFrameClock()
+
+  test "2-tuple spring animates each component toward its target":
+    proc body() {.async: (raises: [Exception]).} =
+      let s = signal((0.0, 0.0))
+      discard spring(s, (1.0, 5.0))
+      await sleepAsync(800.milliseconds)
+      let v = s()
+      check abs(v[0] - 1.0) < 0.05
+      check abs(v[1] - 5.0) < 0.1
+    waitFor body()
+
+  test "multi-DoF settle waits for slowest component, not fastest":
+    # Component 0 starts inside (epsilonPos) already; if the settle
+    # check were "any component within tolerance", the spring would
+    # freeze on frame 1 with component 1 still near zero. The
+    # correctness condition is "all components within tolerance".
+    proc body() {.async: (raises: [Exception]).} =
+      let s = signal((0.0, 0.0))
+      discard spring(s, (0.005, 100.0),
+                     epsilonPos = 0.01, epsilonVel = 0.05)
+      await sleepAsync(80.milliseconds)
+      let mid = s()
+      check mid[1] > 1.0           # component 1 has moved meaningfully
+      await sleepAsync(1.seconds)
+      let final = s()
+      check abs(final[1] - 100.0) < 5.0
+    waitFor body()
+
+  test "multi-DoF retarget resets all velocities (fresh-start)":
+    proc body() {.async: (raises: [Exception]).} =
+      let s = signal((0.0, 0.0))
+      discard spring(s, (100.0, 100.0),
+                     stiffness = 400.0, damping = 20.0)
+      await sleepAsync(80.milliseconds)
+      let mid = s()
+      check mid[0] > 5.0 and mid[1] > 5.0
+      discard spring(s, (0.0, 0.0))
+      var maxAfter0 = mid[0]
+      var maxAfter1 = mid[1]
+      for _ in 0 .. 20:
+        await sleepAsync(40.milliseconds)
+        let v = s()
+        if v[0] > maxAfter0: maxAfter0 = v[0]
+        if v[1] > maxAfter1: maxAfter1 = v[1]
+      check maxAfter0 <= mid[0] + 0.5
+      check maxAfter1 <= mid[1] + 0.5
+      await sleepAsync(800.milliseconds)
+      let final = s()
+      check abs(final[0]) < 0.05
+      check abs(final[1]) < 0.05
+    waitFor body()
+
+  test "custom object type with all-float fields works":
+    type Point2D = object
+      x, y: float
+    proc body() {.async: (raises: [Exception]).} =
+      let p = signal(Point2D(x: 0.0, y: 0.0))
+      discard spring(p, Point2D(x: 10.0, y: -5.0))
+      await sleepAsync(800.milliseconds)
+      let v = p()
+      check abs(v.x - 10.0) < 0.1
+      check abs(v.y - (-5.0)) < 0.1
+    waitFor body()
+
+  test "non-float field in T is a compile-time error":
+    # `compiles()` suppresses the `{.error.}` pragma inside
+    # `toFloats` / `fromFloats` so this expression evaluates to
+    # `false` rather than failing the build.
+    type BadType = object
+      x: float
+      label: string
+    let p = signal(BadType(x: 0.0, label: "hi"))
+    check not compiles(spring(p, BadType(x: 1.0, label: "ok")))
+
   test "stopFrameClock resets frameInterval so subsequent fps takes effect":
     # Regression for round-2 H1: a stopFrameClock followed by
     # startFrameClock(fps = X) used to silently keep the previous
