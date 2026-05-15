@@ -84,7 +84,13 @@ proc setCore[T](s: Signal[T], newVal: T, journal: bool)
       captured.val = prior
       notify(captured)
   s.val = newVal
-  if journal:
+  # Suppress journaling during a time-warp projection: rewindTo
+  # re-fires observers, and any effect that writes a derived signal
+  # would otherwise append a fresh `ekSignalWrite` mid-rewind,
+  # corrupting the historical trace. Observers still notify so the
+  # cascade computes consistently — only the journal write is
+  # skipped. See `journal/log.rewindingFlag` for the contract.
+  if journal and not isRewinding():
     {.cast(gcsafe).}:
       let valRepr =
         when compiles($newVal): $newVal

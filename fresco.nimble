@@ -63,6 +63,7 @@ task test, "run all tests":
     "tests/integration/test_supervisor_pools.nim",
     "tests/integration/test_animation.nim",
     "tests/integration/test_persist.nim",
+    "tests/integration/test_timewarp.nim",
     "tests/integration/test_topology.nim",
   ]
   for t in unitTests & integrationTests:

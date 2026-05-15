@@ -15,12 +15,17 @@
 ## skipped (partial-write tolerance — a crashed write at end of file
 ## doesn't corrupt the rest).
 
-import std/[json, options, os, times]
+import std/[json, options, os, tables, times]
 import ./events
 import ./log
 
 const
-  JournalSchemaVersion* = 3
+  JournalSchemaVersion* = 4
+    ## v4 (#34): added snapshot frames — JSONL lines with
+    ##           `"snapshot":true` carrying a label→writeRepr table
+    ##           and the event id / wall they're current as of. On
+    ##           load, the most-recent snapshot line seeds
+    ##           `j.base`; subsequent event lines replay as usual.
     ## v3 (#38): added `ekCollectionRollback` event variant for
     ##           speculative-rollback audit trail (one event per
     ##           affected collection per rollback, carrying the
@@ -173,11 +178,38 @@ type
       ## Set true after the first write failure so the stderr
       ## diagnostic doesn't spam every subsequent appended event.
 
+proc snapshotToJson(s: Snapshot): JsonNode =
+  result = newJObject()
+  result["v"]          = %JournalSchemaVersion
+  result["snapshot"]   = %true
+  result["atEventId"]  = %uint64(s.atEventId)
+  result["atWall"]     = %s.atWall.toUnixFloat()
+  let stateNode = newJObject()
+  for label, repr in s.state:
+    stateNode[label] = %repr
+  result["state"] = stateNode
+
+proc snapshotFromJson(n: JsonNode): Option[Snapshot] =
+  if n.kind != JObject: return none(Snapshot)
+  if not n.hasKey("snapshot"): return none(Snapshot)
+  var s = Snapshot(state: initTable[string, string]())
+  s.atEventId = EventId(n{"atEventId"}.getInt(0).uint64)
+  s.atWall    = fromUnixFloat(n{"atWall"}.getFloat(0))
+  let stateNode = n{"state"}
+  if stateNode != nil and stateNode.kind == JObject:
+    for label, valNode in stateNode.fields:
+      s.state[label] = valNode.getStr("")
+  some(s)
+
 proc openJournal*(path: string): PersistentJournal =
   ## Open (or create) an on-disk journal at `path`. If the file
   ## exists, replays its contents into the in-memory event log and
   ## bumps id generators. The returned journal appends every new
   ## event to the file as well as to memory.
+  ##
+  ## Snapshot frames (lines with `"snapshot":true`) update the
+  ## journal's `base` snapshot; later snapshot frames supersede
+  ## earlier ones. Event frames append to `events`.
   result = PersistentJournal(events: @[], path: path)
   # Ensure the parent directory exists *before* attempting to read
   # (lines() would raise IOError on a missing dir, and we want first-
@@ -196,6 +228,17 @@ proc openJournal*(path: string): PersistentJournal =
           # is "never crash openJournal on a corrupt line."
           except CatchableError: nil
         if parsed == nil: continue
+        # Snapshot frames are recognized by the "snapshot":true key.
+        # A schema-version mismatch on snapshot lines is treated the
+        # same as on event lines — counted, skipped.
+        if parsed.kind == JObject and parsed.hasKey("snapshot"):
+          let v = parsed{"v"}.getInt(0)
+          if v != JournalSchemaVersion:
+            inc schemaMismatchCount
+            continue
+          let snap = snapshotFromJson(parsed)
+          if snap.isSome: result.base = snap.get
+          continue
         let ev =
           try: fromJson(parsed)
           except JournalSchemaMismatch:
@@ -220,6 +263,60 @@ proc close*(j: PersistentJournal) =
     j.file = nil
 
 # --- Append hook ---------------------------------------------------------
+
+method compactBefore*(j: PersistentJournal, cutoff: EventId)
+                     {.gcsafe, raises: [].} =
+  ## PersistentJournal override: fold events ≤ cutoff into `j.base`
+  ## (via the base implementation), then atomically rewrite the
+  ## on-disk file as `[snapshot-frame, ...remaining-events]`. Uses
+  ## temp file + rename so a crash mid-compaction leaves the
+  ## original file intact.
+  {.cast(gcsafe).}:
+    # Delegate the in-memory work to the base method's logic. We
+    # can't call `procCall` cleanly through method dispatch in all
+    # Nim versions; inline the same fold here.
+    var newBase = j.base
+    if newBase.state.len == 0:
+      newBase.state = initTable[string, string]()
+    var cutWall = newBase.atWall
+    var kept: seq[Event] = @[]
+    for ev in j.events:
+      if uint64(ev.id) <= uint64(cutoff):
+        if ev.kind == ekSignalWrite and ev.signalLabel.len > 0:
+          newBase.state[ev.signalLabel] = ev.writeRepr
+        if ev.wall > cutWall: cutWall = ev.wall
+      else:
+        kept.add ev
+    newBase.atEventId = cutoff
+    newBase.atWall = cutWall
+    j.base = newBase
+    j.events = kept
+    # Atomic file rewrite: write to temp, rename over original.
+    if j.file != nil:
+      try: j.file.close()
+      except CatchableError: discard
+      j.file = nil
+    let tmpPath = j.path & ".compact.tmp"
+    try:
+      let tmp = open(tmpPath, fmWrite)
+      try:
+        tmp.write($snapshotToJson(j.base) & "\n")
+        for ev in j.events:
+          tmp.write($ev.toJson() & "\n")
+      finally:
+        tmp.close()
+      moveFile(tmpPath, j.path)
+    except Exception as err:
+      try:
+        stderr.writeLine("fresco compactBefore failed (" &
+                         $err.name & ": " & err.msg &
+                         "); journal file left unchanged")
+      except IOError: discard
+      try: removeFile(tmpPath)
+      except CatchableError: discard
+    # Reopen append handle.
+    try: j.file = open(j.path, fmAppend)
+    except CatchableError: j.file = nil
 
 method onPersist*(j: PersistentJournal, e: Event) {.gcsafe, raises: [].} =
   # cast(gcsafe): `File.write` and `flushFile` aren't proven gcsafe by

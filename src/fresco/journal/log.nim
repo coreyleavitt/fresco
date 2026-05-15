@@ -16,13 +16,34 @@ import ./events
 import ../reactive/scope
 
 type
+  Snapshot* = object
+    ## Compaction frame: per-label final writeRepr as of `atEventId`.
+    ## A journal that has never been compacted holds the zero-value
+    ## Snapshot (atEventId == NoEvent, empty state). After
+    ## `compactBefore(cutoff)`, the snapshot's `atEventId == cutoff`
+    ## and `state` carries the last writeRepr for every label that
+    ## appeared at or before the cutoff. Events with id ≤ cutoff are
+    ## then dropped from `events`.
+    atEventId*: EventId
+    atWall*: Time
+    state*: Table[string, string]
+
   Journal* = ref object of RootObj
     events*: seq[Event]
+    base*: Snapshot
 
 method onPersist*(j: Journal, e: Event) {.base, gcsafe, raises: [].} = discard
   ## Persistence hook fired after an event is appended. Default
   ## implementation does nothing; PersistentJournal overrides it to
   ## flush the event to disk.
+
+var rewindingFlag* {.threadvar.}: bool
+  ## Set by `timewarp.rewindTo` for the duration of a projection;
+  ## consulted by `signal.setCore` to skip journaling. Living here
+  ## rather than in timewarp.nim avoids a `signal → timewarp` import
+  ## cycle (signal.nim already imports this module).
+
+proc isRewinding*(): bool {.gcsafe.} = rewindingFlag
 
 var globalJournal* {.threadvar.}: Journal
   ## **Thread-local** active journal. Installed via `useJournal(j)`
@@ -320,13 +341,70 @@ proc stateAt*(j: Journal, cutoff: EventId,
   ## Unlabeled writes (`signalLabel == ""`) are excluded — see
   ## `lastWritesByLabel` for the rationale.
   ##
+  ## If the journal has been compacted (`j.base.atEventId != NoEvent`)
+  ## and `cutoff >= j.base.atEventId`, the base snapshot seeds the
+  ## projection and events at or below cutoff overlay it. If
+  ## `cutoff < j.base.atEventId`, only the base snapshot is returned
+  ## — granular history before compaction is gone (graceful
+  ## degradation outside retention). The base is task-agnostic, so
+  ## when `taskId != RootTask` the base is ignored.
+  ##
   ## Pass `taskId = RootTask` to include all tasks (ignoring scope).
+  if taskId == RootTask and uint64(j.base.atEventId) != 0:
+    for label, repr in j.base.state:
+      result[label] = repr
   for ev in j.events:
     if uint64(ev.id) > uint64(cutoff): break
     if ev.kind != ekSignalWrite: continue
     if ev.signalLabel.len == 0: continue
     if taskId == RootTask or ev.taskId == taskId:
       result[ev.signalLabel] = ev.writeRepr
+
+proc snapshot*(j: Journal): Snapshot =
+  ## Capture the current label-to-writeRepr state at the journal head.
+  ## Equivalent to `j.stateAt(headId)` packaged with the head's id
+  ## and wall-clock timestamp. For an empty journal returns the zero
+  ## Snapshot.
+  result.state = initTable[string, string]()
+  if uint64(j.base.atEventId) != 0:
+    for label, repr in j.base.state:
+      result.state[label] = repr
+  for ev in j.events:
+    if ev.kind == ekSignalWrite and ev.signalLabel.len > 0:
+      result.state[ev.signalLabel] = ev.writeRepr
+  if j.events.len > 0:
+    result.atEventId = j.events[^1].id
+    result.atWall = j.events[^1].wall
+  else:
+    result.atEventId = j.base.atEventId
+    result.atWall = j.base.atWall
+
+method compactBefore*(j: Journal, cutoff: EventId)
+                     {.base, gcsafe, raises: [].} =
+  ## Fold events with id at or below `cutoff` into `j.base`, then drop
+  ## them from `j.events`. After this call, `stateAt(headId)` returns
+  ## the same projection it did before (last-write-wins is preserved
+  ## through the snapshot), but per-event history at id ≤ cutoff is
+  ## lost — `eventsBefore(id)` for id ≤ cutoff returns nothing.
+  ##
+  ## The PersistentJournal override additionally rewrites the on-disk
+  ## file atomically.
+  var newBase = j.base
+  if newBase.state.len == 0:
+    newBase.state = initTable[string, string]()
+  var cutWall = newBase.atWall
+  var kept: seq[Event] = @[]
+  for ev in j.events:
+    if uint64(ev.id) <= uint64(cutoff):
+      if ev.kind == ekSignalWrite and ev.signalLabel.len > 0:
+        newBase.state[ev.signalLabel] = ev.writeRepr
+      if ev.wall > cutWall: cutWall = ev.wall
+    else:
+      kept.add ev
+  newBase.atEventId = cutoff
+  newBase.atWall = cutWall
+  j.base = newBase
+  j.events = kept
 
 proc stateAtTime*(j: Journal, wall: Time,
                   taskId: TaskId = RootTask): Table[string, string] =
