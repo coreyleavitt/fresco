@@ -54,6 +54,61 @@ func capKindFor*(_: typedesc[NetworkCap]):  CapKind = ckNetwork
 func capKindFor*(_: typedesc[TerminalCap]): CapKind = ckTerminal
 func capKindFor*(_: typedesc[StateMutCap]): CapKind = ckStateMut
 
+# --- User-defined capability registration (#54) --------------------------
+
+var nextUserSlot {.compileTime.}: int = ord(ckUser0)
+  ## Monotonic per-module counter. Advances by 1 on each
+  ## `registerCap T` call. Slot exhaustion past `ckUser57` is a
+  ## compile error. Cross-module slot stability tracked at #53.
+
+var registeredCapTypes {.compileTime.}: seq[string]
+  ## Stable line-info keys (filename:line:col) of types passed to
+  ## `registerCap`. Used to detect duplicate registration with a
+  ## clearer error than Nim's native "redefinition of capKindFor."
+
+macro registerCap*(T: typed): untyped =
+  ## Allocate the next free `ckUserN` slot for the user-defined
+  ## capability type `T`, and emit a `capKindFor(_: typedesc[T]):
+  ## CapKind` overload mapping `T` to that slot. After this call,
+  ## `{.needs: T.}` and `provides(T)` work just like for the
+  ## built-in capability markers.
+  ##
+  ## Usage:
+  ##
+  ##   type MyCap = ref object
+  ##   registerCap MyCap
+  ##   proc myTask() {.needs: MyCap.} = ...
+  ##
+  ## Slot allocation is **monotonic per module**: the order of
+  ## `registerCap` calls determines which slot each type claims.
+  ## Cross-module sharing is constrained by the per-module CT
+  ## state — module B can't see slots claimed in module A unless
+  ## both go through a shared registry (see #53).
+  # Key by type's repr — within a single module Nim guarantees
+  # distinct types have distinct names, so two `registerCap T`
+  # calls with the same `T.repr` are by definition the same type.
+  # (Cross-module distinct-but-same-named types would alias under
+  # this key, but cross-module registration isn't supported in C1
+  # anyway — see #53.) `lineInfoObj` on a typed parameter points
+  # back into the macro's call site, not the user's `type` line,
+  # so it doesn't give a useful diagnostic location.
+  let key = T.repr
+  if key in registeredCapTypes:
+    error("registerCap: type `" & key & "` is already registered " &
+          "— each capability type may be registered at most once " &
+          "per compilation unit", T)
+  if nextUserSlot > ord(ckUser57):
+    error("registerCap: all 58 ckUserN slots are exhausted — " &
+          "this module has registered too many user capabilities " &
+          "(built-in caps occupy ckFsRead..ckStateMut; the bitmap " &
+          "ceiling is 64 bits)", T)
+  registeredCapTypes.add key
+  let slot = CapKind(nextUserSlot)
+  inc nextUserSlot
+  let slotLit = newLit(slot)
+  result = quote do:
+    func capKindFor*(_: typedesc[`T`]): CapKind = `slotLit`
+
 # --- {.requires: A, B.} pragma -------------------------------------------
 
 var procRequiresTable* {.compileTime.}: Table[string, CapSet]
@@ -62,6 +117,12 @@ var procRequiresTable* {.compileTime.}: Table[string, CapSet]
   ## DSL during discharge. **Per-module** — tasks and the supervisor
   ## registering them must live in the same compilation unit for C1
   ## discharge. Cross-module discovery is tracked at #53.
+
+proc setProcRequires*(name: string, bits: CapSet) {.compileTime.} =
+  ## CT helper for the `{.needs.}` pragma's emitted static block.
+  ## Wraps the Table assignment so user code doesn't need to import
+  ## `std/tables` to use the pragma.
+  procRequiresTable[name] = bits
 
 proc nameOfProc(procDef: NimNode): string =
   ## Extract the user-visible name of a proc declaration, handling
@@ -74,19 +135,27 @@ proc nameOfProc(procDef: NimNode): string =
   else:
     ""
 
-proc capBitForName(name: string, ctx: NimNode): CapSet =
-  case name
-  of "FsReadCap":   capBit(ckFsRead)
-  of "FsWriteCap":  capBit(ckFsWrite)
-  of "ProcessCap":  capBit(ckProcess)
-  of "NetworkCap":  capBit(ckNetwork)
-  of "TerminalCap": capBit(ckTerminal)
-  of "StateMutCap": capBit(ckStateMut)
+proc capNodesOf(caps: NimNode): seq[NimNode] =
+  ## Flatten a pragma/DSL argument that may be a single ident, a
+  ## tuple/par construct holding several idents, or a bracket
+  ## literal. Used by both `needs` and `provides(...)` parsing.
+  if caps.kind in {nnkTupleConstr, nnkPar, nnkBracket}:
+    for c in caps: result.add c
   else:
-    error("unknown capability type `" & name &
-          "` — expected one of FsReadCap, FsWriteCap, " &
-          "ProcessCap, NetworkCap, TerminalCap, StateMutCap", ctx)
-    0'u64
+    result.add caps
+
+proc bitsExpr(capNodes: seq[NimNode]): NimNode =
+  ## Build the AST for `capBit(capKindFor(T0)) or capBit(capKindFor(T1)) or ...`
+  ## — defers cap-name resolution to Nim's overload-resolution on
+  ## `capKindFor`, so any user-registered cap with a `capKindFor`
+  ## overload in scope works without special-casing in the macros.
+  if capNodes.len == 0: return newLit(0'u64)
+  result = nil
+  for c in capNodes:
+    let term = quote do:
+      capBit(capKindFor(`c`))
+    if result == nil: result = term
+    else: result = infix(result, "or", term)
 
 macro needs*(caps, procDef: untyped): untyped =
   ## **Macro pragma** attaching a compile-time required-capability
@@ -101,23 +170,22 @@ macro needs*(caps, procDef: untyped): untyped =
   ## Named `needs` (not `requires`) because `requires` is reserved
   ## by Nim's built-in contract pragmas and would silently shadow.
   ##
-  ## Stashes the bit-encoded `CapSet` in `procRequiresTable` keyed
-  ## by proc name. The `staticSupervisor:` DSL reads from this table
-  ## during compile-time discharge.
-  var bits: CapSet = 0
-  # `caps` is either a single ident (one cap) or a TupleConstr / Par
-  # node holding multiple caps. Normalize to a flat seq.
-  var capNodes: seq[NimNode] = @[]
-  if caps.kind in {nnkTupleConstr, nnkPar, nnkBracket}:
-    for c in caps: capNodes.add c
-  else:
-    capNodes.add caps
-  for c in capNodes:
-    bits = bits or capBitForName(c.repr, c)
+  ## The macro emits a `static:` block that computes the bit-encoded
+  ## `CapSet` via `capBit(capKindFor(T))` for each cap and writes it
+  ## into `procRequiresTable`. Resolution of `capKindFor(T)` happens
+  ## via Nim's overload resolution, so any user type with a
+  ## `capKindFor` overload in scope (typically via `registerCap T`)
+  ## works without changes to this macro.
+  let capNodes = capNodesOf(caps)
   let n = nameOfProc(procDef)
-  if n.len > 0:
-    procRequiresTable[n] = bits
-  procDef
+  if n.len == 0: return procDef
+  let nameLit = newLit(n)
+  let bitsAst = bitsExpr(capNodes)
+  result = newStmtList(
+    nnkStaticStmt.newTree(
+      newStmtList(
+        newCall(bindSym"setProcRequires", nameLit, bitsAst))),
+    procDef)
 
 # --- `staticSupervisor:` DSL ---------------------------------------------
 
@@ -129,11 +197,12 @@ type
     ## A `child factory` registration only compiles when the
     ## factory's `{.requires: ...}` CapSet is a subset of `Provided`.
 
-proc capSetFromTypeNames(caps: NimNode): CapSet =
-  ## Compile-time helper: walk a list of cap-type idents and OR
-  ## their bits into a `CapSet`. Unknown names produce `error()`.
-  for c in caps:
-    result = result or capBitForName(c.repr, c)
+proc provideBitsExpr(caps: NimNode): NimNode =
+  ## Compile-time helper: build the AST for the bit-OR expression
+  ## representing a `provides(A, B, ...)` cap list. Same overload-
+  ## resolution path as `bitsExpr` — works for built-ins and any
+  ## type with a `capKindFor` overload.
+  bitsExpr(capNodesOf(caps))
 
 proc renderCapName(k: CapKind): string =
   case k
@@ -152,23 +221,41 @@ proc renderCapSet(s: CapSet): string =
   if parts.len == 0: "{}"
   else: "{" & parts.join(", ") & "}"
 
-proc dischargeSupervisorBlock(body: NimNode, ancestorProvides: CapSet) =
-  ## Walk a supervisor body, accumulate `provides`, discharge each
-  ## `child` against (ancestorProvides ∪ local provides), and recurse
-  ## into nested `supervisor:` blocks. Compile-time only; emits
-  ## macro `error()` on missing-cap.
-  var localProvides: CapSet = 0
-  # Two passes: first collect all `provides(...)` so order within a
-  # block doesn't matter (children can come before `provides` lines
-  # and still see them). This matches the spirit of "supervisor
-  # topology is declarative."
+proc collectProvidesExprs(body: NimNode): seq[NimNode] =
+  ## Walk a supervisor body and return the NimNode expressions
+  ## representing each `provides(A, B, ...)` declaration. The
+  ## bit-OR composition happens later, in emitted code, so user
+  ## caps flow through Nim's overload resolution on `capKindFor`.
   for stmt in body:
     if stmt.kind == nnkCall and stmt[0].kind == nnkIdent and
        stmt[0].strVal == "provides" and stmt.len >= 2:
       var caps = newTree(nnkBracket)
       for i in 1 ..< stmt.len: caps.add stmt[i]
-      localProvides = localProvides or capSetFromTypeNames(caps)
-  let effective = ancestorProvides or localProvides
+      result.add provideBitsExpr(caps)
+
+proc orAll(exprs: openArray[NimNode]): NimNode =
+  ## Build the AST for `a or b or c or ...` over a list of expressions.
+  if exprs.len == 0: return newLit(0'u64)
+  result = exprs[0]
+  for i in 1 ..< exprs.len:
+    result = infix(result, "or", exprs[i])
+
+proc dischargeSupervisorBlock(body, ancestorProvidedExpr: NimNode,
+                              checks: var seq[NimNode]) =
+  ## Walk a supervisor body, build the effective `provided` AST
+  ## (ancestor + local), and emit per-child `when` checks that
+  ## fail at compile time with a readable message if discharge
+  ## fails. Recurses into nested `supervisor:` blocks.
+  ##
+  ## The discharge check is deferred to emitted code (a `static:`
+  ## block) because user-registered cap types need Nim's overload
+  ## resolution on `capKindFor` — that resolution happens during
+  ## sem of the emitted code, not at macro-expansion time.
+  let localProvidedExprs = collectProvidesExprs(body)
+  var combined: seq[NimNode]
+  combined.add ancestorProvidedExpr
+  for e in localProvidedExprs: combined.add e
+  let effectiveExpr = orAll(combined)
   for stmt in body:
     if stmt.kind in {nnkCommand, nnkCall} and
        stmt[0].kind == nnkIdent and stmt[0].strVal == "child" and
@@ -180,19 +267,25 @@ proc dischargeSupervisorBlock(body: NimNode, ancestorProvides: CapSet) =
               "annotation — every staticSupervisor child must declare " &
               "its capability set explicitly (use {.needs: <caps>.} " &
               "on the proc, or {.needs: ().} for no caps)", fac)
-      let required = procRequiresTable[name]
-      if not required.isSubsetOf(effective):
-        let missingBits = missing(required, effective)
-        error("`child " & name & "`: required capabilities " &
-              renderCapSet(required) & " not satisfied by supervisor's " &
-              "provides " & renderCapSet(effective) &
-              " — missing: " & renderCapSet(missingBits), fac)
+      # The required CapSet is already a known value at this point
+      # (the `static:` block from `{.needs.}` ran during sem in
+      # declaration order, before the staticSupervisor macro). Emit
+      # a CT discharge check against the provided expression.
+      let requiredLit = newLit(procRequiresTable[name])
+      let nameLit = newLit(name)
+      checks.add quote do:
+        when not isSubsetOf(`requiredLit`, `effectiveExpr`):
+          {.error: "fresco capability discharge failed for `child " &
+                   `nameLit` & "`: required " & renderCapSet(`requiredLit`) &
+                   ", provides " &
+                   renderCapSet(`effectiveExpr`) & ", missing " &
+                   renderCapSet(missing(`requiredLit`, `effectiveExpr`)) &
+                   " — add the missing caps to a `provides(...)` line " &
+                   "in this supervisor or an ancestor.".}
     elif stmt.kind == nnkCall and stmt[0].kind == nnkIdent and
          stmt[0].strVal == "supervisor" and stmt.len >= 2 and
          stmt[1].kind == nnkStmtList:
-      # Nested `supervisor:` block — recurse with effective as the
-      # new ancestorProvides.
-      dischargeSupervisorBlock(stmt[1], effective)
+      dischargeSupervisorBlock(stmt[1], effectiveExpr, checks)
 
 macro staticSupervisor*(body: untyped): untyped =
   ## Declarative supervisor DSL. Recognized forms inside the block:
@@ -212,17 +305,20 @@ macro staticSupervisor*(body: untyped): untyped =
   ## the **top-level** provided set. For now a phantom marker —
   ## wiring up the runtime supervisor's `addChild` calls comes after
   ## discharge is solid.
-  var topProvides: CapSet = 0
-  for stmt in body:
-    if stmt.kind == nnkCall and stmt[0].kind == nnkIdent and
-       stmt[0].strVal == "provides" and stmt.len >= 2:
-      var caps = newTree(nnkBracket)
-      for i in 1 ..< stmt.len: caps.add stmt[i]
-      topProvides = topProvides or capSetFromTypeNames(caps)
-  dischargeSupervisorBlock(body, 0'u64)
-  let providedLit = newLit(topProvides)
-  result = quote do:
-    StaticSupervisor[`providedLit`]()
+  # Top-level provides expression — bit-OR of every `provides(...)`
+  # at the outermost scope. Used to parameterize the returned
+  # `StaticSupervisor[Provided]`. Computed via the same deferred-
+  # NimNode pattern as discharge: we don't have the capKindFor
+  # results at macro-time, so we emit the expression and let Nim
+  # sem-evaluate it for both the discharge `when` checks and the
+  # generic parameter.
+  let topProvidedExpr = orAll(collectProvidesExprs(body))
+  var checks: seq[NimNode] = @[]
+  dischargeSupervisorBlock(body, newLit(0'u64), checks)
+  result = newStmtList()
+  for c in checks: result.add c
+  result.add quote do:
+    StaticSupervisor[static(`topProvidedExpr`)]()
 
 macro assertCap*(caps: varargs[untyped]): untyped =
   ## Runtime assertion that every capability in `caps` is provided by
