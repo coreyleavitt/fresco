@@ -30,12 +30,31 @@ type
 
   Journal* = ref object of RootObj
     events*: seq[Event]
-    base*: Snapshot
+    snapshots*: seq[Snapshot]
+      ## Multi-tier snapshot index (#49). Ordered by `atEventId`
+      ## ascending. `stateAt(cutoff)` binary-searches for the largest
+      ## snapshot ≤ cutoff and replays events forward from there.
+      ## When the journal is empty (no snapshots have been taken),
+      ## this is `@[]` and queries use the in-events path only.
+      ## Promotion/coarsening policies operate on this seq.
+
+template base*(j: Journal): Snapshot =
+  ## Backward-compat accessor: the oldest snapshot, or a zero
+  ## Snapshot if none. Used by code from before the multi-snapshot
+  ## migration; new code should use `snapshots` directly.
+  if j.snapshots.len > 0: j.snapshots[0] else: Snapshot()
 
 method onPersist*(j: Journal, e: Event) {.base, gcsafe, raises: [].} = discard
   ## Persistence hook fired after an event is appended. Default
   ## implementation does nothing; PersistentJournal overrides it to
   ## flush the event to disk.
+
+method onSnapshotAppended*(j: Journal, s: Snapshot)
+                          {.base, gcsafe, raises: [].} = discard
+  ## Persistence hook fired after `addSnapshot` appends a new
+  ## Snapshot to `j.snapshots`. Default no-op; PersistentJournal
+  ## overrides it to flush a snapshot frame to disk so multi-
+  ## snapshot history survives reopens.
 
 var rewindingFlag* {.threadvar.}: bool
   ## Set by `timewarp.rewindTo` for the duration of a projection;
@@ -341,19 +360,36 @@ proc stateAt*(j: Journal, cutoff: EventId,
   ## Unlabeled writes (`signalLabel == ""`) are excluded — see
   ## `lastWritesByLabel` for the rationale.
   ##
-  ## If the journal has been compacted (`j.base.atEventId != NoEvent`)
-  ## and `cutoff >= j.base.atEventId`, the base snapshot seeds the
-  ## projection and events at or below cutoff overlay it. If
-  ## `cutoff < j.base.atEventId`, only the base snapshot is returned
-  ## — granular history before compaction is gone (graceful
-  ## degradation outside retention). The base is task-agnostic, so
-  ## when `taskId != RootTask` the base is ignored.
+  ## **Multi-snapshot routing**: if the journal has any snapshots,
+  ## find the largest one with `atEventId ≤ cutoff` (binary search),
+  ## seed `result` from its `state`, and overlay only the events
+  ## from that snapshot's atEventId upward. If `cutoff` is below the
+  ## earliest snapshot, return that snapshot's state alone — granular
+  ## history before it is gone (graceful degradation). Snapshots are
+  ## task-agnostic, so when `taskId != RootTask` they're ignored.
   ##
   ## Pass `taskId = RootTask` to include all tasks (ignoring scope).
-  if taskId == RootTask and uint64(j.base.atEventId) != 0:
-    for label, repr in j.base.state:
-      result[label] = repr
+  var fromAfter = EventId(0)
+  if taskId == RootTask and j.snapshots.len > 0:
+    # Largest snapshot with atEventId ≤ cutoff. Linear scan; small
+    # seq (a few dozen), not worth a binary search yet.
+    var picked = -1
+    for i in 0 ..< j.snapshots.len:
+      if uint64(j.snapshots[i].atEventId) <= uint64(cutoff):
+        picked = i
+      else:
+        break
+    if picked >= 0:
+      for label, repr in j.snapshots[picked].state:
+        result[label] = repr
+      fromAfter = j.snapshots[picked].atEventId
+    else:
+      # cutoff < earliest snapshot — return earliest as graceful floor.
+      for label, repr in j.snapshots[0].state:
+        result[label] = repr
+      return
   for ev in j.events:
+    if uint64(ev.id) <= uint64(fromAfter): continue
     if uint64(ev.id) > uint64(cutoff): break
     if ev.kind != ekSignalWrite: continue
     if ev.signalLabel.len == 0: continue
@@ -363,48 +399,214 @@ proc stateAt*(j: Journal, cutoff: EventId,
 proc snapshot*(j: Journal): Snapshot =
   ## Capture the current label-to-writeRepr state at the journal head.
   ## Equivalent to `j.stateAt(headId)` packaged with the head's id
-  ## and wall-clock timestamp. For an empty journal returns the zero
-  ## Snapshot.
+  ## and wall-clock timestamp. Composes the oldest pre-existing
+  ## snapshot (if any) with all subsequent events.
   result.state = initTable[string, string]()
-  if uint64(j.base.atEventId) != 0:
-    for label, repr in j.base.state:
+  if j.snapshots.len > 0:
+    for label, repr in j.snapshots[^1].state:
       result.state[label] = repr
   for ev in j.events:
+    if j.snapshots.len > 0 and
+       uint64(ev.id) <= uint64(j.snapshots[^1].atEventId): continue
     if ev.kind == ekSignalWrite and ev.signalLabel.len > 0:
       result.state[ev.signalLabel] = ev.writeRepr
   if j.events.len > 0:
     result.atEventId = j.events[^1].id
     result.atWall = j.events[^1].wall
-  else:
-    result.atEventId = j.base.atEventId
-    result.atWall = j.base.atWall
+  elif j.snapshots.len > 0:
+    result.atEventId = j.snapshots[^1].atEventId
+    result.atWall = j.snapshots[^1].atWall
+
+proc addSnapshot*(j: Journal): Snapshot =
+  ## Capture the current head state as a checkpoint and append it
+  ## to `j.snapshots`. Idempotent at the same head: a snapshot
+  ## whose `atEventId` equals the latest already-stored snapshot's
+  ## `atEventId` is not duplicated — the existing snapshot is
+  ## returned.
+  ##
+  ## Used both by callers wanting a fast projection index at a
+  ## specific point (devtools time-warp) and by the retention
+  ## policy machinery (see `applyRetention`).
+  result = j.snapshot()
+  if j.snapshots.len > 0 and
+     j.snapshots[^1].atEventId == result.atEventId:
+    return j.snapshots[^1]
+  j.snapshots.add result
+  j.onSnapshotAppended(result)
 
 method compactBefore*(j: Journal, cutoff: EventId)
                      {.base, gcsafe, raises: [].} =
-  ## Fold events with id at or below `cutoff` into `j.base`, then drop
-  ## them from `j.events`. After this call, `stateAt(headId)` returns
-  ## the same projection it did before (last-write-wins is preserved
-  ## through the snapshot), but per-event history at id ≤ cutoff is
-  ## lost — `eventsBefore(id)` for id ≤ cutoff returns nothing.
+  ## Fold events with id ≤ `cutoff` into a single base snapshot, drop
+  ## those events, and **collapse any pre-cutoff snapshots into the
+  ## base** (single-base-post-compaction semantics).
+  ##
+  ## After this call: `j.snapshots[0]` is the base at `cutoff`,
+  ## containing every label's last write up to `cutoff`. Snapshots
+  ## that had `atEventId > cutoff` are preserved (they index
+  ## still-live events). Per-event history at id ≤ cutoff is lost
+  ## — `eventsBefore(id ≤ cutoff)` returns nothing.
+  ##
+  ## See also: `promoteBefore` (drops events but **keeps** pre-cutoff
+  ## snapshots, so multi-snapshot history through the cutoff is
+  ## preserved for fast projection at intermediate historical points).
   ##
   ## The PersistentJournal override additionally rewrites the on-disk
   ## file atomically.
-  var newBase = j.base
-  if newBase.state.len == 0:
-    newBase.state = initTable[string, string]()
-  var cutWall = newBase.atWall
-  var kept: seq[Event] = @[]
+  var newBase = Snapshot(state: initTable[string, string](),
+                         atEventId: cutoff)
+  # Seed with the latest pre-cutoff snapshot's state (if any).
+  for s in j.snapshots:
+    if uint64(s.atEventId) <= uint64(cutoff):
+      newBase.atWall = s.atWall
+      for label, repr in s.state:
+        newBase.state[label] = repr
+    else: break
+  # Overlay pre-cutoff events.
+  var keptEvents: seq[Event] = @[]
   for ev in j.events:
     if uint64(ev.id) <= uint64(cutoff):
       if ev.kind == ekSignalWrite and ev.signalLabel.len > 0:
         newBase.state[ev.signalLabel] = ev.writeRepr
-      if ev.wall > cutWall: cutWall = ev.wall
+      if ev.wall > newBase.atWall: newBase.atWall = ev.wall
     else:
-      kept.add ev
-  newBase.atEventId = cutoff
-  newBase.atWall = cutWall
-  j.base = newBase
-  j.events = kept
+      keptEvents.add ev
+  # Keep only post-cutoff snapshots.
+  var keptSnaps: seq[Snapshot] = @[newBase]
+  for s in j.snapshots:
+    if uint64(s.atEventId) > uint64(cutoff): keptSnaps.add s
+  j.snapshots = keptSnaps
+  j.events = keptEvents
+
+proc promoteBefore*(j: Journal, cutoff: EventId) =
+  ## Drop events with id ≤ `cutoff` BUT preserve every snapshot
+  ## whose `atEventId` ≤ `cutoff`. This is the "promote to archive
+  ## tier" primitive: granular event history below the cutoff is
+  ## reclaimed, but multi-snapshot projection routing through the
+  ## cutoff continues to work — `stateAt(midpoint)` for any
+  ## midpoint at a preserved snapshot's id still answers correctly.
+  ##
+  ## Distinguishing from `compactBefore`: compactBefore collapses
+  ## pre-cutoff snapshots to one base, sacrificing intermediate-point
+  ## projection precision for a smaller snapshot footprint. Choose
+  ## based on whether intermediate projection precision or snapshot
+  ## storage matters more.
+  ##
+  ## If no snapshot exists at-or-below `cutoff`, this auto-captures
+  ## one at the largest event id ≤ cutoff so post-promotion
+  ## `stateAt(cutoff)` remains correct.
+  var hasFloorSnapshot = false
+  for s in j.snapshots:
+    if uint64(s.atEventId) <= uint64(cutoff):
+      hasFloorSnapshot = true
+      break
+  if not hasFloorSnapshot:
+    # Take a synthetic floor snapshot at the largest event id ≤ cutoff.
+    var floorId = EventId(0)
+    var floorWall: Time
+    var state = initTable[string, string]()
+    for ev in j.events:
+      if uint64(ev.id) > uint64(cutoff): break
+      if ev.kind == ekSignalWrite and ev.signalLabel.len > 0:
+        state[ev.signalLabel] = ev.writeRepr
+      floorId = ev.id
+      floorWall = ev.wall
+    if uint64(floorId) > 0:
+      let floor = Snapshot(atEventId: floorId, atWall: floorWall, state: state)
+      # Insert sorted.
+      var inserted = false
+      var newSnaps: seq[Snapshot] = @[]
+      for s in j.snapshots:
+        if not inserted and uint64(s.atEventId) > uint64(floorId):
+          newSnaps.add floor
+          inserted = true
+        newSnaps.add s
+      if not inserted: newSnaps.add floor
+      j.snapshots = newSnaps
+  # Drop events ≤ cutoff.
+  var keptEvents: seq[Event] = @[]
+  for ev in j.events:
+    if uint64(ev.id) > uint64(cutoff): keptEvents.add ev
+  j.events = keptEvents
+
+type
+  RetentionPolicy* = object
+    ## High-level retention configuration applied by
+    ## `applyRetention(j, policy)`. All knobs are count-based (event
+    ## or snapshot counts, not wall-clock); a time-based knob would
+    ## be a follow-up.
+    snapshotEvery*: int
+      ## Auto-snapshot once `events.len mod snapshotEvery == 0` and
+      ## a snapshot hasn't already been taken at the current head.
+      ## Set to a large number (or `int.high`) to disable.
+    keepEvents*: int
+      ## When `events.len > keepEvents`, drop events older than
+      ## (head - keepEvents) via `promoteBefore` — multi-snapshot
+      ## projection precision through the cutoff is preserved.
+    coarsenAfter*: int
+      ## When `snapshots.len > coarsenAfter`, halve the density of
+      ## the older half via `coarsen(... keepEvery = 2)`. Repeated
+      ## applications cascade the density toward log scale —
+      ## the "ladder" behavior.
+
+proc coarsen*(j: Journal, atIdRange: HSlice[EventId, EventId], keepEvery: int) =
+  ## Within the closed event-id range, keep every Nth snapshot in
+  ## index order; drop the rest. `keepEvery == 1` is a no-op;
+  ## `keepEvery == 2` halves density; etc. Used by `applyRetention`
+  ## to demote a tier (reduce its snapshot count) once it grows
+  ## beyond its bound.
+  ##
+  ## Snapshots outside the range are untouched. The first snapshot
+  ## in the range is always kept (regardless of `keepEvery`) so that
+  ## projection routing past the range still has a starting point.
+  if keepEvery <= 1: return
+  var keptSnaps: seq[Snapshot] = @[]
+  var inRangeCount = 0
+  for s in j.snapshots:
+    let inRange = uint64(s.atEventId) >= uint64(atIdRange.a) and
+                  uint64(s.atEventId) <= uint64(atIdRange.b)
+    if inRange:
+      if inRangeCount mod keepEvery == 0:
+        keptSnaps.add s
+      inc inRangeCount
+    else:
+      keptSnaps.add s
+  j.snapshots = keptSnaps
+
+proc applyRetention*(j: Journal, policy: RetentionPolicy) =
+  ## Apply the retention policy. Steps, in order:
+  ##
+  ## 1. **Auto-snapshot**: if `events.len > 0` and
+  ##    `events.len mod snapshotEvery == 0`, call `addSnapshot()`
+  ##    (idempotent at the current head, so calling on the same head
+  ##    repeatedly is safe).
+  ## 2. **Promote**: if `events.len > keepEvents`, call
+  ##    `promoteBefore(head_id - keepEvents)`. Drops old events
+  ##    while preserving every snapshot through the cutoff.
+  ## 3. **Coarsen**: if `snapshots.len > coarsenAfter`, halve the
+  ##    density of the older half via `coarsen(... keepEvery = 2)`.
+  ##    Each successive application coarsens that range further,
+  ##    yielding a log-scale ladder over many invocations.
+  ##
+  ## Intended to be called periodically by the host (e.g., from an
+  ## idle timer, after a batch of writes, or on a "compaction tick")
+  ## rather than per-append. Auto-invocation on append would add
+  ## overhead to the hot path and is left to the consumer.
+  # 1. Auto-snapshot.
+  if policy.snapshotEvery > 0 and j.events.len > 0 and
+     j.events.len mod policy.snapshotEvery == 0:
+    discard j.addSnapshot()
+  # 2. Promote (drop old events).
+  if policy.keepEvents > 0 and j.events.len > policy.keepEvents:
+    let dropCount = j.events.len - policy.keepEvents
+    let cutoffId = j.events[dropCount - 1].id
+    j.promoteBefore(cutoffId)
+  # 3. Coarsen older half.
+  if policy.coarsenAfter > 0 and j.snapshots.len > policy.coarsenAfter:
+    let half = j.snapshots.len div 2
+    if half >= 2:
+      let loId = j.snapshots[0].atEventId
+      let hiId = j.snapshots[half - 1].atEventId
+      j.coarsen(loId .. hiId, keepEvery = 2)
 
 proc stateAtTime*(j: Journal, wall: Time,
                   taskId: TaskId = RootTask): Table[string, string] =

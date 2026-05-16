@@ -237,7 +237,7 @@ proc openJournal*(path: string): PersistentJournal =
             inc schemaMismatchCount
             continue
           let snap = snapshotFromJson(parsed)
-          if snap.isSome: result.base = snap.get
+          if snap.isSome: result.snapshots.add snap.get
           continue
         let ev =
           try: fromJson(parsed)
@@ -266,31 +266,36 @@ proc close*(j: PersistentJournal) =
 
 method compactBefore*(j: PersistentJournal, cutoff: EventId)
                      {.gcsafe, raises: [].} =
-  ## PersistentJournal override: fold events ≤ cutoff into `j.base`
-  ## (via the base implementation), then atomically rewrite the
-  ## on-disk file as `[snapshot-frame, ...remaining-events]`. Uses
-  ## temp file + rename so a crash mid-compaction leaves the
-  ## original file intact.
+  ## PersistentJournal override: run the base in-memory fold (drops
+  ## events ≤ cutoff, collapses pre-cutoff snapshots into one base
+  ## snapshot, preserves post-cutoff snapshots), then atomically
+  ## rewrite the on-disk file as
+  ## `[snapshot-frames..., remaining-events]`. Uses temp file +
+  ## rename so a crash mid-compaction leaves the original intact.
   {.cast(gcsafe).}:
-    # Delegate the in-memory work to the base method's logic. We
-    # can't call `procCall` cleanly through method dispatch in all
-    # Nim versions; inline the same fold here.
-    var newBase = j.base
-    if newBase.state.len == 0:
-      newBase.state = initTable[string, string]()
-    var cutWall = newBase.atWall
-    var kept: seq[Event] = @[]
+    # Inline the base-class fold (procCall through method dispatch is
+    # fragile; same shape as log.compactBefore).
+    var newBase = Snapshot(state: initTable[string, string](),
+                           atEventId: cutoff)
+    for s in j.snapshots:
+      if uint64(s.atEventId) <= uint64(cutoff):
+        newBase.atWall = s.atWall
+        for label, repr in s.state:
+          newBase.state[label] = repr
+      else: break
+    var keptEvents: seq[Event] = @[]
     for ev in j.events:
       if uint64(ev.id) <= uint64(cutoff):
         if ev.kind == ekSignalWrite and ev.signalLabel.len > 0:
           newBase.state[ev.signalLabel] = ev.writeRepr
-        if ev.wall > cutWall: cutWall = ev.wall
+        if ev.wall > newBase.atWall: newBase.atWall = ev.wall
       else:
-        kept.add ev
-    newBase.atEventId = cutoff
-    newBase.atWall = cutWall
-    j.base = newBase
-    j.events = kept
+        keptEvents.add ev
+    var keptSnaps: seq[Snapshot] = @[newBase]
+    for s in j.snapshots:
+      if uint64(s.atEventId) > uint64(cutoff): keptSnaps.add s
+    j.snapshots = keptSnaps
+    j.events = keptEvents
     # Atomic file rewrite: write to temp, rename over original.
     if j.file != nil:
       try: j.file.close()
@@ -300,9 +305,8 @@ method compactBefore*(j: PersistentJournal, cutoff: EventId)
     try:
       let tmp = open(tmpPath, fmWrite)
       try:
-        tmp.write($snapshotToJson(j.base) & "\n")
-        for ev in j.events:
-          tmp.write($ev.toJson() & "\n")
+        for s in j.snapshots: tmp.write($snapshotToJson(s) & "\n")
+        for ev in j.events:   tmp.write($ev.toJson() & "\n")
       finally:
         tmp.close()
       moveFile(tmpPath, j.path)
@@ -317,6 +321,25 @@ method compactBefore*(j: PersistentJournal, cutoff: EventId)
     # Reopen append handle.
     try: j.file = open(j.path, fmAppend)
     except CatchableError: j.file = nil
+
+method onSnapshotAppended*(j: PersistentJournal, s: Snapshot)
+                          {.gcsafe, raises: [].} =
+  ## Flush a snapshot frame to disk so multi-snapshot history (#49)
+  ## survives reopens. Same one-shot write-failure diagnostic shape
+  ## as `onPersist`.
+  {.cast(gcsafe).}:
+    if j.file == nil: return
+    try:
+      j.file.write($snapshotToJson(s) & "\n")
+      j.file.flushFile()
+    except CatchableError as err:
+      if not j.warnedWriteFailure:
+        j.warnedWriteFailure = true
+        try:
+          stderr.writeLine("fresco journal snapshot write failed (" &
+                           $err.name & ": " & err.msg &
+                           "); subsequent events will be lost")
+        except IOError: discard
 
 method onPersist*(j: PersistentJournal, e: Event) {.gcsafe, raises: [].} =
   # cast(gcsafe): `File.write` and `flushFile` aren't proven gcsafe by
