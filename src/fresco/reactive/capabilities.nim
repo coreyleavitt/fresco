@@ -57,9 +57,11 @@ func capKindFor*(_: typedesc[StateMutCap]): CapKind = ckStateMut
 # --- User-defined capability registration (#54) --------------------------
 
 var nextUserSlot {.compileTime.}: int = ord(ckUser0)
-  ## Monotonic per-module counter. Advances by 1 on each
-  ## `registerCap T` call. Slot exhaustion past `ckUser57` is a
-  ## compile error. Cross-module slot stability tracked at #53.
+  ## Monotonic counter shared across the compilation unit (Nim's
+  ## `{.compileTime.}` var storage is process-global, not
+  ## per-module). Advances by 1 on each `registerCap T` call from
+  ## any module. Slot exhaustion past `ckUser57` is a compile
+  ## error.
 
 var registeredCapTypes {.compileTime.}: seq[string]
   ## Stable line-info keys (filename:line:col) of types passed to
@@ -79,22 +81,22 @@ macro registerCap*(T: typed): untyped =
   ##   registerCap MyCap
   ##   proc myTask() {.needs: MyCap.} = ...
   ##
-  ## Slot allocation is **monotonic per module**: the order of
-  ## `registerCap` calls determines which slot each type claims.
-  ## Cross-module sharing is constrained by the per-module CT
-  ## state — module B can't see slots claimed in module A unless
-  ## both go through a shared registry (see #53).
-  # Key by type's repr — within a single module Nim guarantees
-  # distinct types have distinct names, so two `registerCap T`
-  # calls with the same `T.repr` are by definition the same type.
-  # (Cross-module distinct-but-same-named types would alias under
-  # this key, but cross-module registration isn't supported in C1
-  # anyway — see #53.) `lineInfoObj` on a typed parameter points
-  # back into the macro's call site, not the user's `type` line,
-  # so it doesn't give a useful diagnostic location.
-  let key = T.repr
+  ## Slot allocation is **monotonic across the compilation unit**:
+  ## Nim sems modules in dependency order and the `{.compileTime.}`
+  ## counter is shared, so each `registerCap` call across any module
+  ## claims the next free slot. Stable within a build; the slot a
+  ## given type gets can differ across builds if the import graph
+  ## changes order, but that's harmless because CapSet values are
+  ## CT-only and not persisted.
+  # Key by signature-hash of the type's Sym — globally unique across
+  # modules. `T.repr` alone collides for distinct types that happen
+  # to share an unqualified name (e.g., `MyCap` defined in both
+  # `tasks/io.nim` and `tasks/net.nim`). Two distinct types have
+  # distinct Sym nodes whose signatureHash differs even when the
+  # short repr is identical.
+  let key = T.signatureHash
   if key in registeredCapTypes:
-    error("registerCap: type `" & key & "` is already registered " &
+    error("registerCap: type `" & T.repr & "` is already registered " &
           "— each capability type may be registered at most once " &
           "per compilation unit", T)
   if nextUserSlot > ord(ckUser57):
@@ -112,11 +114,18 @@ macro registerCap*(T: typed): untyped =
 # --- {.requires: A, B.} pragma -------------------------------------------
 
 var procRequiresTable* {.compileTime.}: Table[string, CapSet]
-  ## Module-local CT table: maps a proc's symbol name to the `CapSet`
-  ## declared via `{.requires: ...}`. Read by the `staticSupervisor:`
-  ## DSL during discharge. **Per-module** — tasks and the supervisor
-  ## registering them must live in the same compilation unit for C1
-  ## discharge. Cross-module discovery is tracked at #53.
+  ## Compile-time table mapping a proc's symbol name to the `CapSet`
+  ## declared via `{.needs: ...}` or inferred via `{.inferCaps.}`.
+  ## Read by the `staticSupervisor:` DSL during discharge.
+  ##
+  ## **Cross-module sharing**: this var is module-scoped at declaration
+  ## but **shared across the compilation unit** at storage. Nim sems
+  ## modules in dependency order, so a `{.needs.}` pragma in module A
+  ## (imported by B) runs its static block during A's sem pass and
+  ## populates this table before B's `staticSupervisor:` macro fires.
+  ## Tasks declared in any imported module are visible at discharge
+  ## time — see `tests/unit/test_xmodule_caps.nim` for the regression
+  ## test. (Verified for #53.)
 
 proc setProcRequires*(name: string, bits: CapSet) {.compileTime.} =
   ## CT helper for the `{.needs.}` pragma's emitted static block.

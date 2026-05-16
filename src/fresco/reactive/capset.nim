@@ -31,7 +31,12 @@
 ## `CapKind` is a fixed enum with 6 built-in caps and 58 reserved
 ## user slots — 64 total to fit a uint64. `registerCap` (a separate
 ## macro in capabilities.nim) allocates user slots on demand.
-## Cross-module slot stability is tracked at #53.
+## Cross-module slot stability: the `nextUserSlot` counter is a
+## `{.compileTime.}` var shared across the compilation unit, so
+## `registerCap` calls in any imported module advance the same
+## counter. Stable within a build; across builds the slot a given
+## type gets can differ if the import graph reorders, which is
+## harmless because CapSet values are CT-only and not persisted.
 
 type
   CapKind* = enum
