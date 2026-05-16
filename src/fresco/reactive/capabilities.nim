@@ -157,6 +157,123 @@ proc bitsExpr(capNodes: seq[NimNode]): NimNode =
     if result == nil: result = term
     else: result = infix(result, "or", term)
 
+# --- Capability AST inference (#52) --------------------------------------
+
+const inferenceTable = {
+  # Stdlib I/O — filesystem reads
+  "readFile":      ckFsRead,
+  "readLines":     ckFsRead,
+  "lines":         ckFsRead,
+  "open":          ckFsRead,        # conservative: open in any mode implies fs touch
+  "fileExists":    ckFsRead,
+  "dirExists":     ckFsRead,
+  # Stdlib I/O — filesystem writes
+  "writeFile":     ckFsWrite,
+  "writeLines":    ckFsWrite,
+  "removeFile":    ckFsWrite,
+  "removeDir":     ckFsWrite,
+  "createDir":     ckFsWrite,
+  "moveFile":      ckFsWrite,
+  "copyFile":      ckFsWrite,
+  # OS processes
+  "startProcess":  ckProcess,
+  "execProcess":   ckProcess,
+  "execShellCmd":  ckProcess,
+  "execCmdEx":     ckProcess,
+  # Chronos network transports — most-common entry points
+  "connect":       ckNetwork,
+  "dial":          ckNetwork,
+  "bindAddress":   ckNetwork,
+  "createStreamServer":  ckNetwork,
+  "createDatagramServer": ckNetwork,
+  # fresco internal — state mutation that bypasses tracking
+  "setUntracked":  ckStateMut,
+}.toTable
+
+proc rightmostIdent(n: NimNode): string =
+  ## For a callee node, return the rightmost identifier — the actual
+  ## method/proc name being called. Handles `foo`, `mod.foo`,
+  ## `obj.foo`, `mod.sub.foo`. Returns empty string for unusual
+  ## shapes the inference table won't match anyway.
+  case n.kind
+  of nnkIdent, nnkSym, nnkOpenSymChoice, nnkClosedSymChoice:
+    n.repr
+  of nnkDotExpr:
+    if n.len >= 2: rightmostIdent(n[1]) else: ""
+  of nnkBracketExpr:
+    # Generic instantiation like `foo[T]` — recurse into the symbol.
+    if n.len >= 1: rightmostIdent(n[0]) else: ""
+  else:
+    ""
+
+proc collectInferredCaps(body: NimNode, found: var CapSet) =
+  ## Walk `body` recursively. For each call/command node, check the
+  ## callee's rightmost identifier against the inference table; OR
+  ## the matched cap into `found`. The walk is structural (untyped
+  ## AST) and uses `repr` matching — aliased/wrapped primitives are
+  ## NOT detected and the user must fall back to manual `{.needs.}`.
+  if body == nil: return
+  case body.kind
+  of nnkCall, nnkCommand, nnkInfix, nnkPrefix:
+    if body.len >= 1:
+      let name = rightmostIdent(body[0])
+      if name.len > 0 and name in inferenceTable:
+        found = found or capBit(inferenceTable[name])
+    # Recurse into the call's arguments.
+    for i in 1 ..< body.len: collectInferredCaps(body[i], found)
+  else:
+    for child in body: collectInferredCaps(child, found)
+
+macro inferCaps*(procDef: untyped): untyped =
+  ## **Macro pragma** that infers capability requirements by AST-walking
+  ## the proc body. Detects calls to known primitives (readFile →
+  ## FsReadCap, startProcess → ProcessCap, etc.) and unions the
+  ## matching caps into `procRequiresTable[procName]` — the same
+  ## table the manual `{.needs: ...}` pragma writes to. Manual and
+  ## inferred annotations compose: the final required set is their
+  ## union.
+  ##
+  ## **Heuristic by design.** Matching is on the callee's rightmost
+  ## identifier (`repr`), so aliased / wrapped primitives are not
+  ## detected. For those cases, declare the cap manually with
+  ## `{.needs: ...}`. The mapping table is hardcoded for v1 (open
+  ## extension as real consumers surface needs).
+  ##
+  ## **Pragma ordering**: place `{.inferCaps.}` BEFORE `{.async.}`
+  ## in the pragma list so this macro sees the user's body, not
+  ## the chronos-transformed state machine.
+  let n = nameOfProc(procDef)
+  if n.len == 0: return procDef
+  # Locate the body. ProcDef layout: name, term-rewriting tmpl, generic
+  # params, formal params, pragmas, reserved, body. Body is at index 6.
+  let body = if procDef.len >= 7: procDef[6] else: newEmptyNode()
+  var inferred: CapSet = 0
+  collectInferredCaps(body, inferred)
+  if inferred == 0'u64:
+    # No primitives detected — emit nothing extra, return the proc unchanged.
+    return procDef
+  let nameLit = newLit(n)
+  let bitsLit = newLit(inferred)
+  # Emit a static block that OR's the inferred bits into any existing
+  # procRequiresTable entry (so {.needs.} + {.inferCaps.} compose as
+  # union regardless of pragma order).
+  # The emitted expression is:
+  #   setProcRequires(name, getOrDefault(procRequiresTable, name, 0) or
+  #                         <inferredBits>)
+  # `getOrDefault` (from std/tables) returns 0 for an absent key,
+  # which is the right zero element for union with bitwise-or.
+  result = newStmtList(
+    nnkStaticStmt.newTree(
+      newStmtList(
+        newCall(bindSym"setProcRequires",
+                nameLit,
+                infix(
+                  newCall(bindSym"getOrDefault",
+                          bindSym"procRequiresTable",
+                          nameLit, newLit(0'u64)),
+                  "or", bitsLit)))),
+    procDef)
+
 macro needs*(caps, procDef: untyped): untyped =
   ## **Macro pragma** attaching a compile-time required-capability
   ## set to a proc declaration. Used with the tuple form so multiple
