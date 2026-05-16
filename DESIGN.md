@@ -223,6 +223,50 @@ Not tier-bundled — each lands when there's reason to pull it.
 
 ---
 
+## Concurrency model
+
+fresco runs on a **single chronos dispatcher per process**. Multiple
+runtime invariants assume this:
+
+- `currentScope` / `currentSpeculative` / `parallelCollector` are
+  chronos `contextVar`s. The dispatcher captures and restores their
+  bindings at every callback site (see chronos's
+  `userCallback`/`processCallbacks`). Two dispatchers would each
+  carry their own contextvar storage and step on each other.
+- `typeMarker[T]` (in `reactive/context.nim`) lazy-initializes on
+  first touch. Two threads touching the same marker before init
+  finishes is a classic torn-init race.
+- The animation frame clock (`reactive/animation.nim`) stores its
+  scheduler list as a threadvar. Tweens issued from non-dispatcher
+  threads silently don't tick.
+- The POSIX signal handler stack (`terminal/termios.nim`) restores
+  termios via the thread that called `installSignalHandlers`.
+  Signals delivered to other threads leave terminal state raw.
+- The persistent journal's `File.write` / `flushFile` /
+  `moveFile` are not thread-safe at the OS level; concurrent
+  writes from two threads silently corrupt the file.
+
+The first four are documented per-module limits. The last one —
+silent on-disk corruption — gets a runtime guardrail:
+
+**`assertDispatcherThread()`** (in `fresco/concurrency.nim`) stamps
+the first calling thread as fresco's dispatcher via a process-global
+atomic CAS, and raises `MultiDispatcherDefect` on calls from any
+other thread. `PersistentJournal`'s `onPersist`,
+`onSnapshotAppended`, and `compactBefore` call it before touching
+the file. `MultiDispatcherDefect` is a Defect (not CatchableError)
+by design: the invariant violation is a programmer error meant to
+crash the process, and Defects propagate through `raises: []`
+constraints so the journal methods can keep their no-raise signatures.
+
+**Multi-dispatcher embedding is not supported.** A future
+multi-dispatcher mode would need per-dispatcher contextvar storage,
+per-dispatcher animation scheduling, thread-aware signal routing,
+and either a file-lock dance or per-dispatcher journal files —
+substantial work, deferred until a real consumer asks for it.
+
+---
+
 ## Out of scope
 
 - Windows console (POSIX TTYs only in v0-v2; Windows is post-v2.4 if anyone asks)

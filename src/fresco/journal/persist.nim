@@ -18,6 +18,7 @@
 import std/[json, options, os, tables, times]
 import ./events
 import ./log
+import ../concurrency
 
 const
   JournalSchemaVersion* = 4
@@ -272,6 +273,9 @@ method compactBefore*(j: PersistentJournal, cutoff: EventId)
   ## rewrite the on-disk file as
   ## `[snapshot-frames..., remaining-events]`. Uses temp file +
   ## rename so a crash mid-compaction leaves the original intact.
+  ##
+  ## Single-dispatcher invariant — see DESIGN.md (Concurrency model).
+  assertDispatcherThread()
   {.cast(gcsafe).}:
     # Inline the base-class fold (procCall through method dispatch is
     # fragile; same shape as log.compactBefore).
@@ -327,6 +331,9 @@ method onSnapshotAppended*(j: PersistentJournal, s: Snapshot)
   ## Flush a snapshot frame to disk so multi-snapshot history (#49)
   ## survives reopens. Same one-shot write-failure diagnostic shape
   ## as `onPersist`.
+  ##
+  ## Single-dispatcher invariant — see DESIGN.md (Concurrency model).
+  assertDispatcherThread()
   {.cast(gcsafe).}:
     if j.file == nil: return
     try:
@@ -342,10 +349,15 @@ method onSnapshotAppended*(j: PersistentJournal, s: Snapshot)
         except IOError: discard
 
 method onPersist*(j: PersistentJournal, e: Event) {.gcsafe, raises: [].} =
+  # Single-dispatcher invariant — see DESIGN.md (Concurrency model).
+  # `cast(gcsafe)` below is unconditionally accepted by the checker,
+  # so without this runtime stamp a multi-thread host could silently
+  # corrupt the on-disk journal by writing from two threads.
+  assertDispatcherThread()
   # cast(gcsafe): `File.write` and `flushFile` aren't proven gcsafe by
   # Nim's checker (they touch process-wide stdio state via the FILE*).
-  # The cast is local to the write; fresco is single-dispatcher so
-  # there's no real shared-state race.
+  # The cast is local to the write; the assertDispatcherThread above
+  # turns the otherwise-silent multi-thread case into a loud Defect.
   {.cast(gcsafe).}:
     if j.file == nil: return
     try:

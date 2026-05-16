@@ -44,6 +44,7 @@ task test, "run all tests":
     "tests/unit/test_collection.nim",
     "tests/unit/test_static_graph.nim",
     "tests/unit/test_capabilities.nim",
+    "tests/unit/test_concurrency.nim",
     "tests/unit/test_capset.nim",
     "tests/unit/test_static_supervisor.nim",
     "tests/unit/test_register_cap.nim",
