@@ -8,7 +8,7 @@ import fresco/reactive/capset
 
 type Phantom[Caps: static[CapSet]] = ref object
 
-suite "capset: type-identity by static[uint64] value":
+suite "capset: type-identity by static[CapSet] value":
 
   test "same value, different expression → same type":
     type P1 = Phantom[capBit(ckFsRead) or capBit(ckNetwork)]
@@ -33,7 +33,7 @@ suite "capset: type-identity by static[uint64] value":
     type Pe = Phantom[EmptyCaps]
     type P1 = Phantom[capBit(ckFsRead)]
     check not (Pe is P1)
-    type Pe2 = Phantom[0'u64]
+    type Pe2 = Phantom[EmptyCaps]    # canonical empty — width-agnostic
     check (Pe is Pe2)
 
 suite "capset: set operations":
@@ -62,4 +62,4 @@ suite "capset: set operations":
     const provided = capBit(ckFsRead)
     check missing(required, provided) ==
           (capBit(ckNetwork) or capBit(ckProcess))
-    check missing(required, required) == 0'u64
+    check missing(required, required) == EmptyCaps

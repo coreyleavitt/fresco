@@ -22,10 +22,14 @@ proc connect(host: string, port: int) = discard
 # compile time; this helper extracts the value into a const so the
 # test can assert against it.)
 macro requiresOf(name: static[string]): CapSet =
-  if name in procRequiresTable:
-    newLit(procRequiresTable[name])
-  else:
-    newLit(0'u64)
+  ## Emit a CapSet literal — hand-built since `distinct array`
+  ## doesn't pass through `newLit`.
+  let s =
+    if name in procRequiresTable: procRequiresTable[name]
+    else: EmptyCaps
+  var arr = newNimNode(nnkBracket)
+  for w in s.words: arr.add newLit(w)
+  newCall(bindSym"CapSet", arr)
 
 suite "inferCaps: primitive detection":
 
@@ -49,7 +53,7 @@ suite "inferCaps: primitive detection":
       var x = 0
       for i in 1 .. 10: x += i
       discard x
-    check requiresOf("pureWork") == 0'u64
+    check requiresOf("pureWork") == EmptyCaps
 
   test "{.needs.} + {.inferCaps.} compose as union":
     # Manual needs FsReadCap; body writes a file → union should
@@ -81,4 +85,4 @@ suite "inferCaps: primitive detection":
       let myRead = readFile
       discard myRead("conf.toml")
     # No cap inferred — this is the documented heuristic limit.
-    check requiresOf("aliasedRead") == 0'u64
+    check requiresOf("aliasedRead") == EmptyCaps

@@ -30,6 +30,9 @@
 import std/[macros, strutils, tables]
 import ./context
 import ./capset
+export capset    ## CapSet, CapKind, ops — users importing capabilities
+                 ## need the operator overloads for `or` / `==` to
+                 ## flow through the emitted macro code.
 
 type
   FsReadCap*    = ref object   ## read from local filesystem
@@ -60,7 +63,7 @@ var nextUserSlot {.compileTime.}: int = ord(ckUser0)
   ## Monotonic counter shared across the compilation unit (Nim's
   ## `{.compileTime.}` var storage is process-global, not
   ## per-module). Advances by 1 on each `registerCap T` call from
-  ## any module. Slot exhaustion past `ckUser57` is a compile
+  ## any module. Slot exhaustion past `ckUser249` is a compile
   ## error.
 
 var registeredCapTypes {.compileTime.}: seq[string]
@@ -99,11 +102,11 @@ macro registerCap*(T: typed): untyped =
     error("registerCap: type `" & T.repr & "` is already registered " &
           "— each capability type may be registered at most once " &
           "per compilation unit", T)
-  if nextUserSlot > ord(ckUser57):
-    error("registerCap: all 58 ckUserN slots are exhausted — " &
+  if nextUserSlot > ord(ckUser249):
+    error("registerCap: all 250 ckUserN slots are exhausted — " &
           "this module has registered too many user capabilities " &
           "(built-in caps occupy ckFsRead..ckStateMut; the bitmap " &
-          "ceiling is 64 bits)", T)
+          "ceiling is " & $(CapSetWords * 64) & " bits)", T)
   registeredCapTypes.add key
   let slot = CapKind(nextUserSlot)
   inc nextUserSlot
@@ -153,12 +156,20 @@ proc capNodesOf(caps: NimNode): seq[NimNode] =
   else:
     result.add caps
 
+proc capSetLit(s: CapSet): NimNode =
+  ## Emit AST for a literal CapSet value. `distinct array[N, uint64]`
+  ## doesn't pass through `newLit` directly, so we hand-build the
+  ## `CapSet([w0, w1, ...])` shape.
+  var arr = newNimNode(nnkBracket)
+  for w in s.words: arr.add newLit(w)
+  newCall(bindSym"CapSet", arr)
+
 proc bitsExpr(capNodes: seq[NimNode]): NimNode =
   ## Build the AST for `capBit(capKindFor(T0)) or capBit(capKindFor(T1)) or ...`
   ## — defers cap-name resolution to Nim's overload-resolution on
   ## `capKindFor`, so any user-registered cap with a `capKindFor`
   ## overload in scope works without special-casing in the macros.
-  if capNodes.len == 0: return newLit(0'u64)
+  if capNodes.len == 0: return bindSym"EmptyCaps"
   result = nil
   for c in capNodes:
     let term = quote do:
@@ -256,13 +267,13 @@ macro inferCaps*(procDef: untyped): untyped =
   # Locate the body. ProcDef layout: name, term-rewriting tmpl, generic
   # params, formal params, pragmas, reserved, body. Body is at index 6.
   let body = if procDef.len >= 7: procDef[6] else: newEmptyNode()
-  var inferred: CapSet = 0
+  var inferred: CapSet = EmptyCaps
   collectInferredCaps(body, inferred)
-  if inferred == 0'u64:
+  if inferred == EmptyCaps:
     # No primitives detected — emit nothing extra, return the proc unchanged.
     return procDef
   let nameLit = newLit(n)
-  let bitsLit = newLit(inferred)
+  let bitsLit = capSetLit(inferred)
   # Emit a static block that OR's the inferred bits into any existing
   # procRequiresTable entry (so {.needs.} + {.inferCaps.} compose as
   # union regardless of pragma order).
@@ -279,7 +290,7 @@ macro inferCaps*(procDef: untyped): untyped =
                 infix(
                   newCall(bindSym"getOrDefault",
                           bindSym"procRequiresTable",
-                          nameLit, newLit(0'u64)),
+                          nameLit, bindSym"EmptyCaps"),
                   "or", bitsLit)))),
     procDef)
 
@@ -361,7 +372,7 @@ proc collectProvidesExprs(body: NimNode): seq[NimNode] =
 
 proc orAll(exprs: openArray[NimNode]): NimNode =
   ## Build the AST for `a or b or c or ...` over a list of expressions.
-  if exprs.len == 0: return newLit(0'u64)
+  if exprs.len == 0: return bindSym"EmptyCaps"
   result = exprs[0]
   for i in 1 ..< exprs.len:
     result = infix(result, "or", exprs[i])
@@ -397,7 +408,7 @@ proc dischargeSupervisorBlock(body, ancestorProvidedExpr: NimNode,
       # (the `static:` block from `{.needs.}` ran during sem in
       # declaration order, before the staticSupervisor macro). Emit
       # a CT discharge check against the provided expression.
-      let requiredLit = newLit(procRequiresTable[name])
+      let requiredLit = capSetLit(procRequiresTable[name])
       let nameLit = newLit(name)
       checks.add quote do:
         when not isSubsetOf(`requiredLit`, `effectiveExpr`):
@@ -440,7 +451,7 @@ macro staticSupervisor*(body: untyped): untyped =
   # generic parameter.
   let topProvidedExpr = orAll(collectProvidesExprs(body))
   var checks: seq[NimNode] = @[]
-  dischargeSupervisorBlock(body, newLit(0'u64), checks)
+  dischargeSupervisorBlock(body, bindSym"EmptyCaps", checks)
   result = newStmtList()
   for c in checks: result.add c
   result.add quote do:
