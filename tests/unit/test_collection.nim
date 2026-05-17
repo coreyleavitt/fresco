@@ -106,6 +106,48 @@ suite "CollectionSignal":
     check sumA == 10
     check sumB == 10
 
+  test "#68-family: N>=3 delta handlers all fire on push":
+    # Sibling of #68's Signal-observer fix at the deltaObservers
+    # site. `fanout` uses the same snapshot-then-iterate-while-
+    # callbacks-may-mutate pattern that needed fixing for
+    # Signal.observers — N=3 ensures we exercise the same regime.
+    let c = collection[int]()
+    var seenA, seenB, seenC = 0
+    discard createRoot:
+      onDelta(c, proc(d: Delta[int]) =
+        if d.kind == dkInsert: seenA = d.insertVal)
+      onDelta(c, proc(d: Delta[int]) =
+        if d.kind == dkInsert: seenB = d.insertVal)
+      onDelta(c, proc(d: Delta[int]) =
+        if d.kind == dkInsert: seenC = d.insertVal)
+    c.push(42)
+    check seenA == 42
+    check seenB == 42
+    check seenC == 42
+
+  test "#68-family: delta handler that disposes a sibling scope doesn't break iteration":
+    # A handler disposes a sibling scope. The sibling's onCleanup
+    # runs immediately, calling `captured.deltaObservers.del idx`
+    # — this mutates the live deltaObservers list while `fanout`
+    # is iterating. The remaining handlers must still fire.
+    let c = collection[int]()
+    var aFired, cFired = 0
+    var bScope: Scope
+    let root = createRoot:
+      onDelta(c, proc(d: Delta[int]) =
+        inc aFired
+        dispose(bScope))             # ← removes B's handler mid-fanout
+      bScope = newScope(parent = currentScope)
+      withScope(bScope):
+        onDelta(c, proc(d: Delta[int]) =
+          discard d)                  # B's body; B itself fires this cycle
+      onDelta(c, proc(d: Delta[int]) =
+        inc cFired)
+    c.push(1)
+    check aFired == 1
+    check cFired == 1                 # C must still fire after B was disposed
+    dispose(root)
+
   test "plain reactive observers re-fire on collection changes":
     # Regression: CollectionSignal previously wasn't Subscribable and
     # never called notify(), so `createEffect` / `bindRows` reading

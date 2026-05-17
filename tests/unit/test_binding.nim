@@ -53,6 +53,27 @@ suite "bindRow":
     label.set("beta")
     check r.target[0] == "alpha"   # frozen at last value
 
+  test "#68 regression: N>=3 bindRows on one signal all emit visibly":
+    # The issue reporter's exact shape — three regions, three
+    # bindRow effects observing one signal, signal write, paint,
+    # flush bytes contain ALL three updated values. Pre-fix only
+    # the first observer's setRow made it through.
+    let s = newScreen(5, 20)
+    let r1 = newRegion(s, 0, 0, 1, 20)
+    let r2 = newRegion(s, 1, 0, 1, 20)
+    let r3 = newRegion(s, 2, 0, 1, 20)
+    let sig = signal("a")
+    discard createRoot:
+      bindRow r1, 0: "r1:" & sig()
+      bindRow r2, 0: "r2:" & sig()
+      bindRow r3, 0: "r3:" & sig()
+    discard s.flush()                   # drain initial paint
+    sig.set("b")
+    let after = s.flush()
+    check after.contains("r1:b")
+    check after.contains("r2:b")
+    check after.contains("r3:b")        # ← the assertion that failed pre-fix
+
   test "multiple bindRow on same region run independently":
     let s = newScreen(5, 20)
     let r = newRegion(s, 0, 0, 3, 20)

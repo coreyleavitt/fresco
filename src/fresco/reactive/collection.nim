@@ -178,8 +178,28 @@ proc fanout[T](c: CollectionSignal[T], d: Delta[T]) =
   ## observers. No journaling — the caller decides which event
   ## (`ekCollectionDelta` per forward op, `ekCollectionRollback`
   ## once per rolled-back collection) to write.
-  let snap = c.deltaObservers
-  for h in snap:
+  ##
+  ## Explicit-copy snapshot defeats Nim's cursor inference. A
+  ## handler body that triggers deregistration (e.g. a sibling
+  ## scope's onCleanup calling `c.deltaObservers.del idx`) mutates
+  ## the live seq mid-fanout; an aliased snapshot would corrupt
+  ## the in-progress iteration. Per-handler `add` materializes a
+  ## genuine independent buffer.
+  # Iterate by index over the deltaObservers, capturing startLen once.
+  # Defeats Nim's cursor-inference hazard where `let snap =
+  # c.deltaObservers` becomes a non-retaining cursor of the live seq:
+  # a handler that triggers deregistration (e.g. via a sibling
+  # scope's onCleanup calling `c.deltaObservers.del idx`) would
+  # corrupt the iteration. Bounds-check on every step so a `del`
+  # that shifts the live seq doesn't run us past valid indices —
+  # mid-fanout deregistration skips not-yet-fired handlers (matching
+  # the Signal.observers RCU contract: structural mutations during
+  # notify apply on subsequent cycles).
+  let startLen = c.deltaObservers.len
+  var i = 0
+  while i < c.deltaObservers.len and i < startLen:
+    let h = c.deltaObservers[i]
+    inc i
     try: h(d)
     except Exception: discard
       # User-supplied delta handler — same swallow rationale as

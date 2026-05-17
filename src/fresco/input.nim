@@ -74,9 +74,15 @@ proc runFilters(s: InputStream, ev: KeyEvent): bool {.gcsafe.} =
   ## Walk filters in registration order. First filter that returns
   ## true consumes the event; the rest don't see it.
   ##
-  ## The list is *snapshotted* before iteration: a filter body that
-  ## disposes its registering scope (and therefore calls removeFilter)
-  ## mid-loop would otherwise corrupt index-based iteration.
+  ## Iterate by index with `startLen` captured once. The previous
+  ## `let snap = s.filters` form was vulnerable to Nim 2.x cursor
+  ## inference making `snap` a non-retaining alias of the live seq;
+  ## a filter that disposes a sibling scope synchronously triggers
+  ## `removeFilter` mid-loop, mutating the live seq, and an aliased
+  ## snapshot then skipped remaining filters. Bounds-check on every
+  ## step so mid-loop deregistration that shifts entries doesn't
+  ## walk past valid indices. Matches the iteration discipline in
+  ## `notify` / `fanout`.
   ##
   ## Filter exceptions are caught + logged to stderr (a stderr write
   ## from inside the input dispatcher is acceptable as a developer
@@ -84,8 +90,11 @@ proc runFilters(s: InputStream, ev: KeyEvent): bool {.gcsafe.} =
   ## try/except). The exception does NOT propagate out of the read
   ## callback — chronos's onReadable is `{.raises: [].}`.
   {.cast(gcsafe).}:
-    let snap = s.filters
-    for entry in snap:
+    let startLen = s.filters.len
+    var i = 0
+    while i < s.filters.len and i < startLen:
+      let entry = s.filters[i]
+      inc i
       try:
         if entry.fn(ev):
           return true

@@ -48,6 +48,30 @@ suite "scope":
     dispose(p)
     check log == @["child", "parent"]
 
+  test "#68-family: dispose cascades through N>=3 children, every cleanup runs":
+    # Sibling of the #68 family. scope.dispose does `let childSnap =
+    # s.children; s.children.setLen(0); for i in countdown(...):
+    # dispose(childSnap[i])` — a snapshot-then-clear-then-iterate
+    # pattern. If cursor inference made childSnap an alias of
+    # s.children, the `setLen(0)` would zero its length and the
+    # for-loop would skip every child's dispose entirely.
+    var rootRan = false
+    var c0Ran, c1Ran, c2Ran = false
+    let root = newScope()
+    withScope(root):
+      onCleanup proc() = rootRan = true
+      let c0 = newScope(root)
+      withScope(c0): onCleanup proc() = c0Ran = true
+      let c1 = newScope(root)
+      withScope(c1): onCleanup proc() = c1Ran = true
+      let c2 = newScope(root)
+      withScope(c2): onCleanup proc() = c2Ran = true
+    dispose(root)
+    check c0Ran
+    check c1Ran
+    check c2Ran
+    check rootRan
+
   test "createRoot returns a usable disposable scope":
     var ran = false
     let root = createRoot:
@@ -152,6 +176,82 @@ suite "createEffect":
     check seenVals == @["a", "A", "b"]
     b.set("B")
     check seenVals == @["a", "A", "b", "B"]
+
+suite "createEffect: shared-signal reentrancy":
+
+  test "#68 regression: N>=3 observers on one signal all re-fire on write":
+    # Reactive substrate must allow N observers on one signal; every
+    # observer's body re-runs on every write. Under ORC cursor
+    # inference, the snapshot-then-iterate-while-mutating pattern in
+    # `notify` aliased the live observer list and silently dropped
+    # the trailing observers — only the first two re-fired on N>=3.
+    # Reproduces at N=3; would have stayed hidden at N=2 because
+    # seq.del's swap-delete happens to round-trip correctly for two.
+    var out1, out2, out3: string
+    let sig = signal("a")
+    discard createRoot:
+      createEffect proc() = out1 = "1:" & sig()
+      createEffect proc() = out2 = "2:" & sig()
+      createEffect proc() = out3 = "3:" & sig()
+    check out1 == "1:a" and out2 == "2:a" and out3 == "3:a"
+    sig.set("b")
+    check out1 == "1:b"
+    check out2 == "2:b"
+    check out3 == "3:b"           # ← the assertion that failed pre-fix
+    sig.set("c")
+    check out1 == "1:c" and out2 == "2:c" and out3 == "3:c"
+
+  test "observer that adds a new observer fires next cycle, not this one":
+    # Contract: structural mutations to the observer set during a
+    # notify cycle are visible on subsequent cycles, never the
+    # current one. Encoded in StableIterSeq.iterRO.
+    var sig = signal(0)
+    var initialRuns = 0
+    var newObserverRuns = 0
+    discard createRoot:
+      createEffect proc() =
+        discard sig()
+        inc initialRuns
+        if initialRuns == 2:
+          # second run of the initial observer adds a new observer
+          createEffect proc() =
+            discard sig()
+            inc newObserverRuns
+    check initialRuns == 1
+    sig.set(1)                    # triggers initial-observer rerun
+    # The newly-created observer ran once on its own creation
+    # (createEffect always invokes the body immediately), but it
+    # should NOT have been included in the current notify cycle.
+    check initialRuns == 2
+    check newObserverRuns == 1    # only the initial-creation run
+
+  test "observer that disposes itself during run doesn't break siblings":
+    let sig = signal(0)
+    var aRuns, bRuns, cRuns = 0
+    var aScope: Scope
+    let root = createRoot:
+      aScope = newScope(parent = currentScope)
+      withScope(aScope):
+        createEffect proc() =
+          discard sig()
+          inc aRuns
+          if aRuns >= 2: dispose(aScope)
+      createEffect proc() =
+        discard sig()
+        inc bRuns
+      createEffect proc() =
+        discard sig()
+        inc cRuns
+    check aRuns == 1 and bRuns == 1 and cRuns == 1
+    sig.set(1)                    # a disposes itself; b and c must still fire
+    check aRuns == 2
+    check bRuns == 2
+    check cRuns == 2
+    sig.set(2)                    # a is disposed; b and c continue
+    check aRuns == 2              # frozen
+    check bRuns == 3
+    check cRuns == 3
+    dispose(root)
 
 suite "createComputed":
 

@@ -1,0 +1,169 @@
+From: Corey Leavitt <corey@knurl.io>
+Date: 2026-05-17
+Subject: [PATCH] arc/orc: re-entry guard in destroy + decref paths
+
+The destructor for a cell participating in a reference cycle may, while
+running, trigger a decref of a back-edge that lands on the same cell.
+With the cell's rc at zero at destructor entry, that back-edge decref
+satisfies `(cell.rc and not rcMask) == 0` again and the static-decref
+fast path returns `result = true`, prompting the caller to invoke
+`nimDestroyAndDispose` on the cell a second time. Recursion through the
+destructor chain follows, blowing the stack.
+
+Minimal repro (vanilla Nim 2.x, --mm:arc or --mm:orc, no third-party):
+
+  type
+    Sub = ref object
+      items: seq[Comp]
+    Comp = ref object
+      sources: seq[Sub]
+    Scope = ref object
+      cleanups: seq[proc() {.closure.}]
+  var currentScope: Scope
+  template withScopeBlock(s: Scope, body: untyped) =
+    let prev = currentScope; currentScope = s
+    try: body
+    finally: currentScope = prev
+  proc dispose(s: Scope) = (for cb in s.cleanups: cb())
+  template trackedSim(sig: Sub) =
+    let comp = Comp()
+    sig.items.add comp; comp.sources.add sig
+    currentScope.cleanups.add proc() =
+      for src in comp.sources:
+        let i = src.items.find(comp)
+        if i >= 0: src.items.del(i)
+      comp.sources.setLen(0)
+  block:
+    let scope = Scope()
+    withScopeBlock(scope):
+      let sig = Sub(); trackedSim sig
+    dispose(scope)
+  block:
+    let scope = Scope()
+    withScopeBlock(scope):
+      let sig = Sub(); trackedSim sig
+    discard $99
+
+Crashes with "call depth limit reached" in nimDestroyAndDispose
+recursion via nimDecRefIsLastCyclicStatic.
+
+Fix: reserve a high bit of the rc word as a "destroying" flag. Set on
+entry to nimDestroyAndDispose; honored by all four decref entry points
+(nimDecRefIsLast, nimDecRefIsLastDyn, nimDecRefIsLastCyclicDyn,
+nimDecRefIsLastCyclicStatic) as "cell is dying, no-op." Flag lives in
+the upper rc bits, above rcCount; never aliases rcMask, never
+interferes with refcount arithmetic. Never cleared because the cell is
+deallocated by nimRawDispose at the end of nimDestroyAndDispose — its
+memory is gone before any reader could be confused by the marker.
+--- a/lib/system/arc.nim
++++ b/lib/system/arc.nim
+@@ -29,6 +29,17 @@
+     rcShift = 3      # shift by rcShift to get the reference counter
+ 
+ const
++  destroyingFlag = 1 shl (sizeof(int) * 8 - 3)
++    ## Re-entry guard for nimDestroyAndDispose. Set on a cell's rc
++    ## word at destroy entry; honored by all decref entry points as
++    ## "cell is dying, no-op." Lives above rcCount, so never aliases
++    ## rcMask or interferes with refcount arithmetic. Never cleared
++    ## because the cell is freed at destroy exit before any reader
++    ## could observe it. Fixes back-edge cycle-destruction recursion
++    ## in observer-pattern types (Sub.items[seq[Comp]] <->
++    ## Comp.sources[seq[Sub]]).
++
++const
+   orcLeakDetector = defined(nimOrcLeakDetector)
+ 
+ type
+@@ -216,6 +227,13 @@
+ #proc dispose*(x: pointer) = nimRawDispose(x)
+ 
+ proc nimDestroyAndDispose(p: pointer) {.compilerRtl, quirky, raises: [].} =
++  # Re-entry guard: a back-edge decref inside the destructor body may
++  # bring this cell's rc back to (apparent) zero and trigger a second
++  # destroy. Set destroyingFlag on entry; decref entry points refuse
++  # to recurse on a cell already marked.
++  let cell0 = head(p)
++  if (cell0.rc and destroyingFlag) != 0: return
++  cell0.rc = cell0.rc or destroyingFlag
+   let rti = cast[ptr PNimTypeV2](p)
+   if rti.destructor != nil:
+     cast[DestructorProc](rti.destructor)(p)
+@@ -239,6 +257,7 @@
+   result = false
+   if p != nil:
+     var cell = head(p)
++    if (cell.rc and destroyingFlag) != 0: return    # cell already dying
+ 
+     when defined(nimArcDebug):
+       if cell.refId == traceId:
+--- a/lib/system/orc.nim
++++ b/lib/system/orc.nim
+@@ -99,6 +99,14 @@
+ 
+   when logOrc: writeCell("free", s, desc)
+ 
++  # Re-entry guard: the destructor's body may decref back-edges that
++  # land on this same cell via the cycle. Without the flag set,
++  # those decrefs trip the rc-zero check again and try to destroy
++  # this cell a second time. Set destroyingFlag before invoking the
++  # destructor; decref entry points honor it as "cell is dying, no-op."
++  # Mirrors the guard in nimDestroyAndDispose (in arc.nim).
++  s.rc = s.rc or destroyingFlag
++
+   if desc.destructor != nil:
+     cast[DestructorProc](desc.destructor)(p)
+ 
+@@ -364,10 +372,27 @@
+     rootsThreshold = high(int)
+   roots.len = 0
+ 
++  # Two-phase free: destructors first (with destroyingFlag set so back-
++  # edge decrefs are no-ops), then deallocate. The original loop
++  # destruct-then-dispose'd each cell in sequence, which segfaulted
++  # when cell[k]'s destructor decref'd a back-edge into cell[<k] whose
++  # memory had already been released by nimRawDispose. Splitting
++  # ensures all toFree cells remain allocated (but flagged as dying)
++  # for the entire destructor phase.
+   for i in 0 ..< j.toFree.len:
+     when orcLeakDetector:
+       writeCell("CYCLIC OBJECT FREED", j.toFree.d[i][0], j.toFree.d[i][1])
+-    free(j.toFree.d[i][0], j.toFree.d[i][1])
++    let s = j.toFree.d[i][0]
++    let desc = j.toFree.d[i][1]
++    s.rc = s.rc or destroyingFlag
++    if desc.destructor != nil:
++      let p = cast[pointer](cast[int](s) +% sizeof(RefHeader))
++      cast[DestructorProc](desc.destructor)(p)
++  for i in 0 ..< j.toFree.len:
++    let s = j.toFree.d[i][0]
++    let desc = j.toFree.d[i][1]
++    let p = cast[pointer](cast[int](s) +% sizeof(RefHeader))
++    nimRawDispose(p, desc.align)
+ 
+   when not defined(nimStressOrc):
+     rootsThreshold = oldThreshold
+@@ -518,6 +543,7 @@
+   result = false
+   if p != nil:
+     var cell = head(p)
++    if (cell.rc and destroyingFlag) != 0: return    # cell already dying
+     if (cell.rc and not rcMask) == 0:
+       result = true
+       #cprintf("[DESTROY] %p\n", p)
+@@ -530,6 +556,7 @@
+   result = false
+   if p != nil:
+     var cell = head(p)
++    if (cell.rc and destroyingFlag) != 0: return    # cell already dying
+     if (cell.rc and not rcMask) == 0:
+       result = true
+       #cprintf("[DESTROY] %p\n", p)
+@@ -544,6 +571,7 @@
+   result = false
+   if p != nil:
+     var cell = head(p)
++    if (cell.rc and destroyingFlag) != 0: return    # cell already dying
+     if (cell.rc and not rcMask) == 0:
+       result = true
+       #cprintf("[DESTROY] %p %s\n", p, desc.name)

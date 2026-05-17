@@ -122,6 +122,45 @@ suite "hotkey":
       dispose(scopeB)
     waitFor body()
 
+  test "#68-family: N>=3 filters; middle disposal during one's dispatch":
+    # Sibling of the #68 cursor-inference hazard at the
+    # InputStream.filters site. Three hotkeys on DIFFERENT keys
+    # (so they don't consume each other). A's body disposes B's
+    # scope synchronously, removing B's filter mid-dispatch. We
+    # then send keys that should fire C and confirm C still fires
+    # — i.e. C's filter wasn't corrupted off the list by B's
+    # mid-iteration removal.
+    var firedA, firedC = 0
+    proc body() {.async: (raises: [Exception]).} =
+      let (master, slave) = openPtyPair()
+      let stream = newInputStream(slave)
+      fresco_input.start(stream)
+      defer:
+        fresco_input.stop(stream)
+        discard close(master)
+        discard close(slave)
+      let scopeA = newScope()
+      let scopeB = newScope()
+      let scopeC = newScope()
+      withScope(scopeA):
+        hotkey stream, ctrlKey('q'):
+          inc firedA
+          dispose(scopeB)             # ← removes B's filter mid-dispatch
+      withScope(scopeB):
+        hotkey stream, ctrlKey('w'):
+          discard                       # never fires; gets disposed
+      withScope(scopeC):
+        hotkey stream, ctrlKey('e'):
+          inc firedC
+      writeAll(master, "\x11")           # Ctrl-Q → A fires, disposes B
+      await sleepAsync(30.milliseconds)
+      writeAll(master, "\x05")           # Ctrl-E → C must still fire
+      await sleepAsync(30.milliseconds)
+      check firedA == 1
+      check firedC == 1
+      dispose(scopeA); dispose(scopeC)
+    waitFor body()
+
   test "multiple hotkeys coexist; only matching one fires":
     var firedQ = false
     var firedH = false
