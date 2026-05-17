@@ -244,17 +244,52 @@ proc start*(s: InputStream) =
     raise
 
 proc nextKey*(s: InputStream): Future[KeyEvent] {.async.} =
+  ## **Cancel-safe** (#71): if a `CancelledError` arrives after the
+  ## inner `queue.get()` has already dequeued an event but before
+  ## this proc returns it, the event is pushed back to the queue so
+  ## the next `nextKey` call retrieves it. Without this, the
+  ## multi-source `receive:` macro's `finally:` (which calls
+  ## `cancelSoon` on every losing source's nextEvent future) would
+  ## silently drop a byte every time a non-stream arm wins the race.
+  ## Mirrors `Mailbox.nextEvent`'s cancel-safety pattern.
   if s.closed:
     raise newException(InputStreamClosedError, "stream is closed")
   let getFut = s.queue.get()
-  discard await race(FutureBase(getFut), FutureBase(s.closing))
-  if not getFut.finished:
-    # stop() fired; cancel the queue.get and raise.
-    getFut.cancelSoon()
-    raise newException(InputStreamClosedError, "stream closed mid-wait")
-  let ev = getFut.read
-  journalEvent: jrnl.logKeyReceived(taskTid, parentEvt, ev.summary)
-  return ev
+  try:
+    discard await race(FutureBase(getFut), FutureBase(s.closing))
+    if not getFut.finished:
+      # stop() fired; cancel the queue.get and raise.
+      getFut.cancelSoon()
+      raise newException(InputStreamClosedError, "stream closed mid-wait")
+    let ev = getFut.read
+    journalEvent: jrnl.logKeyReceived(taskTid, parentEvt, ev.summary)
+    return ev
+  except CancelledError:
+    # Two scenarios:
+    # (a) `getFut` already finished with an event before cancel
+    #     reached us — requeue inline.
+    # (b) `getFut` is still pending. `chronos.race` documents
+    #     "On cancel futures in `futs` WILL NOT BE cancelled" —
+    #     so cancelling our outer nextKey does NOT propagate to
+    #     `getFut`. It keeps awaiting; when a byte later arrives,
+    #     `popFirst` dequeues it and `getFut` finishes with the
+    #     event — but we've already returned, so the event is
+    #     orphaned. Cancel `getFut` explicitly AND install a
+    #     post-finish callback that requeues whatever value it
+    #     ends up holding (cancelled with value if the byte
+    #     raced in; cancelled without value otherwise).
+    if not getFut.finished:
+      getFut.cancelSoon()
+      let captured = s
+      proc requeue(udata: pointer) {.gcsafe, raises: [].} =
+        if getFut.finished and not getFut.failed:
+          try: captured.queue.putNoWait(getFut.read)
+          except CatchableError: discard
+      getFut.addCallback(requeue)
+    elif not getFut.failed:
+      try: s.queue.putNoWait(getFut.read)
+      except AsyncQueueFullError: inc s.droppedEvents
+    raise
 
 template nextEvent*(s: InputStream): Future[KeyEvent] = s.nextKey()
   ## EventSource protocol conformance (#66). The multi-source

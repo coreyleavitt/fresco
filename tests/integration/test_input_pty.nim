@@ -4,11 +4,13 @@
 ## into the master, and assert the decoded KeyEvents come out the
 ## stream's queue.
 
-import std/unittest
+import std/[unittest, strutils]
 import std/[posix, termios, unicode]
 import chronos
 import fresco/input as fresco_input
 import fresco/events
+import fresco/task/mailbox
+import fresco/task/receive
 
 proc posix_openpt(flags: cint): cint {.importc, header: "<stdlib.h>".}
 proc grantpt(fd: cint): cint           {.importc, header: "<stdlib.h>".}
@@ -145,6 +147,109 @@ suite "InputStream over PTY":
       except CancelledError:
         raised = true
       check raised
+    waitFor body()
+
+  test "#71 tracer: nextKey is cancel-safe — bytes survive cancel + re-issue":
+    # The receive macro's `finally:` calls `cancelSoon` on losing
+    # sources' nextEvent futures. Two failure modes:
+    #   (a) cancel arrives after queue.get already dequeued an event
+    #       → event must be re-queued, not silently lost.
+    #   (b) cancel arrives while queue.get is still waiting. chronos's
+    #       race() doesn't propagate cancellation to children, so the
+    #       inner popFirst keeps running; if a byte arrives later, it
+    #       gets orphaned inside the dropped get-future. Either way
+    #       the byte must be retrievable by the next nextKey.
+    proc body() {.async: (raises: [Exception]).} =
+      withStream:
+        # Cancel-while-pending: nextKey starts with empty queue,
+        # gets cancelled, then a byte arrives. The byte must reach
+        # the next nextKey call.
+        let f = stream.nextKey()
+        f.cancelSoon()
+        try: discard await f
+        except CancelledError: discard
+        writeAll(master, "y")
+        let ev = await stream.nextKey().wait(500.milliseconds)
+        check ev.kind == kChar
+        check ev.rune == Rune('y')
+    waitFor body()
+
+  test "#71 cancel before any byte arrives leaves queue clean — no spurious drops":
+    # Sanity: cancelling a nextKey that never saw a byte (cancel
+    # propagated before any put) must not requeue anything bogus.
+    # The next byte to arrive is delivered intact.
+    proc body() {.async: (raises: [Exception]).} =
+      withStream:
+        let initialDropped = stream.droppedEvents
+        let f = stream.nextKey()
+        f.cancelSoon()
+        try: discard await f
+        except CancelledError: discard
+        await sleepAsync(20.milliseconds)  # let any spurious enqueue settle
+        check stream.droppedEvents == initialDropped
+        writeAll(master, "z")
+        let ev = await stream.nextKey().wait(500.milliseconds)
+        check ev.rune == Rune('z')
+    waitFor body()
+
+  test "#71 restoreEvent: simultaneous receive finish hands the loser back":
+    # Both sources have events ready when `receive` enters: stream
+    # has a queued byte, mailbox has a queued value. Receive picks
+    # one synchronously; the macro's finally calls `restoreEvent`
+    # on the loser. The loser's value must be available for a
+    # subsequent direct nextEvent on it.
+    proc body() {.async: (raises: [Exception]).} =
+      withStream:
+        let m = newMailbox[int]()
+        writeAll(master, "x")
+        await sleepAsync(20.milliseconds)   # ensure byte is queued
+        m.push(42)
+        var picked = ""
+        receive:
+          on stream as ev:
+            Char(c): picked = "stream:" & $c
+          on m as v:
+            picked = "mailbox:" & $v
+        if picked.startsWith("stream"):
+          # mailbox lost; its value must still be retrievable
+          let v = await m.nextEvent()
+          check v == 42
+        else:
+          # stream lost; its byte must still be retrievable
+          let ev = await stream.nextKey().wait(200.milliseconds)
+          check ev.rune == Rune('x')
+    waitFor body()
+
+  test "#71 headline: multi-source receive — stream survives an off-stream wake":
+    # The amoxtli repro pattern: a non-stream source (Mailbox) wins
+    # the multi-source receive; the macro's `finally:` cancels the
+    # stream's nextEvent. A byte typed afterwards must reach a
+    # subsequent receive on the stream.
+    proc body() {.async: (raises: [Exception]).} =
+      withStream:
+        let m = newMailbox[int]()
+        # Wake the mailbox immediately; the byte arrives after.
+        proc driver() {.async.} =
+          await sleepAsync(10.milliseconds); m.push(1)
+          await sleepAsync(20.milliseconds); writeAll(master, "y")
+        asyncSpawn driver()
+        var firstArm = ""
+        receive:
+          on stream as ev:
+            Char(c): firstArm = "stream:" & $c
+            _:       firstArm = "stream-other"
+          on m as _:
+            firstArm = "mailbox"
+        check firstArm == "mailbox"        # mailbox won
+        # Now the byte 'y' arrives mid-second-receive. Pre-fix it
+        # would be orphaned in the cancelled stream-nextEvent.
+        var secondArm = ""
+        receive:
+          on stream as ev:
+            Char(c): secondArm = "char:" & $c
+          after 500.milliseconds:
+            secondArm = "timeout"
+        check secondArm == "char:y"
     waitFor body()
 
   test "bounded queue overflow increments droppedEvents":

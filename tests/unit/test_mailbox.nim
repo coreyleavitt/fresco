@@ -62,6 +62,23 @@ suite "Mailbox: push + nextEvent":
     # nextEvent (if a fresh mailbox is created) wouldn't see this
     # value because the closed mailbox accepts nothing.
 
+  test "#71 sibling: cancel-while-pending doesn't orphan a later push":
+    # chronos race() doesn't propagate cancellation to children.
+    # When `Mailbox.nextEvent` is cancelled mid-wait, its inner
+    # queue.get keeps running; a subsequent push could land in the
+    # orphaned get-future and be silently lost. The cancel handler
+    # must explicitly cancel + requeue.
+    proc body() {.async: (raises: [Exception]).} =
+      let m = newMailbox[int]()
+      let f = m.nextEvent()
+      f.cancelSoon()
+      try: discard await f
+      except CancelledError: discard
+      m.push(42)
+      let v = await m.nextEvent().wait(500.milliseconds)
+      check v == 42
+    waitFor body()
+
   test "nextEvent on already-closed mailbox raises immediately":
     proc body() {.async: (raises: [Exception]).} =
       let m = newMailbox[int]()
