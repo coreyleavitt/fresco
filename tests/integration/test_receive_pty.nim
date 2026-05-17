@@ -6,6 +6,7 @@ import chronos
 import fresco/input as fresco_input
 import fresco/events
 import fresco/task/receive
+import fresco/task/mailbox
 
 import fresco/reactive/scope
 import fresco/journal/log
@@ -53,123 +54,247 @@ template rig(keys: string, body: untyped): string =
 
     waitFor inner()
 
+suite "receive: unified (arm grammar inside on)":
+
+  test "tracer: arm pattern inside on block matches Char('a')":
+    let got = rig("a"):
+      receive:
+        on stream as ev:
+          Char('a'): outcome = "a"
+          _:         outcome = "other"
+    check got == "a"
+
+  test "Char(c) capture binds the rune inside an on block":
+    let got = rig("Q"):
+      receive:
+        on stream as ev:
+          Char(c): outcome = "char:" & $c
+          _:       outcome = "other"
+    check got == "char:Q"
+
+  test "wildcard `_:` inside an on block catches non-enumerated keys":
+    let got = rig("z"):
+      receive:
+        on stream as ev:
+          Char('a'): outcome = "a"
+          _:         outcome = "fallback"
+    check got == "fallback"
+
+  test "modifier-prefix Shift(Tab) inside on block matches CSI Z":
+    let got = rig("\x1b[Z"):
+      receive:
+        on stream as ev:
+          Tab:        outcome = "tab"
+          Shift(Tab): outcome = "shift-tab"
+          _:          outcome = "other"
+    check got == "shift-tab"
+
+  test "after Duration alongside arm-shaped on body":
+    proc inner(): Future[string] {.async: (raises: [Exception]).} =
+      let (master, slave) = openPtyPair()
+      let stream = newInputStream(slave)
+      fresco_input.start(stream)
+      defer:
+        fresco_input.stop(stream)
+        discard close(master); discard close(slave)
+      var outcome = "unset"
+      receive:
+        on stream as ev:
+          Char(c): outcome = "char:" & $c
+          _:       outcome = "other"
+        after 50.milliseconds:
+          outcome = "timeout"
+      return outcome
+    check waitFor(inner()) == "timeout"
+
+  test "two sources: one arm-bodied (stream), one free-bodied (mailbox)":
+    proc inner(): Future[string] {.async: (raises: [Exception]).} =
+      let (master, slave) = openPtyPair()
+      let stream = newInputStream(slave)
+      fresco_input.start(stream)
+      defer:
+        fresco_input.stop(stream)
+        discard close(master); discard close(slave)
+      let mbox = newMailbox[int]()
+      mbox.push(42)               # mailbox has an event ready
+      var outcome = "unset"
+      receive:
+        on stream as ev:
+          Char(c): outcome = "char:" & $c
+          _:       outcome = "stream-other"
+        on mbox as m:
+          outcome = "mbox:" & $m
+      return outcome
+    check waitFor(inner()) == "mbox:42"
+
+  test "mixed arm-shaped + free statements in same on body fails to compile":
+    # The macro requires each `on` body to be either ALL arms or ALL
+    # free statements. A mixed body is ambiguous and must be flagged.
+    let m = newMailbox[KeyEvent]()
+    check not compiles(
+      block:
+        proc bad() {.async: (raises: [Exception]).} =
+          receive:
+            on m as ev:
+              Char('a'): discard
+              discard 42                # free statement after an arm
+        waitFor bad()
+    )
+
+  test "per-on wildcard scope: each on block's _ only applies inside its block":
+    # The wildcard inside `on stream as ev:` does NOT catch events
+    # that came from `mbox`. Only the mbox-arm runs when mbox fires.
+    proc inner(): Future[string] {.async: (raises: [Exception]).} =
+      let (master, slave) = openPtyPair()
+      let stream = newInputStream(slave)
+      fresco_input.start(stream)
+      defer:
+        fresco_input.stop(stream)
+        discard close(master); discard close(slave)
+      let mbox = newMailbox[int]()
+      mbox.push(99)
+      var outcome = "unset"
+      receive:
+        on stream as ev:
+          Char(c): outcome = "stream:" & $c
+          _:       outcome = "stream-other"
+        on mbox as m:
+          outcome = "mbox:" & $m
+      return outcome
+    check waitFor(inner()) == "mbox:99"
+
 suite "receive: core patterns":
 
   test "Char literal pattern matches":
     let got = rig("+"):
-      receive stream:
-        Char('+'): outcome = "plus"
-        Char('-'): outcome = "minus"
-        _:         outcome = "other"
+      receive:
+        on stream as ev:
+          Char('+'): outcome = "plus"
+          Char('-'): outcome = "minus"
+          _:         outcome = "other"
     check got == "plus"
 
   test "Char capture binds the rune":
     let got = rig("Q"):
-      receive stream:
-        Char(c): outcome = "char:" & $c
-        _:       outcome = "other"
+      receive:
+        on stream as ev:
+          Char(c): outcome = "char:" & $c
+          _:       outcome = "other"
     check got == "char:Q"
 
   test "Ctrl literal pattern matches":
     let got = rig("\x03"):
-      receive stream:
-        Ctrl('c'): outcome = "quit"
-        _:         outcome = "other"
+      receive:
+        on stream as ev:
+          Ctrl('c'): outcome = "quit"
+          _:         outcome = "other"
     check got == "quit"
 
   test "Ctrl capture binds the letter":
     let got = rig("\x17"):
-      receive stream:
-        Ctrl(c): outcome = "ctrl:" & $c
-        _:       outcome = "other"
+      receive:
+        on stream as ev:
+          Ctrl(c): outcome = "ctrl:" & $c
+          _:       outcome = "other"
     check got == "ctrl:w"
 
   test "Alt capture binds the letter":
     let got = rig("\x1ba"):
-      receive stream:
-        Alt(c): outcome = "alt:" & $c
-        _:      outcome = "other"
+      receive:
+        on stream as ev:
+          Alt(c): outcome = "alt:" & $c
+          _:      outcome = "other"
     check got == "alt:a"
 
   test "Enter atom pattern matches":
     let got = rig("\r"):
-      receive stream:
-        Enter: outcome = "submit"
-        _:     outcome = "other"
+      receive:
+        on stream as ev:
+          Enter: outcome = "submit"
+          _:     outcome = "other"
     check got == "submit"
 
   test "Backspace atom":
     let got = rig("\x7F"):
-      receive stream:
-        Backspace: outcome = "bs"
-        _:         outcome = "other"
+      receive:
+        on stream as ev:
+          Backspace: outcome = "bs"
+          _:         outcome = "other"
     check got == "bs"
 
   test "Arrow atoms":
     let got = rig("\x1b[A"):
-      receive stream:
-        ArrowUp:    outcome = "up"
-        ArrowDown:  outcome = "down"
-        ArrowLeft:  outcome = "left"
-        ArrowRight: outcome = "right"
-        _:          outcome = "other"
+      receive:
+        on stream as ev:
+          ArrowUp:    outcome = "up"
+          ArrowDown:  outcome = "down"
+          ArrowLeft:  outcome = "left"
+          ArrowRight: outcome = "right"
+          _:          outcome = "other"
     check got == "up"
 
   test "F-key atom":
     let got = rig("\x1bOP"):
-      receive stream:
-        F1:        outcome = "help"
-        F12:       outcome = "save"
-        _:         outcome = "other"
+      receive:
+        on stream as ev:
+          F1:        outcome = "help"
+          F12:       outcome = "save"
+          _:         outcome = "other"
     check got == "help"
 
   test "Shift(Tab) modifier-prefix arm matches CSI Z (#67)":
     let got = rig("\x1b[Z"):
-      receive stream:
-        Tab:         outcome = "tab"
-        Shift(Tab):  outcome = "shift-tab"
-        _:           outcome = "other"
+      receive:
+        on stream as ev:
+          Tab:         outcome = "tab"
+          Shift(Tab):  outcome = "shift-tab"
+          _:           outcome = "other"
     check got == "shift-tab"
 
   test "Ctrl(ArrowUp) modifier-prefix arm matches \\e[1;5A":
     let got = rig("\x1b[1;5A"):
-      receive stream:
-        ArrowUp:        outcome = "up"
-        Ctrl(ArrowUp):  outcome = "ctrl-up"
-        _:              outcome = "other"
+      receive:
+        on stream as ev:
+          ArrowUp:        outcome = "up"
+          Ctrl(ArrowUp):  outcome = "ctrl-up"
+          _:              outcome = "other"
     check got == "ctrl-up"
 
   test "Ctrl(Shift(End)) nested modifier prefix matches \\e[1;6F":
     let got = rig("\x1b[1;6F"):
-      receive stream:
-        End:                 outcome = "end"
-        Shift(End):          outcome = "shift-end"
-        Ctrl(Shift(End)):    outcome = "ctrl-shift-end"
-        _:                   outcome = "other"
+      receive:
+        on stream as ev:
+          End:                 outcome = "end"
+          Shift(End):          outcome = "shift-end"
+          Ctrl(Shift(End)):    outcome = "ctrl-shift-end"
+          _:                   outcome = "other"
     check got == "ctrl-shift-end"
 
   test "bare atom arm doesn't match a modified key (modifier sets differ)":
     # `Tab:` matches kTab with empty modifier set. Shift+Tab has
     # modShift; it should fall through to the wildcard.
     let got = rig("\x1b[Z"):
-      receive stream:
-        Tab:  outcome = "tab"
-        _:    outcome = "other"
+      receive:
+        on stream as ev:
+          Tab:  outcome = "tab"
+          _:    outcome = "other"
     check got == "other"
 
   test "wildcard catches everything not enumerated":
     let got = rig("z"):
-      receive stream:
-        Char('a'): outcome = "a"
-        Char('b'): outcome = "b"
-        _:         outcome = "other"
+      receive:
+        on stream as ev:
+          Char('a'): outcome = "a"
+          Char('b'): outcome = "b"
+          _:         outcome = "other"
     check got == "other"
 
   test "no wildcard, no matching arm: silently drops, outcome unset":
     let got = rig("z"):
-      receive stream:
-        Char('a'): outcome = "a"
-        Enter:     outcome = "enter"
+      receive:
+        on stream as ev:
+          Char('a'): outcome = "a"
+          Enter:     outcome = "enter"
     check got == ""
 
   test "wildcard at end of body catches non-enumerated keys":
@@ -178,30 +303,34 @@ suite "receive: core patterns":
     # *after* a wildcard would fire BEFORE the wildcard. Now arms
     # after `_:` are warned as unreachable; arms before fire in order.
     let got = rig("z"):
-      receive stream:
-        Char('a'): outcome = "a"
-        Char('b'): outcome = "b"
-        _:         outcome = "fallback"
+      receive:
+        on stream as ev:
+          Char('a'): outcome = "a"
+          Char('b'): outcome = "b"
+          _:         outcome = "fallback"
     check got == "fallback"
 
     let got2 = rig("a"):
-      receive stream:
-        Char('a'): outcome = "a"
-        Char('b'): outcome = "b"
-        _:         outcome = "fallback"
+      receive:
+        on stream as ev:
+          Char('a'): outcome = "a"
+          Char('b'): outcome = "b"
+          _:         outcome = "fallback"
     check got2 == "a"
 
   test "specific Char before general Char(c) priorities by source order":
     let got = rig("a"):
-      receive stream:
-        Char('a'): outcome = "literal-a"
-        Char(c):   outcome = "fallback-" & $c
+      receive:
+        on stream as ev:
+          Char('a'): outcome = "literal-a"
+          Char(c):   outcome = "fallback-" & $c
     check got == "literal-a"
 
     let got2 = rig("b"):
-      receive stream:
-        Char('a'): outcome = "literal-a"
-        Char(c):   outcome = "fallback-" & $c
+      receive:
+        on stream as ev:
+          Char('a'): outcome = "literal-a"
+          Char(c):   outcome = "fallback-" & $c
     check got2 == "fallback-b"
 
 suite "receive: after timeout":
@@ -215,17 +344,19 @@ suite "receive: after timeout":
         fresco_input.stop(stream)
         discard close(master); discard close(slave)
       var outcome = "unset"
-      receive stream:
-        Char(c): outcome = "char:" & $c
+      receive:
+        on stream as ev:
+          Char(c): outcome = "char:" & $c
         after 50.milliseconds: outcome = "timeout"
       return outcome
     check waitFor(inner()) == "timeout"
 
   test "key arm wins when input precedes the timeout":
     let got = rig("z"):
-      receive stream:
-        Char(c):                 outcome = "char:" & $c
-        after 500.milliseconds:  outcome = "timeout"
+      receive:
+        on stream as ev:
+          Char(c):                 outcome = "char:" & $c
+        after 500.milliseconds:    outcome = "timeout"
     check got == "char:z"
 
   test "after-only receive compiles and times out cleanly":
@@ -240,14 +371,16 @@ suite "receive: after timeout":
         fresco_input.stop(stream)
         discard close(master); discard close(slave)
       var outcome = "unset"
-      receive stream:
+      receive:
         after 30.milliseconds: outcome = "tick"
       return outcome
     check waitFor(inner()) == "tick"
 
   test "after-only receive discards key on the key-arrival path":
     let got = rig("x"):
-      receive stream:
+      receive:
+        on stream as ev:
+          _: discard
         after 200.milliseconds: outcome = "timeout"
       if outcome == "":
         outcome = "key-discarded"
@@ -271,13 +404,14 @@ suite "receive: after timeout":
         discard close(master); discard close(slave)
       writeAll(master, "x")
       let taskScopeBefore = currentScope
-      receive stream:
-        Char(c):
-          await sleepAsync(2.milliseconds)
-          # After await inside arm body: currentScope must still be
-          # the {.task.}'d outer scope.
-          return currentScope == taskScopeBefore
-        _: return false
+      receive:
+        on stream as ev:
+          Char(c):
+            await sleepAsync(2.milliseconds)
+            # After await inside arm body: currentScope must still be
+            # the {.task.}'d outer scope.
+            return currentScope == taskScopeBefore
+          _: return false
       return false
     check waitFor(inner())
 
@@ -297,9 +431,10 @@ suite "receive: after timeout":
         fresco_input.stop(stream)
       asyncSpawn closer()
       try:
-        receive stream:
-          Char(c):                 outcome = "char:" & $c
-          after 500.milliseconds:  outcome = "timeout"
+        receive:
+          on stream as ev:
+            Char(c):                 outcome = "char:" & $c
+          after 500.milliseconds:    outcome = "timeout"
       except InputStreamClosedError:
         outcome = "closed"
       return outcome

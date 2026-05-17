@@ -63,20 +63,21 @@ proc app(stream: InputStream, screen: Screen)
         paint(screen)
 
       while true:
-        receive stream:
-          Char('q'): return
-          Ctrl('c'): return
-          Char(c):
-            # `c` is a `Rune`; stringify and check single-byte digit.
-            let s = $c
-            if s.len == 1 and s[0] in '0'..'9':
-              let n = ord(s[0]) - ord('0')
-              let t = n.float / 9.0
-              target := t
-              discard tween(tweenVal, t, 600.milliseconds, esOutCubic)
-              discard spring(springVal, t)
-              discard spring(bouncyVal, t, stiffness = 200.0, damping = 8.0)
-          _: discard
+        receive:
+          on stream as ev:
+            Char('q'): return
+            Ctrl('c'): return
+            Char(c):
+              # `c` is a `Rune`; stringify and check single-byte digit.
+              let s = $c
+              if s.len == 1 and s[0] in '0'..'9':
+                let n = ord(s[0]) - ord('0')
+                let t = n.float / 9.0
+                target := t
+                discard tween(tweenVal, t, 600.milliseconds, esOutCubic)
+                discard spring(springVal, t)
+                discard spring(bouncyVal, t, stiffness = 200.0, damping = 8.0)
+            _: discard
   finally:
     dispose(root)
 

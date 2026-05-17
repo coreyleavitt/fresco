@@ -32,9 +32,10 @@
 ##     hotkey stream, ctrlKey('q'): return
 ##
 ##     while true:
-##       receive stream:
-##         Char('+'): count := count() + 1
-##         Char('-'): count := count() - 1
+##       receive:
+##         on stream as ev:
+##           Char('+'): count := count() + 1
+##           Char('-'): count := count() - 1
 ##         after 1.seconds: discard          # idle tick
 ##
 ## Plain `{.async.}` is enough — `currentScope` is a chronos

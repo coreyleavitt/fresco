@@ -1,31 +1,45 @@
-## Selective `receive` — pattern-matched input dispatch.
+## Selective `receive` — multi-source, pattern-matched dispatch.
 ##
-##   receive stream:
-##     Char('+'):   count.set(count() + 1)
-##     Char('-'):   count.set(count() - 1)
-##     Ctrl('c'):   return
-##     Char(c):     handleChar(c)         # capture remaining chars
-##     Enter:       submit()
-##     ArrowUp:     moveUp()
-##     F1:          showHelp()
-##     _:           discard
+##   receive:
+##     on stream as ev:
+##       Char('+'):   count.set(count() + 1)
+##       Char('-'):   count.set(count() - 1)
+##       Ctrl('c'):   return
+##       Char(c):     handleChar(c)        # capture remaining chars
+##       Enter:       submit()
+##       Shift(Tab):  cyclePrev()
+##       ArrowUp:     moveUp()
+##       F1:          showHelp()
+##       _:           discard
+##     on tasks as t:
+##       handle(t)                          # free body (no arm patterns)
+##     after 1.seconds:
+##       idle()
 ##
-## Pattern arms are matched in source order — put specific patterns
-## before catch-alls. The macro compiles to an `if/elif` chain over the
-## `KeyEvent` shape produced by `stream.nextKey()`. Capture identifiers
-## (`Char(c)`, `Ctrl(c)`, `Alt(c)`) bind a local `let` in the arm body.
+## One canonical form: `receive:` races N typed event sources and an
+## optional `after Duration:` timer. Each `on <source> as <var>:` block
+## declares one source; the var binds to its produced event. Body shape
+## per block:
 ##
-## Arms can also include `after Duration: body` to time out the receive.
+##   * If statements are arm-shaped (`Pattern: body`), the block
+##     compiles to an `if/elif` chain matching against the bound var.
+##     Today's arm grammar is KeyEvent-specific (Char/Ctrl/Alt atoms,
+##     modifier prefixes, wildcard `_:`).
+##   * Otherwise the block body runs as free statements with the var
+##     bound — use this for non-KeyEvent sources or when raw control
+##     flow is preferable.
+##   * Mixing arm-shaped and free statements in one `on` body is
+##     ambiguous and is rejected at compile time.
 ##
-##   receive stream:
-##     Char(c):              handleChar(c)
-##     after 1.seconds:      idle()
+## Each source must satisfy the EventSource protocol — duck-typed as
+## a `proc nextEvent(s: T): Future[E]` overload in scope. `InputStream`
+## and `Mailbox[T]` ship with the conformance; user types can satisfy
+## it by adding the overload.
 ##
-## The macro emits explicit CLS save/restore around its internal
-## `await` (the `nextKey` / `race` calls). The enclosing proc still
-## needs `{.async.}` for *its other* awaits, but `receive` itself
-## doesn't depend on the enclosing pragma to preserve context across
-## the suspend it introduces.
+## Cancel safety: every losing source's future is cancelled in the
+## `finally` block. Events already queued in a losing source's
+## internal buffer are restored via `restoreEvent` and are returned
+## by the next `nextEvent` call on that source.
 
 import std/[macros, sets, tables, unicode]
 import chronos
@@ -248,14 +262,6 @@ proc compilePattern(evSym, pat: NimNode): tuple[cond, prelude: NimNode] =
 
   error("receive: unrecognized pattern shape\n" & pat.treeRepr, pat)
 
-proc isAfterArm(arm: NimNode): bool =
-  ## Detect `after <Duration>: body`. AST: Command(after, durExpr, StmtList(body))
-  ## or Call(after, durExpr, StmtList(body)). eqIdent so hygiene
-  ## wrapping in a containing template doesn't miss the match.
-  if arm.kind notin {nnkCall, nnkCommand}: return false
-  if arm.len < 2: return false
-  arm[0].eqIdent("after")
-
 const allKeyKinds = block:
   ## Derived from the `KeyKind` enum so adding a new key in events.nim
   ## doesn't silently break exhaustiveness analysis here.
@@ -287,33 +293,20 @@ proc kindCoveredByArm(arm: NimNode): string =
       else: discard
   return ""
 
-macro receive*(stream: untyped, body: untyped): untyped =
-  ## Block until the next KeyEvent arrives on `stream`; dispatch to
-  ## the first matching arm. Returns the value of the arm's body
-  ## expression. With an `after Duration:` arm, races the key wait
-  ## against a chronos timer; if the timer fires first, runs the
-  ## timeout body instead.
-  expectKind(body, nnkStmtList)
+proc compileArmChain(varNode: NimNode, arms: seq[NimNode]): NimNode =
+  ## Compile a list of arm statements into an `nnkIfStmt` chain over
+  ## `varNode`. Emits coverage hints, unreachable-after-wildcard
+  ## warnings, and a no-op else when the arms aren't exhaustive.
+  ## Returns `discard` (a valid stmt) when `arms` is empty — the
+  ## caller may not need to emit anything in that case.
+  if arms.len == 0:
+    return quote do: discard
 
-  let evSym = genSym(nskLet, "ev")
-  var afterDur: NimNode = nil
-  var afterBody: NimNode = nil
   var covered = initHashSet[string]()
   var hasWildcard = false
   var wildcardSeenAt = -1
-  var nonAfterArms: seq[NimNode] = @[]
-
-  # First pass: separate `after` from regular arms, track coverage,
-  # warn on arms that appear after a wildcard (they would be
-  # unreachable since the wildcard always matches).
   var idx = 0
-  for arm in body:
-    if isAfterArm(arm):
-      if afterDur != nil:
-        error("receive: at most one `after` clause", arm)
-      afterDur = arm[1]
-      afterBody = arm[^1]
-      continue
+  for arm in arms:
     let cov = kindCoveredByArm(arm)
     if cov == "*":
       hasWildcard = true
@@ -322,7 +315,6 @@ macro receive*(stream: untyped, body: untyped): untyped =
     if wildcardSeenAt >= 0 and idx > wildcardSeenAt:
       warning("receive: arm appears after the wildcard `_:` and is " &
               "unreachable", arm)
-    nonAfterArms.add arm
     inc idx
 
   if not hasWildcard:
@@ -334,69 +326,54 @@ macro receive*(stream: untyped, body: untyped): untyped =
            "matching keys will be silently dropped. " &
            "Uncovered: " & $missing)
 
-  if nonAfterArms.len == 0 and afterDur == nil:
-    error("receive: body must contain at least one key arm or an " &
-          "`after Duration:` clause — otherwise the receive is a no-op",
-          body)
+  let chain = newNimNode(nnkIfStmt)
+  for arm in arms:
+    let (cond, armBody) = compileArm(varNode, arm)
+    if cond == nil:
+      # Wildcard — emit as an else branch (cleaner AST than
+      # `elif true:`, and Nim doesn't warn on "always-true cond").
+      chain.add newTree(nnkElse, armBody)
+    else:
+      chain.add newTree(nnkElifBranch, cond, armBody)
+  if not hasWildcard:
+    chain.add newTree(nnkElse, quote do: discard)
+  # `nnkIfStmt(nnkElse(...))` with no elif branches is invalid AST —
+  # if every arm collapsed to the wildcard, just emit the body.
+  if chain.len == 1 and chain[0].kind == nnkElse:
+    return chain[0][0]
+  chain
 
-  # Second pass: emit one elif per arm in source order. The wildcard
-  # arm becomes an elif with condition `true`, which makes it match
-  # all remaining events. nnkIfStmt (not nnkIfExpr) so statement-
-  # shaped arm bodies (return, discard, mixed value/void) compose
-  # correctly. When `nonAfterArms` is empty (after-only receive), we
-  # skip the chain entirely — emitting an `nnkIfStmt` with no elif
-  # branches is invalid AST.
-  var chain: NimNode
-  if nonAfterArms.len > 0:
-    chain = newNimNode(nnkIfStmt)
-    for arm in nonAfterArms:
-      let (cond, armBody) = compileArm(evSym, arm)
-      if cond == nil:
-        # Wildcard — emit as an else branch (cleaner AST than
-        # `elif true:`, and Nim doesn't warn on "always-true cond").
-        chain.add newTree(nnkElse, armBody)
-      else:
-        chain.add newTree(nnkElifBranch, cond, armBody)
-    if not hasWildcard:
-      # Final else is a no-op so the if-statement remains total.
-      chain.add newTree(nnkElse, quote do: discard)
-  else:
-    # After-only receive — the key path consumes one event and
-    # discards it; the timer path runs `afterBody`.
-    chain = quote do: discard
+proc isArmShaped(stmt: NimNode): bool =
+  ## A statement is "arm-shaped" if it has the form `<pattern>: <body>`
+  ## — i.e. a Call/Command whose last child is a StmtList (the colon
+  ## block body). Free-form statements (proc calls without a do-block,
+  ## assignments, control flow, discard) don't match.
+  if stmt.kind notin {nnkCall, nnkCommand}: return false
+  if stmt.len < 2: return false
+  stmt[^1].kind == nnkStmtList
 
-  if afterDur == nil:
-    result = quote do:
-      let `evSym` = await `stream`.nextKey()
-      `chain`
-  else:
-    # Race the next-key wait against a sleepAsync; dispatch on which
-    # fires first. The outer try/finally guarantees both futures are
-    # cancelled on every exit path — including a `CancelledError`
-    # propagating out of the race itself, which would otherwise
-    # orphan the `nextKey` future and silently consume the next
-    # keypress with no consumer.
-    #
-    # `.read` on a finished `keyFut` re-raises if it failed (e.g.
-    # `InputStreamClosedError` on stream close), so stream-close
-    # propagates rather than being mistaken for a timeout.
-    let keyFutSym = genSym(nskLet, "keyFut")
-    let timerSym  = genSym(nskLet, "timerFut")
-    result = quote do:
-      let `keyFutSym` = `stream`.nextKey()
-      let `timerSym`  = sleepAsync(`afterDur`)
-      try:
-        discard await race(FutureBase(`keyFutSym`), FutureBase(`timerSym`))
-        if `keyFutSym`.finished:
-          let `evSym` = `keyFutSym`.read   # re-raises on failure
-          `chain`
-        else:
-          `afterBody`
-      finally:
-        if not `keyFutSym`.finished: `keyFutSym`.cancelSoon()
-        if not `timerSym`.finished:  `timerSym`.cancelSoon()
-
-# --- Multi-source receive (#66) -----------------------------------------
+proc compileOnBody(varNode, body: NimNode): NimNode =
+  ## Examine an `on` block's body and emit dispatch code.
+  ##  - All statements arm-shaped → emit an `nnkIfStmt` arm chain
+  ##    matching against `varNode`.
+  ##  - No arm-shaped statements → return body as-is (free body;
+  ##    `varNode` is already bound by the caller).
+  ##  - Mixed → compile error pointing at the first divergent stmt.
+  var anyArm, anyFree = false
+  for s in body:
+    if isArmShaped(s): anyArm = true
+    else: anyFree = true
+  if anyArm and anyFree:
+    for s in body:
+      if not isArmShaped(s):
+        error("receive: `on` body mixes arm-shaped statements " &
+              "(`Pattern: body`) with free statements; pick one " &
+              "form per block", s)
+  if not anyArm:
+    return body
+  var arms: seq[NimNode] = @[]
+  for s in body: arms.add s
+  compileArmChain(varNode, arms)
 
 proc parseOnArm(stmt: NimNode): tuple[source, varName, body: NimNode] =
   ## Parse an `on <source> as <var>: <body>` command. The shape is:
@@ -466,6 +443,17 @@ macro receive*(body: untyped): untyped =
     error("receive: body must contain at least one `on` block or an " &
           "`after` clause", body)
 
+  # Degenerate after-only receive: no sources to race against, just
+  # sleep then run the body. Emitting the full race/dispatch scaffold
+  # for one timer would produce an `nnkIfStmt` with no elif branches
+  # (invalid AST) and pointlessly wrap the timer in `race`.
+  if onArms.len == 0:
+    let d = afterDur
+    let b = afterBody
+    return quote do:
+      await sleepAsync(`d`)
+      `b`
+
   # Emit:
   #   block:
   #     let fut0 = source0.nextEvent()
@@ -513,14 +501,14 @@ macro receive*(body: untyped): untyped =
   for i, arm in onArms:
     let f = futSyms[i]
     let v = arm.varName
-    let b = arm.body
+    let compiledBody = compileOnBody(v, arm.body)
     let idxLit = newLit(i)
     dispatch.add newTree(nnkElifBranch,
       newDotExpr(f, ident"finished"),
       quote do:
         `wonSym` = `idxLit`
         let `v` = `f`.read
-        `b`)
+        `compiledBody`)
   if afterDur != nil:
     dispatch.add newTree(nnkElse, afterBody)
 

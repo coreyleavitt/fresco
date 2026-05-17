@@ -34,16 +34,17 @@ proc app(stream: InputStream, screen: Screen)
       paint(screen)
 
       while true:
-        receive stream:
-          Char('+'):
-            count := count() + 1
-            paint(screen)
-          Char('-'):
-            count := count() - 1
-            paint(screen)
-          Char('q'): return
-          Ctrl('c'): return
-          _: discard
+        receive:
+          on stream as ev:
+            Char('+'):
+              count := count() + 1
+              paint(screen)
+            Char('-'):
+              count := count() - 1
+              paint(screen)
+            Char('q'): return
+            Ctrl('c'): return
+            _: discard
   finally:
     dispose(root)
 
