@@ -288,3 +288,161 @@ macro receive*(stream: untyped, body: untyped): untyped =
       finally:
         if not `keyFutSym`.finished: `keyFutSym`.cancelSoon()
         if not `timerSym`.finished:  `timerSym`.cancelSoon()
+
+# --- Multi-source receive (#66) -----------------------------------------
+
+proc parseOnArm(stmt: NimNode): tuple[source, varName, body: NimNode] =
+  ## Parse an `on <source> as <var>: <body>` command. The shape is:
+  ##   Command(Ident "on",
+  ##           Infix(Ident "as", <source>, <var>),
+  ##           StmtList <body>)
+  ## Returns (nil, nil, nil) on shape mismatch — caller flags the error.
+  if stmt.kind != nnkCommand or stmt.len != 3: return
+  if stmt[0].kind != nnkIdent or stmt[0].strVal != "on": return
+  let infix = stmt[1]
+  if infix.kind != nnkInfix or infix.len != 3: return
+  if infix[0].kind != nnkIdent or infix[0].strVal != "as": return
+  if stmt[2].kind != nnkStmtList: return
+  (source: infix[1], varName: infix[2], body: stmt[2])
+
+proc parseAfterArm(stmt: NimNode): tuple[dur, body: NimNode] =
+  ## Parse an `after <Duration>: <body>` command in the multi-source
+  ## form. Same shape as the single-source receive's after arm.
+  if stmt.kind != nnkCommand or stmt.len != 3: return
+  if stmt[0].kind != nnkIdent or stmt[0].strVal != "after": return
+  if stmt[2].kind != nnkStmtList: return
+  (dur: stmt[1], body: stmt[2])
+
+macro receive*(body: untyped): untyped =
+  ## Multi-source selective receive (#66). Races multiple typed event
+  ## sources and dispatches the body of the source that produced the
+  ## next event. Each `on <source> as <var>:` block declares one
+  ## source; the var binds to its produced event.
+  ##
+  ##   receive:
+  ##     on stream as ev:
+  ##       case ev.kind
+  ##       of kChar: ...
+  ##     on askQueue as ask:
+  ##       handle(ask)
+  ##     after 1.seconds:
+  ##       rerenderIdle()
+  ##
+  ## Each source must satisfy the EventSource protocol — duck-typed
+  ## as `proc nextEvent(s: T): Future[E]` overload in scope.
+  ## `InputStream` and `Mailbox[T]` ship with the conformance; user
+  ## types can satisfy it by adding the overload.
+  ##
+  ## Cancel safety: every losing source's future is cancelled in the
+  ## `finally` block. Events queued in the source's internal buffer
+  ## survive — they're returned by the next `nextEvent` call.
+  expectKind(body, nnkStmtList)
+
+  var onArms: seq[tuple[source, varName, body: NimNode]] = @[]
+  var afterDur, afterBody: NimNode = nil
+  for stmt in body:
+    let onArm = parseOnArm(stmt)
+    if onArm.source != nil:
+      onArms.add onArm
+      continue
+    let aft = parseAfterArm(stmt)
+    if aft.dur != nil:
+      if afterDur != nil:
+        error("receive: at most one `after` clause", stmt)
+      afterDur = aft.dur
+      afterBody = aft.body
+      continue
+    error("receive: each statement in the body must be `on <source> as " &
+          "<var>: <body>` or `after <Duration>: <body>`", stmt)
+
+  if onArms.len == 0 and afterDur == nil:
+    error("receive: body must contain at least one `on` block or an " &
+          "`after` clause", body)
+
+  # Emit:
+  #   block:
+  #     let fut0 = source0.nextEvent()
+  #     let fut1 = source1.nextEvent()
+  #     [let timer = sleepAsync(<dur>)]
+  #     try:
+  #       discard await race(FutureBase(fut0), ..., FutureBase(timer))
+  #       if fut0.finished: let var0 = fut0.read; body0
+  #       elif fut1.finished: let var1 = fut1.read; body1
+  #       [else: afterBody]
+  #     finally:
+  #       if not fut0.finished: fut0.cancelSoon()
+  #       ...
+  var futSyms: seq[NimNode] = @[]
+  for _ in onArms: futSyms.add genSym(nskLet, "ev_fut")
+  let timerSym = genSym(nskLet, "timer_fut")
+
+  # let-bindings for source futures (and optional timer)
+  let setup = newStmtList()
+  for i, arm in onArms:
+    let f = futSyms[i]
+    let src = arm.source
+    setup.add quote do:
+      let `f` = `src`.nextEvent()
+  if afterDur != nil:
+    let d = afterDur
+    setup.add quote do:
+      let `timerSym` = sleepAsync(`d`)
+
+  # race(...) call
+  let raceCall = newCall(ident"race")
+  for f in futSyms:
+    raceCall.add newCall(ident"FutureBase", f)
+  if afterDur != nil:
+    raceCall.add newCall(ident"FutureBase", timerSym)
+
+  # Track which source's body ran ("won"). Used by the cleanup
+  # block to skip restoreEvent on the winner (its value was
+  # consumed; restoring would re-deliver). -1 = nothing dispatched
+  # (after-arm fired or all sources are pending).
+  let wonSym = genSym(nskVar, "receive_won")
+
+  # dispatch chain
+  let dispatch = newNimNode(nnkIfStmt)
+  for i, arm in onArms:
+    let f = futSyms[i]
+    let v = arm.varName
+    let b = arm.body
+    let idxLit = newLit(i)
+    dispatch.add newTree(nnkElifBranch,
+      newDotExpr(f, ident"finished"),
+      quote do:
+        `wonSym` = `idxLit`
+        let `v` = `f`.read
+        `b`)
+  if afterDur != nil:
+    dispatch.add newTree(nnkElse, afterBody)
+
+  # finally: cancel pending losers; restore finished-but-not-dispatched
+  # losers' values back to their source via restoreEvent. This is the
+  # cancel-race safety the issue called out — when multiple sources
+  # have events ready simultaneously, all nextEvent futures finish
+  # synchronously but only one body runs; the others' values would
+  # silently drop without restoreEvent.
+  let cleanup = newStmtList()
+  for i, arm in onArms:
+    let f = futSyms[i]
+    let src = arm.source
+    let idxLit = newLit(i)
+    cleanup.add quote do:
+      if `wonSym` != `idxLit`:
+        if not `f`.finished:
+          `f`.cancelSoon()
+        elif not `f`.failed:
+          `src`.restoreEvent(`f`.read)
+  if afterDur != nil:
+    cleanup.add quote do:
+      if not `timerSym`.finished: `timerSym`.cancelSoon()
+
+  let raceStmt = nnkDiscardStmt.newTree(newCall(ident"await", raceCall))
+  let initWon = quote do:
+    var `wonSym` = -1
+  let tryBody = newStmtList(raceStmt, dispatch)
+  let tryStmt = newTree(nnkTryStmt, tryBody,
+    newTree(nnkFinally, cleanup))
+
+  result = newBlockStmt(newStmtList(setup, initWon, tryStmt))

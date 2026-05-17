@@ -246,3 +246,20 @@ proc nextKey*(s: InputStream): Future[KeyEvent] {.async.} =
   let ev = getFut.read
   journalEvent: jrnl.logKeyReceived(taskTid, parentEvt, ev.summary)
   return ev
+
+template nextEvent*(s: InputStream): Future[KeyEvent] = s.nextKey()
+  ## EventSource protocol conformance (#66). The multi-source
+  ## `receive: on <src> as <var>:` macro emits `await src.nextEvent()`
+  ## for every source; this alias lets InputStream participate
+  ## without a rename. Existing `nextKey` callers unaffected.
+
+proc restoreEvent*(s: InputStream, ev: KeyEvent) =
+  ## Cancel-recovery hook for multi-source receive (#66). When
+  ## multiple sources have events ready simultaneously, all their
+  ## `nextEvent` futures finish; the receive macro dispatches one
+  ## and calls `restoreEvent` on the others so their values aren't
+  ## silently dropped. Approximate FIFO: a value restored after
+  ## concurrent input bytes lands after them.
+  if s.closed: return
+  try: s.queue.putNoWait(ev)
+  except AsyncQueueFullError: inc s.droppedEvents
