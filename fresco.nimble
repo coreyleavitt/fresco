@@ -40,6 +40,7 @@ task test, "run all tests":
     "tests/unit/test_journal.nim",
     "tests/unit/test_speculative.nim",
     "tests/unit/test_speculative_reentrancy.nim",
+    "tests/unit/test_tracked.nim",
     "tests/unit/test_bitemporal.nim",
     "tests/unit/test_journal_snapshots.nim",
     "tests/unit/test_collection.nim",
