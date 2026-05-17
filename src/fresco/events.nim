@@ -11,6 +11,21 @@
 import std/unicode
 
 type
+  Modifier* = enum
+    ## Modifier flags that compose with a base `KeyKind`. Encoded as
+    ## an orthogonal `set[Modifier]` rather than baking each
+    ## combination into the enum — the latter combinatorially
+    ## explodes (~6 modifier sets × ~20 base keys).
+    ##
+    ## Terminal protocol mapping (xterm `CSI 1;<code><final>`):
+    ## code = 1 + (shift?1:0) + (alt?2:0) + (ctrl?4:0) + (meta?8:0)
+    modShift
+    modAlt
+    modCtrl
+    modMeta
+
+  Modifiers* = set[Modifier]
+
   KeyKind* = enum
     kChar
     kEnter
@@ -28,37 +43,62 @@ type
     kDelete
     kInsert
     kF1, kF2, kF3, kF4, kF5, kF6, kF7, kF8, kF9, kF10, kF11, kF12
-    kCtrl
-    kAlt
 
   KeyEvent* = object
+    ## A keyboard event: a base key (`kind`) plus any active
+    ## modifiers. Shift+Tab is `(kTab, {modShift})`;
+    ## Ctrl+ArrowUp is `(kArrowUp, {modCtrl})`; Ctrl+'c' is
+    ## `(kChar, 'c', {modCtrl})` — what the legacy `ctrlKey('c')`
+    ## constructor now produces. Bare keys carry an empty modifier
+    ## set.
     case kind*: KeyKind
-    of kChar:       rune*: Rune
-    of kCtrl, kAlt: ch*:   char
+    of kChar: rune*: Rune
     else: discard
+    modifiers*: Modifiers
 
 proc atomKey*(k: KeyKind): KeyEvent = KeyEvent(kind: k)
-  ## Constructor for a kind-only KeyEvent (no payload — Enter, Tab,
-  ## arrows, F-keys, etc.). Matches `charKey` / `ctrlKey` / `altKey`
-  ## naming so the four KeyEvent constructors form a coherent set.
-proc ctrlKey*(c: char): KeyEvent  = KeyEvent(kind: kCtrl, ch: c)
-proc altKey*(c: char): KeyEvent   = KeyEvent(kind: kAlt, ch: c)
-proc charKey*(r: Rune): KeyEvent  = KeyEvent(kind: kChar, rune: r)
+  ## Constructor for an unmodified, kind-only KeyEvent.
+
+proc ctrlKey*(c: char): KeyEvent =
+  ## Construct a Ctrl+<char> event. Under the modifier-set model
+  ## (#67) this is a `kChar` with `modCtrl` in the modifier set —
+  ## not a separate `kCtrl` kind anymore. The constructor signature
+  ## is preserved so existing call sites and arm patterns
+  ## (`Ctrl('c'): ...`) continue to work unchanged.
+  KeyEvent(kind: kChar, rune: Rune(c), modifiers: {modCtrl})
+
+proc altKey*(c: char): KeyEvent =
+  ## Construct an Alt+<char> event. Same model shift as `ctrlKey`.
+  KeyEvent(kind: kChar, rune: Rune(c), modifiers: {modAlt})
+
+proc charKey*(r: Rune): KeyEvent =
+  KeyEvent(kind: kChar, rune: r)
 
 proc summary*(ev: KeyEvent): string =
-  ## Compact human-readable rendering of a KeyEvent. Used by the
-  ## journal to label key-delivery events.
+  ## Compact human-readable rendering. Modifiers prefix the base
+  ## key in fixed order (Shift, Alt, Ctrl, Meta) so a Ctrl+Shift+End
+  ## reads as `"Shift+Ctrl+End"`.
+  ##
+  ## Single-modifier Ctrl/Alt + char keeps the legacy hyphen form
+  ## (`"Ctrl-q"`, `"Alt-c"`) for terminal-style reading. Multi-
+  ## modifier or non-char keys use the `+`-prefix form.
+  if ev.kind == kChar and ev.modifiers.card == 1:
+    if modCtrl in ev.modifiers: return "Ctrl-" & $ev.rune
+    if modAlt  in ev.modifiers: return "Alt-"  & $ev.rune
+  var prefix = ""
+  if modShift in ev.modifiers: prefix &= "Shift+"
+  if modAlt   in ev.modifiers: prefix &= "Alt+"
+  if modCtrl  in ev.modifiers: prefix &= "Ctrl+"
+  if modMeta  in ev.modifiers: prefix &= "Meta+"
   case ev.kind
-  of kChar: "Char(" & $ev.rune & ")"
-  of kCtrl: "Ctrl-" & $ev.ch
-  of kAlt:  "Alt-"  & $ev.ch
-  else:     $ev.kind
+  of kChar: prefix & "Char(" & $ev.rune & ")"
+  else:     prefix & $ev.kind
 
 proc `==`*(a, b: KeyEvent): bool =
   if a.kind != b.kind: return false
+  if a.modifiers != b.modifiers: return false
   case a.kind
-  of kChar:       a.rune == b.rune
-  of kCtrl, kAlt: a.ch == b.ch
+  of kChar: a.rune == b.rune
   else: true
 
 # --- UTF-8 helpers ---------------------------------------------------------
@@ -102,16 +142,88 @@ proc tildeKey(n: int): KeyEvent =
   of 24:   atomKey(kF12)
   else:    atomKey(kEscape)
 
-proc parseCsi(params: string, final: char): KeyEvent =
+proc atomFromFinal(final: char): KeyKind =
+  ## Map a CSI/SS3 final byte to its base KeyKind (modifier-agnostic).
+  ## Used by both the no-modifier path (single-letter final) and the
+  ## CSI 1;<mod><final> form to share the same key mapping.
   case final
-  of 'A': atomKey(kArrowUp)
-  of 'B': atomKey(kArrowDown)
-  of 'C': atomKey(kArrowRight)
-  of 'D': atomKey(kArrowLeft)
-  of 'H': atomKey(kHome)
-  of 'F': atomKey(kEnd)
-  of '~': tildeKey(parseLeadingInt(params))
-  else:   atomKey(kEscape)
+  of 'A': kArrowUp
+  of 'B': kArrowDown
+  of 'C': kArrowRight
+  of 'D': kArrowLeft
+  of 'H': kHome
+  of 'F': kEnd
+  of 'P': kF1
+  of 'Q': kF2
+  of 'R': kF3
+  of 'S': kF4
+  of 'Z': kTab           ## CSI Z = Shift+Tab (modifier applied by caller)
+  else:   kEscape
+
+proc decodeModifierCode(code: int): Modifiers =
+  ## xterm modifyOtherKeys encoding: `code = 1 + flags` where
+  ## flags = shift|alt<<1|ctrl<<2|meta<<3. code 1 = no modifier;
+  ## code 2 = Shift; code 5 = Ctrl; code 6 = Ctrl+Shift; etc.
+  ## Codes outside the conventional 1..16 range degrade to the
+  ## empty set rather than raising.
+  if code < 2 or code > 16: return
+  let flags = code - 1
+  if (flags and 0b0001) != 0: result.incl modShift
+  if (flags and 0b0010) != 0: result.incl modAlt
+  if (flags and 0b0100) != 0: result.incl modCtrl
+  if (flags and 0b1000) != 0: result.incl modMeta
+
+proc parseSplit(params: string): seq[int] =
+  ## Split a CSI params string on `;` and parse each segment as an
+  ## int. Empty segments → 0 (per ECMA-48 default-param convention).
+  var cur = 0
+  var inDigits = false
+  for ch in params:
+    if ch in {'0'..'9'}:
+      cur = cur * 10 + (ch.ord - ord('0'))
+      inDigits = true
+    elif ch == ';':
+      result.add (if inDigits: cur else: 0)
+      cur = 0; inDigits = false
+    else:
+      # Unexpected char — treat as separator to make progress.
+      result.add (if inDigits: cur else: 0)
+      cur = 0; inDigits = false
+  if inDigits or params.len > 0: result.add cur
+
+proc parseCsi(params: string, final: char): KeyEvent =
+  # Legacy single-final, no modifier params: e.g. `\e[A`, `\e[Z`.
+  if params.len == 0:
+    case final
+    of 'Z':
+      # Legacy Shift+Tab encoding — no params, but Shift is implied.
+      return KeyEvent(kind: kTab, modifiers: {modShift})
+    of '~':
+      return tildeKey(0)        # no params for tilde → 0 → kEscape
+    else:
+      let k = atomFromFinal(final)
+      return atomKey(k)
+  # `~`-finalized tilde keys carry the function-key index, not the
+  # modifier form. e.g. `\e[15~` = F5. Modifier-aware tilde keys
+  # (`\e[<n>;<mod>~`) are an xterm extension we accept by stripping
+  # any trailing `;<mod>` and forwarding the base index.
+  if final == '~':
+    let parts = parseSplit(params)
+    var ev = tildeKey(parts[0])
+    if parts.len >= 2:
+      ev.modifiers = decodeModifierCode(parts[1])
+    return ev
+  # xterm modifyOtherKeys form: `\e[1;<mod><final>` where the leading
+  # `1` is the "key index" placeholder for non-tilde keys. We
+  # recognize this shape and apply the modifier.
+  let parts = parseSplit(params)
+  if parts.len >= 2 and parts[0] == 1:
+    let base = atomFromFinal(final)
+    return KeyEvent(kind: base, modifiers: decodeModifierCode(parts[1]))
+  # Unrecognized shape — fall back to legacy decoder.
+  case final
+  of 'Z': KeyEvent(kind: kTab, modifiers: {modShift})
+  else: atomKey(atomFromFinal(final))
 
 proc parseSs3(c: char): KeyEvent =
   case c
@@ -121,6 +233,7 @@ proc parseSs3(c: char): KeyEvent =
   of 'S': atomKey(kF4)
   of 'H': atomKey(kHome)
   of 'F': atomKey(kEnd)
+  of 'Z': KeyEvent(kind: kTab, modifiers: {modShift})  ## SS3 Shift+Tab
   else:   atomKey(kEscape)
 
 # --- Main decoder ----------------------------------------------------------

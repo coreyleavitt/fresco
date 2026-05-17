@@ -64,83 +64,189 @@ template isIdentLike(n: NimNode): bool =
   ## keyword forms.
   n.kind in {nnkIdent, nnkSym, nnkOpenSymChoice}
 
+proc isKnownAtom(name: string): bool {.inline.} =
+  ## True if `name` is in the atomMap (Tab, Enter, ArrowUp, F1, ...).
+  ## Used by the arm compiler to disambiguate `Ctrl(Tab)` (modifier
+  ## prefix) from `Ctrl(c)` (legacy bind-the-char form).
+  name in atomMap
+
+proc modifierFor(name: string): string =
+  ## Map a modifier-prefix identifier to its `Modifier` enum string.
+  ## "Shift" → "modShift" etc. Returns "" if not a modifier name.
+  case name
+  of "Shift": "modShift"
+  of "Meta":  "modMeta"
+  of "Ctrl":  "modCtrl"
+  of "Alt":   "modAlt"
+  else: ""
+
+proc compilePattern(evSym, pat: NimNode): tuple[cond, prelude: NimNode]
+
 proc compileArm(evSym, arm: NimNode): tuple[cond, body: NimNode] =
-  ## Translate one arm of a receive into an (if-condition, body) pair
-  ## suitable for inclusion in an elif chain. Wildcard arms return
-  ## `cond = nil` — the caller emits them as `nnkElse` for a cleaner
-  ## AST than `elif true:`.
+  ## Translate one arm of a receive into an (if-condition, body)
+  ## pair. Wildcard arms return `cond = nil`. Modifier prefixes
+  ## (`Shift(Tab)`, `Ctrl(ArrowUp)`, etc.) are handled by recursing
+  ## through `compilePattern`.
   let armBody = arm[^1]
 
-  # Wildcard: `_: body`. eqIdent (not nnkIdent + string compare) so
-  # hygiene wrapping inside a template doesn't silently miss the match.
+  # Wildcard: `_: body`
   if arm.kind == nnkCall and arm.len == 2 and arm[0].eqIdent("_"):
     return (nil, armBody)
 
-  # Atom: `Enter: body`, `ArrowUp: body`, `F1: body` …
-  if arm.kind == nnkCall and arm.len == 2 and arm[0].isIdentLike:
-    let name = $arm[0]
+  # Compile the pattern (everything except the body) and wrap.
+  let pat = if arm.len == 2: arm[0]
+            else: nnkCall.newTree(arm[0..^2])    # rebuild without body
+  let (cond, prelude) = compilePattern(evSym, pat)
+  if prelude == nil:
+    return (cond, armBody)
+  return (cond, newStmtList(prelude, armBody))
+
+proc compilePattern(evSym, pat: NimNode): tuple[cond, prelude: NimNode] =
+  ## Compile a pattern (no body) into a condition + optional
+  ## prelude (capture bindings). The condition tests evSym against
+  ## the pattern; the prelude declares any binder lets to be
+  ## emitted before the arm body.
+  # Atom: `Enter`, `ArrowUp`, `F1`, …
+  if pat.kind in {nnkIdent, nnkSym} and isIdentLike(pat):
+    let name = $pat
     let kindName = atomKindFor(name)
     if kindName.len == 0:
-      error("receive: unknown atom pattern '" & name & "'", arm[0])
+      error("receive: unknown atom pattern '" & name & "'", pat)
     let kindIdent = ident(kindName)
-    let cond = quote do: `evSym`.kind == `kindIdent`
-    return (cond, armBody)
+    let cond = quote do:
+      `evSym`.kind == `kindIdent` and `evSym`.modifiers == {}
+    return (cond, nil)
 
-  # Constructor: `Char('+')` / `Char(c)` / `Ctrl('c')` / `Alt(a)`
-  if arm.kind == nnkCall and arm.len == 3 and arm[0].isIdentLike:
-    let ctor = $arm[0]
-    let argument = arm[1]
+  # Call shape: Char(...), Ctrl(...), Alt(...), Shift(...), Meta(...)
+  if pat.kind == nnkCall and pat.len == 2 and pat[0].isIdentLike:
+    let ctor = $pat[0]
+    let arg = pat[1]
+    let modName = modifierFor(ctor)
 
+    # Modifier-prefix shape: when arg is a known atom name, a
+    # nested constructor call, or the modifier is Shift/Meta (which
+    # never have a legacy form), treat as modifier prefix. Otherwise
+    # fall through to the legacy Ctrl('c') / Alt('c') / Char(c) handling.
+    let isPrefix =
+      modName.len > 0 and (
+        (arg.kind == nnkCall) or
+        (arg.kind in {nnkIdent, nnkSym} and isKnownAtom($arg)) or
+        ctor in ["Shift", "Meta"]
+      )
+    if isPrefix:
+      # Recurse on the inner pattern, then layer this modifier on.
+      let (innerCond, innerPre) = compilePattern(evSym, arg)
+      let modIdent = ident(modName)
+      # innerCond's modifier check is `modifiers == {}` for the
+      # unmodified base. We need to REPLACE that with `modIdent in
+      # modifiers` AND the rest of the cond stays. Easiest: build
+      # a fresh cond that checks kind + modifier-set inclusion.
+      # Re-extract just the kind check by re-running on the bare arg.
+      let baseKind = if arg.kind in {nnkIdent, nnkSym}: atomKindFor($arg) else: ""
+      if baseKind.len > 0:
+        let baseIdent = ident(baseKind)
+        # Strict-equality on the modifier set: `Shift(Tab)` matches
+        # ONLY Shift+Tab, not Ctrl+Shift+Tab. Composed modifiers
+        # require `Ctrl(Shift(Tab))`.
+        let setLit = nnkCurly.newTree(modIdent)
+        let cond = quote do:
+          `evSym`.kind == `baseIdent` and `evSym`.modifiers == `setLit`
+        return (cond, nil)
+      elif arg.kind == nnkCall:
+        # Nested: e.g. Ctrl(Shift(End)). Re-walk: gather all modifier
+        # idents up the chain, find the innermost atom.
+        var mods: seq[NimNode] = @[modIdent]
+        var cur = arg
+        while cur.kind == nnkCall and cur.len == 2 and cur[0].isIdentLike:
+          let m = modifierFor($cur[0])
+          if m.len > 0:
+            mods.add ident(m)
+            cur = cur[1]
+          else: break
+        # `cur` should now be the innermost atom or Char(...) constructor.
+        let setLit = nnkCurly.newTree(mods)
+        if cur.kind in {nnkIdent, nnkSym}:
+          let bk = atomKindFor($cur)
+          if bk.len == 0:
+            error("receive: modifier prefix wraps unknown atom '" & $cur & "'", cur)
+          let baseIdent = ident(bk)
+          let cond = quote do:
+            `evSym`.kind == `baseIdent` and `evSym`.modifiers == `setLit`
+          return (cond, nil)
+        # Nested Char(c) under modifiers: e.g. Shift(Char(c)).
+        if cur.kind == nnkCall and cur.len == 2 and cur[0].eqIdent("Char"):
+          let charArg = cur[1]
+          if charArg.kind == nnkCharLit:
+            let chLit = newLit(char(charArg.intVal))
+            let cond = quote do:
+              `evSym`.kind == kChar and `evSym`.rune == Rune(`chLit`) and
+                `evSym`.modifiers == `setLit`
+            return (cond, nil)
+          elif charArg.isIdentLike:
+            let binder = charArg
+            let cond = quote do:
+              `evSym`.kind == kChar and `evSym`.modifiers == `setLit`
+            let prelude = quote do:
+              let `binder` = `evSym`.rune
+            return (cond, prelude)
+        error("receive: unsupported modifier-prefix inner shape", arg)
+      else:
+        error("receive: modifier prefix expects an atom or nested Char", arg)
+
+    # Legacy / non-prefix constructors
     case ctor
     of "Char":
-      if argument.kind == nnkCharLit:
-        let chLit = newLit(char(argument.intVal))
+      if arg.kind == nnkCharLit:
+        let chLit = newLit(char(arg.intVal))
         let cond = quote do:
-          `evSym`.kind == kChar and `evSym`.rune == Rune(`chLit`)
-        return (cond, armBody)
-      elif argument.isIdentLike:
-        let binder = argument
-        let cond = quote do: `evSym`.kind == kChar
-        let wrapped = quote do:
+          `evSym`.kind == kChar and `evSym`.rune == Rune(`chLit`) and
+            `evSym`.modifiers == {}
+        return (cond, nil)
+      elif arg.isIdentLike:
+        let binder = arg
+        let cond = quote do:
+          `evSym`.kind == kChar and `evSym`.modifiers == {}
+        let prelude = quote do:
           let `binder` = `evSym`.rune
-          `armBody`
-        return (cond, wrapped)
+        return (cond, prelude)
       else:
-        error("Char pattern: expected char literal or identifier", argument)
+        error("Char pattern: expected char literal or identifier", arg)
     of "Ctrl":
-      if argument.kind == nnkCharLit:
-        let chLit = newLit(char(argument.intVal))
+      if arg.kind == nnkCharLit:
+        let chLit = newLit(char(arg.intVal))
         let cond = quote do:
-          `evSym`.kind == kCtrl and `evSym`.ch == `chLit`
-        return (cond, armBody)
-      elif argument.isIdentLike:
-        let binder = argument
-        let cond = quote do: `evSym`.kind == kCtrl
-        let wrapped = quote do:
-          let `binder` = `evSym`.ch
-          `armBody`
-        return (cond, wrapped)
+          `evSym`.kind == kChar and `evSym`.rune == Rune(`chLit`) and
+            `evSym`.modifiers == {modCtrl}
+        return (cond, nil)
+      elif arg.isIdentLike:
+        let binder = arg
+        let cond = quote do:
+          `evSym`.kind == kChar and `evSym`.modifiers == {modCtrl}
+        let prelude = quote do:
+          let `binder` = `evSym`.rune
+        return (cond, prelude)
       else:
-        error("Ctrl pattern: expected char literal or identifier", argument)
+        error("Ctrl pattern: expected char literal or identifier", arg)
     of "Alt":
-      if argument.kind == nnkCharLit:
-        let chLit = newLit(char(argument.intVal))
+      if arg.kind == nnkCharLit:
+        let chLit = newLit(char(arg.intVal))
         let cond = quote do:
-          `evSym`.kind == kAlt and `evSym`.ch == `chLit`
-        return (cond, armBody)
-      elif argument.isIdentLike:
-        let binder = argument
-        let cond = quote do: `evSym`.kind == kAlt
-        let wrapped = quote do:
-          let `binder` = `evSym`.ch
-          `armBody`
-        return (cond, wrapped)
+          `evSym`.kind == kChar and `evSym`.rune == Rune(`chLit`) and
+            `evSym`.modifiers == {modAlt}
+        return (cond, nil)
+      elif arg.isIdentLike:
+        let binder = arg
+        let cond = quote do:
+          `evSym`.kind == kChar and `evSym`.modifiers == {modAlt}
+        let prelude = quote do:
+          let `binder` = `evSym`.rune
+        return (cond, prelude)
       else:
-        error("Alt pattern: expected char literal or identifier", argument)
+        error("Alt pattern: expected char literal or identifier", arg)
     else:
-      error("receive: unknown constructor pattern '" & ctor & "'", arm[0])
+      error("receive: unknown constructor pattern '" & ctor & "'", pat[0])
 
-  error("receive: unrecognized arm shape\n" & arm.treeRepr, arm)
+  error("receive: unrecognized pattern shape\n" & pat.treeRepr, pat)
 
 proc isAfterArm(arm: NimNode): bool =
   ## Detect `after <Duration>: body`. AST: Command(after, durExpr, StmtList(body))
@@ -170,13 +276,14 @@ proc kindCoveredByArm(arm: NimNode): string =
   if arm.len == 3 and arm[0].isIdentLike:
     let ctor = $arm[0]
     let arg = arm[1]
-    # Only a capture (identifier) is fully-covering; a literal pins
-    # one specific char.
-    if arg.isIdentLike:
+    # Only a capture (identifier) is fully-covering; a literal or
+    # modifier-prefix pins specific values. Under the modifier-set
+    # model both Ctrl(c) and Alt(c) bind to a kChar with a specific
+    # modifier — coverage attribution is to kChar.
+    if arg.isIdentLike and not isKnownAtom($arg):
       case ctor
       of "Char": return "kChar"
-      of "Ctrl": return "kCtrl"
-      of "Alt":  return "kAlt"
+      of "Ctrl", "Alt": return "kChar"
       else: discard
   return ""
 

@@ -123,6 +123,40 @@ suite "receive: core patterns":
         _:         outcome = "other"
     check got == "help"
 
+  test "Shift(Tab) modifier-prefix arm matches CSI Z (#67)":
+    let got = rig("\x1b[Z"):
+      receive stream:
+        Tab:         outcome = "tab"
+        Shift(Tab):  outcome = "shift-tab"
+        _:           outcome = "other"
+    check got == "shift-tab"
+
+  test "Ctrl(ArrowUp) modifier-prefix arm matches \\e[1;5A":
+    let got = rig("\x1b[1;5A"):
+      receive stream:
+        ArrowUp:        outcome = "up"
+        Ctrl(ArrowUp):  outcome = "ctrl-up"
+        _:              outcome = "other"
+    check got == "ctrl-up"
+
+  test "Ctrl(Shift(End)) nested modifier prefix matches \\e[1;6F":
+    let got = rig("\x1b[1;6F"):
+      receive stream:
+        End:                 outcome = "end"
+        Shift(End):          outcome = "shift-end"
+        Ctrl(Shift(End)):    outcome = "ctrl-shift-end"
+        _:                   outcome = "other"
+    check got == "ctrl-shift-end"
+
+  test "bare atom arm doesn't match a modified key (modifier sets differ)":
+    # `Tab:` matches kTab with empty modifier set. Shift+Tab has
+    # modShift; it should fall through to the wildcard.
+    let got = rig("\x1b[Z"):
+      receive stream:
+        Tab:  outcome = "tab"
+        _:    outcome = "other"
+    check got == "other"
+
   test "wildcard catches everything not enumerated":
     let got = rig("z"):
       receive stream:

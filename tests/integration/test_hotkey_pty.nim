@@ -84,7 +84,7 @@ suite "hotkey":
       dispose(scope)
       writeAll(master, "\x11")
       let ev = await stream.nextKey().wait(200.milliseconds)
-      check ev.kind == kCtrl and ev.ch == 'q'
+      check ev == ctrlKey('q')
       check not fired
     waitFor body()
 

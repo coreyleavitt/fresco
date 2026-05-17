@@ -22,6 +22,53 @@ suite "single-byte keys":
   test "Tab":
     oneEvent "\t", atomKey(kTab)
 
+  test "tracer: Shift+Tab via CSI Z → (kTab, {modShift})":
+    let want = KeyEvent(kind: kTab, modifiers: {modShift})
+    oneEvent "\x1b[Z", want
+
+  test "SS3 variant: \\eOZ → (kTab, {modShift})":
+    let want = KeyEvent(kind: kTab, modifiers: {modShift})
+    oneEvent "\x1bOZ", want
+
+  test "xterm modifier form: Shift+ArrowUp via \\e[1;2A":
+    let want = KeyEvent(kind: kArrowUp, modifiers: {modShift})
+    oneEvent "\x1b[1;2A", want
+
+  test "Alt+ArrowUp via \\e[1;3A":
+    let want = KeyEvent(kind: kArrowUp, modifiers: {modAlt})
+    oneEvent "\x1b[1;3A", want
+
+  test "Ctrl+ArrowUp via \\e[1;5A":
+    let want = KeyEvent(kind: kArrowUp, modifiers: {modCtrl})
+    oneEvent "\x1b[1;5A", want
+
+  test "Ctrl+Shift+ArrowRight via \\e[1;6C":
+    let want = KeyEvent(kind: kArrowRight, modifiers: {modCtrl, modShift})
+    oneEvent "\x1b[1;6C", want
+
+  test "Alt+Ctrl+ArrowUp via \\e[1;7A":
+    let want = KeyEvent(kind: kArrowUp, modifiers: {modAlt, modCtrl})
+    oneEvent "\x1b[1;7A", want
+
+  test "ctrlKey constructor produces kChar + modCtrl (regression for existing API)":
+    let e = ctrlKey('c')
+    check e.kind == kChar
+    check e.rune == Rune('c')
+    check e.modifiers == {modCtrl}
+
+  test "== distinguishes by modifier set":
+    let bare = KeyEvent(kind: kTab, modifiers: {})
+    let shft = KeyEvent(kind: kTab, modifiers: {modShift})
+    check bare != shft
+    check shft == KeyEvent(kind: kTab, modifiers: {modShift})
+
+  test "summary() renders modified keys with prefix":
+    check summary(KeyEvent(kind: kTab, modifiers: {modShift})) == "Shift+kTab"
+    check summary(KeyEvent(kind: kArrowUp,
+                            modifiers: {modCtrl, modShift})) == "Shift+Ctrl+kArrowUp"
+    # Single-Ctrl-on-Char keeps legacy hyphen form.
+    check summary(ctrlKey('q')) == "Ctrl-q"
+
   test "Backspace via BS (0x08) and DEL (0x7F)":
     oneEvent "\x08", atomKey(kBackspace)
     oneEvent "\x7F", atomKey(kBackspace)
@@ -90,8 +137,10 @@ suite "CSI sequences":
     oneEvent "\x1b[17~", atomKey(kF6)
     oneEvent "\x1b[24~", atomKey(kF12)
 
-  test "tilde sequence with modifier params still decodes base key":
-    oneEvent "\x1b[5;2~", atomKey(kPageUp)
+  test "tilde sequence with modifier params decodes base key + modifier (#67)":
+    # Was: modifier dropped; bare kPageUp returned.
+    # Now: Shift+PageUp carries `modShift` in the modifier set.
+    oneEvent "\x1b[5;2~", KeyEvent(kind: kPageUp, modifiers: {modShift})
 
 suite "SS3 (F1..F4)":
 
