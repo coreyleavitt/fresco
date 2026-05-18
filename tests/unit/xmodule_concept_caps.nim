@@ -1,10 +1,10 @@
 ## Cross-module user-cap helper for the μb concept-discharge tests.
 ## Declares a cap with `cap T` and a task that needs it. The importer
-## (test_capconcept_xmodule) builds a `staticSupervisor:` that
+## (test_capconcept_xmodule) builds a `supervisor:` that
 ## discharges this task — proves user caps cross module boundaries
 ## without registerCap / bitmap encoding.
 
-import fresco/reactive/capabilities
+import fresco/task/supervisor
 
 cap CrossModCap
 

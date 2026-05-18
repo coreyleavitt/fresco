@@ -27,7 +27,7 @@
 ## `requires` annotations. That would lift the check from runtime to
 ## compile time along statically-known supervisor paths.
 
-import std/[macros, strutils, tables, sets, algorithm]
+import std/[macros, strutils, tables, sets]
 import ./context
 
 type
@@ -42,7 +42,7 @@ type
 #
 # Each capability has a paired *grant token* (a zero-byte object type)
 # and a *Grants concept* matching any supervisor whose object type
-# carries the grant field. A supervisor built by `staticSupervisor:` is
+# carries the grant field. A supervisor built by `supervisor:` is
 # a ref object whose fields are grant tokens, one per cap it provides.
 # Discharge at `child` sites is `when typeof(sup) is GrantsX and ...`
 # — Nim's concept satisfaction is the subset check, with field-order
@@ -78,7 +78,7 @@ type CapMeta* = object
 
 var capMetaTable* {.compileTime.}: Table[string, CapMeta]
   ## Compile-time registry of cap → grant-field / grant-type / concept
-  ## names. The `staticSupervisor:` macro reads this at expansion time
+  ## names. The `supervisor:` macro reads this at expansion time
   ## to build the supervisor object's field list. User caps register
   ## themselves here via `cap T` (added in a later cycle).
 
@@ -96,13 +96,13 @@ macro cap*(T: untyped): untyped =
   ## Declare a capability type and its concept-discharge metadata.
   ## Emits the cap type (`ref object`), its grant token type
   ## (`<base>Grant`), and the matching `Grants<CapName>` concept,
-  ## and registers the cap in `capMetaTable` so `staticSupervisor:`
+  ## and registers the cap in `capMetaTable` so `supervisor:`
   ## and `{.needs.}` can resolve it.
   ##
   ## Usage:
   ##   cap MyAppCap
   ##   proc t() {.needs: MyAppCap.} = ...
-  ##   let sup = staticSupervisor:
+  ##   let sup = supervisor:
   ##     provides(MyAppCap)
   ##     child t
   ##
@@ -140,15 +140,22 @@ macro cap*(T: untyped): untyped =
 
 # --- {.needs: A, B.} pragma — required-cap declarations ------------------
 
+var grantInjectionDone* {.compileTime.}: HashSet[string]
+  ## CT marker: proc names whose `currentSup`/type emission has fired.
+  ## Lets `{.needs.}` and `{.inferCaps.}` coexist on the same proc
+  ## without a duplicate `currentSup` template (which would be
+  ## ambiguous at call sites). Grant overloads emit unconditionally —
+  ## Nim accepts redundant overloads with the same signature.
+
 var procRequiresNames* {.compileTime.}: Table[string, seq[string]]
   ## Compile-time store: proc name → list of required cap type names
   ## (e.g., ["FsReadCap", "NetworkCap"]). Populated by `{.needs.}` and
   ## `{.inferCaps.}` at macro-expansion time; read by
-  ## `staticSupervisor:` to build the concept-conjunction discharge
+  ## `supervisor:` to build the concept-conjunction discharge
   ## check. Module-scoped at declaration but storage is shared across
   ## the compilation unit, so cross-module discharge works (Nim sems
   ## in dependency order; pragmas in imported modules populate this
-  ## before any downstream `staticSupervisor:` fires).
+  ## before any downstream `supervisor:` fires).
 
 proc nameOfProc(procDef: NimNode): string =
   ## Extract the user-visible name of a proc declaration, handling
@@ -160,6 +167,90 @@ proc nameOfProc(procDef: NimNode): string =
     else: head.strVal
   else:
     ""
+
+proc injectGrants(procDef: NimNode, procName: string,
+                  capNames: seq[string]): NimNode =
+  ## Prepend per-cap `grant(T: typedesc[Cap]): Grant` template overloads
+  ## plus a synthetic supervisor type and `currentSup()` accessor to a
+  ## proc's body.
+  ##
+  ## - `grant(C)`: returns the grant token for cap `C` if `C` is in the
+  ##   proc's `{.needs.}`. Calls for caps NOT declared resolve to no
+  ##   matching overload → standard compile error. Compile-time
+  ##   validation by overload resolution.
+  ##
+  ## - `currentSup()`: returns `Option[ProcSup_<sym>]` where ProcSup is a
+  ##   per-proc synthetic `ref object of Supervisor` with exactly the
+  ##   grant fields the proc declared. The cast is contract-correct
+  ##   (supervisor discharge at the spawn site already proved the actual
+  ##   supervisor object carries these grant fields with the matching
+  ##   layout — both subtypes are `ref object of Supervisor` so the
+  ##   inheritance preamble is identical and our fields land at the
+  ##   same offsets as the supervisor's actual gensym'd grant fields).
+  ##
+  ## Body-rewriting is a no-op for forward declarations (empty body).
+  result = procDef
+  if procDef.len < 7: return
+  let body = procDef[6]
+  if body.kind == nnkEmpty: return
+  # Filter to caps registered in capMetaTable (skip unknowns silently;
+  # `supervisor:` will surface them at discharge).
+  var validCaps: seq[string]
+  for cn in capNames:
+    if cn in capMetaTable: validCaps.add cn
+  if validCaps.len == 0: return
+  var prepended = newStmtList()
+  # Per-cap grant template overloads. Duplicate overloads (e.g. when
+  # both {.needs.} and {.inferCaps.} mention the same cap) are
+  # harmless in Nim — identical signatures merge.
+  for capName in validCaps:
+    let meta = capMetaTable[capName]
+    let capIdent   = ident(capName)
+    let grantIdent = ident(meta.grantType)
+    prepended.add quote do:
+      template grant(T: typedesc[`capIdent`]): `grantIdent` = `grantIdent`()
+  # The synthetic ProcSup type and `currentSup` template must be
+  # emitted at most once per proc, otherwise calls become ambiguous
+  # between two distinct return types. Track via `grantInjectionDone`.
+  if procName notin grantInjectionDone:
+    grantInjectionDone.incl procName
+    let procSupSym = genSym(nskType, "ProcSup")
+    var fields = newNimNode(nnkRecList)
+    for capName in validCaps:
+      let meta = capMetaTable[capName]
+      fields.add nnkIdentDefs.newTree(
+        ident(meta.grantField),
+        ident(meta.grantType),
+        newEmptyNode())
+    let typeDef = nnkTypeSection.newTree(
+      nnkTypeDef.newTree(
+        procSupSym,
+        newEmptyNode(),
+        nnkRefTy.newTree(
+          nnkObjectTy.newTree(
+            newEmptyNode(),
+            nnkOfInherit.newTree(ident("Supervisor")),
+            fields))))
+    let supLocal = genSym(nskLet, "supRef")
+    let currentSupTemplate = quote do:
+      template currentSup(): Option[`procSupSym`] =
+        let `supLocal` = currentSupervisor
+        if `supLocal` == nil: none(`procSupSym`)
+        else: some(cast[`procSupSym`](`supLocal`))
+    # Only emit if Supervisor is in scope. Users importing only the
+    # cap surface (capabilities.nim) get grant overloads without the
+    # supervisor accessor; users importing task/supervisor get both.
+    prepended.add quote do:
+      when declared(Supervisor):
+        `typeDef`
+        `currentSupTemplate`
+  let newBody = newStmtList()
+  for s in prepended: newBody.add s
+  if body.kind == nnkStmtList:
+    for s in body: newBody.add s
+  else:
+    newBody.add body
+  result[6] = newBody
 
 proc capNodesOf(caps: NimNode): seq[NimNode] =
   ## Flatten a pragma/DSL argument that may be a single ident, a
@@ -274,7 +365,11 @@ macro inferCaps*(procDef: untyped): untyped =
   for cn in inferred:
     if cn notin procRequiresNames[n]:
       procRequiresNames[n].add cn
-  result = procDef
+  # Inject grant overloads + currentSup for the union of manual +
+  # inferred caps. (Manual {.needs.} runs first per convention; its
+  # injection already happened, but Nim allows multiple template
+  # overload definitions and they merge naturally.)
+  result = injectGrants(procDef, n, procRequiresNames[n])
 
 macro needs*(caps, procDef: untyped): untyped =
   ## **Macro pragma** attaching a compile-time required-capability
@@ -292,7 +387,7 @@ macro needs*(caps, procDef: untyped): untyped =
   let n = nameOfProc(procDef)
   if n.len == 0: return procDef
   # μb: stash cap type names at macro-expansion time. Concept discharge
-  # in `staticSupervisor:` reads procRequiresNames directly — no
+  # in `supervisor:` reads procRequiresNames directly — no
   # capKindFor / bitmap detour.
   var capNames: seq[string]
   for c in capNodes:
@@ -303,11 +398,11 @@ macro needs*(caps, procDef: untyped): untyped =
   for cn in capNames:
     if cn notin procRequiresNames[n]:
       procRequiresNames[n].add cn
-  result = procDef
+  result = injectGrants(procDef, n, capNames)
 
-# --- `staticSupervisor:` DSL ---------------------------------------------
+# --- `supervisor:` DSL ---------------------------------------------
 
-proc collectAllProvidedCapNames(body: NimNode, names: var HashSet[string]) =
+proc collectAllProvidedCapNames*(body: NimNode, names: var HashSet[string]) =
   ## Walk a supervisor body recursively (including nested `supervisor:`
   ## blocks). For every `provides(A, B, ...)` call, add each cap
   ## identifier's source name to `names`. Used by the macro to build
@@ -324,7 +419,7 @@ proc collectAllProvidedCapNames(body: NimNode, names: var HashSet[string]) =
          stmt[1].kind == nnkStmtList:
       collectAllProvidedCapNames(stmt[1], names)
 
-proc collectChildren(body: NimNode, acc: var seq[NimNode]) =
+proc collectChildren*(body: NimNode, acc: var seq[NimNode]) =
   ## Walk a supervisor body (recursing into nested `supervisor:` blocks)
   ## and collect every `child <factoryIdent>` node. Used by the
   ## concept-based discharge to emit one `when` check per child.
@@ -338,7 +433,7 @@ proc collectChildren(body: NimNode, acc: var seq[NimNode]) =
          stmt[1].kind == nnkStmtList:
       collectChildren(stmt[1], acc)
 
-proc conceptConjunctionFor(capNames: seq[string], typeSym: NimNode): NimNode =
+proc conceptConjunctionFor*(capNames: seq[string], typeSym: NimNode): NimNode =
   ## Build `(typeSym is GrantsA) and (typeSym is GrantsB) and ...`
   ## as AST. Empty set returns `true`.
   if capNames.len == 0:
@@ -353,120 +448,13 @@ proc conceptConjunctionFor(capNames: seq[string], typeSym: NimNode): NimNode =
     if result == nil: result = term
     else: result = nnkInfix.newTree(ident("and"), result, term)
 
-proc emitDischargeAndCtor(capNames: HashSet[string], body: NimNode): NimNode =
-  ## Emit the full block:
-  ##   block:
-  ##     type AnonSup = ref object { grant fields }
-  ##     when not (AnonSup is GrantsX and AnonSup is GrantsY ...):
-  ##       {.error: "...".}
-  ##     ... one check per child ...
-  ##     AnonSup(grantField: GrantType(), ...)
-  let typeSym = genSym(nskType, "AnonSup")
-  var fields = newNimNode(nnkRecList)
-  var ctor = nnkObjConstr.newTree(typeSym)
-  var sorted: seq[string]
-  for n in capNames: sorted.add n
-  sorted.sort()
-  for capName in sorted:
-    if capName notin capMetaTable:
-      error("staticSupervisor: capability type `" & capName &
-            "` has no registered metadata — built-ins live in " &
-            "capabilities.nim; user caps must be declared with " &
-            "`cap T` before use")
-    let meta = capMetaTable[capName]
-    fields.add nnkIdentDefs.newTree(
-      ident(meta.grantField),
-      ident(meta.grantType),
-      newEmptyNode())
-    ctor.add nnkExprColonExpr.newTree(
-      ident(meta.grantField),
-      newCall(ident(meta.grantType)))
-  let typeDef = nnkTypeSection.newTree(
-    nnkTypeDef.newTree(
-      typeSym,
-      newEmptyNode(),
-      nnkRefTy.newTree(
-        nnkObjectTy.newTree(
-          newEmptyNode(),
-          newEmptyNode(),
-          fields))))
-  # Discharge: one `when` check per `child factoryName` anywhere in body
-  var dischargeChecks = newStmtList()
-  var children: seq[NimNode]
-  collectChildren(body, children)
-  for child in children:
-    let childName = child.repr
-    if childName notin procRequiresNames:
-      let nameLit = newLit(childName)
-      dischargeChecks.add quote do:
-        {.error: "fresco staticSupervisor: child `" & `nameLit` &
-                 "` has no {.needs: ...} annotation — every child " &
-                 "factory must declare its required capabilities " &
-                 "(use `{.needs: <Caps>.}` on the proc, or " &
-                 "`{.needs: ().}` for none).".}
-      continue
-    let required = procRequiresNames[childName]
-    let conjunction = conceptConjunctionFor(required, typeSym)
-    let nameLit = newLit(childName)
-    var requiredList, providedList, missingList = ""
-    var providedSet: HashSet[string]
-    for cn in sorted: providedSet.incl cn
-    for i, cn in required:
-      if i > 0: requiredList.add ", "
-      requiredList.add cn
-      if cn notin providedSet:
-        if missingList.len > 0: missingList.add ", "
-        missingList.add cn
-    for i, cn in sorted:
-      if i > 0: providedList.add ", "
-      providedList.add cn
-    let requiredLit = newLit(requiredList)
-    let providedLit = newLit(providedList)
-    let missingLit  = newLit(missingList)
-    dischargeChecks.add quote do:
-      when not (`conjunction`):
-        {.error: "fresco capability discharge failed for `child " &
-                 `nameLit` & "`: required {" & `requiredLit` &
-                 "}, supervisor provides {" & `providedLit` &
-                 "}, missing {" & `missingLit` &
-                 "} — add the missing caps to a `provides(...)` " &
-                 "line in this supervisor or an ancestor.".}
-  result = nnkBlockExpr.newTree(
-    newEmptyNode(),
-    nnkStmtList.newTree(typeDef, dischargeChecks, ctor))
-
-macro staticSupervisor*(body: untyped): untyped =
-  ## Declarative supervisor DSL. Recognized forms inside the block:
-  ##
-  ##   provides(FsReadCap, NetworkCap)        # capability declaration
-  ##   child agentLoop                        # task registration
-  ##   supervisor:                            # nested subtree; sees
-  ##     provides(TerminalCap)                #   ancestor + local provides
-  ##     child uiLoop
-  ##
-  ## Discharge: every `child` factory must have a `{.needs: ...}`
-  ## annotation; the macro emits one `when` check per child that
-  ## asserts the supervisor's emitted type satisfies the conjunction
-  ## of `Grants*` concepts derived from the child's required caps.
-  ## Failure → compile error naming the missing caps.
-  ##
-  ## Returns an anonymous ref-object value whose type structurally
-  ## carries one grant token per cap provided at any nesting depth.
-  ## Cross-module library helpers can constrain on those grants via
-  ## `proc[S: GrantsX](sup: S, ...)`. The static↔runtime supervisor
-  ## bridge (`currentSup()` inside task bodies) is filed as a separate
-  ## follow-up.
-  var allCaps: HashSet[string]
-  collectAllProvidedCapNames(body, allCaps)
-  result = newStmtList(emitDischargeAndCtor(allCaps, body))
-
 macro assertCap*(caps: varargs[untyped]): untyped =
   ## Runtime assertion that every capability in `caps` is provided by
   ## some ancestor scope. Each cap expands to a `discard use(Cap)`
   ## which raises `MissingProviderError` if missing.
   ##
   ## `assertCap` is the runtime-checked fallback. The compile-time
-  ## form is `{.needs: ...}` + `staticSupervisor:`, which discharges
+  ## form is `{.needs: ...}` + `supervisor:`, which discharges
   ## along a statically-known supervisor topology and fails with a
   ## compile error rather than a runtime exception. Use the pragma
   ## form whenever the supervisor is statically declared; use

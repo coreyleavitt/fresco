@@ -15,16 +15,20 @@
 ## proc invocation. The supervisor calls the factory each time it
 ## (re)starts the child.
 
-import std/[macros, tables]
+import std/[macros, tables, sets, options]
 import chronos
+import chronos/contextvars
 import ./core
 import ./group
 
 import ../reactive/scope
+import ../reactive/capabilities
 import ../journal/events as jev
 import ../journal/log
 
 export group
+export capabilities
+export options
 
 type
   Lifecycle* = enum
@@ -96,7 +100,7 @@ type
       ## the supervisor needs to retain the factory until it has
       ## decided whether to restart.
 
-  Supervisor* = ref object
+  Supervisor* = ref object of RootObj
     strategy*: Strategy
     maxRestarts*: int
     within*: Duration
@@ -109,6 +113,15 @@ type
 
   SupervisorEscalation* = object of CatchableError
     childName*: string
+
+contextVar:
+  var currentSupervisor: Supervisor = nil
+  ## Chronos contextVar carrying the supervisor that spawned the
+  ## currently-running task. Set by `Supervisor.run()` around each
+  ## child factory call; the chronos dispatcher captures+restores
+  ## across every await automatically. Inside a `{.needs.}`-annotated
+  ## task body, the macro-injected `currentSup()` accessor reads this
+  ## and downcasts to the proc-local synthetic supervisor type.
 
 proc newSupervisor*(strategy = ssOneForOne,
                     maxRestarts = 5,
@@ -203,9 +216,13 @@ proc run*(s: Supervisor) {.async: (raises: [CatchableError]).} =
   ## or rate limit escalated). Cancellation propagates: cancelling the
   ## supervisor task cancels every child.
 
-  # Start each child once.
+  # Start each child once. Wrap each factory call so the chronos
+  # contextVar substrate captures the supervisor as `currentSupervisor`
+  # for the duration of the spawned task's lifetime — `currentSup()`
+  # inside the task body reads this back.
   for child in s.children:
-    child.mount = spawn child.spec.factory()
+    withCurrentSupervisor(s):
+      child.mount = spawn child.spec.factory()
 
   while s.children.len > 0 or s.hasAdoptedMembers():
     # Re-create the wakeup future each iteration. Spawn hooks on
@@ -405,7 +422,8 @@ proc run*(s: Supervisor) {.async: (raises: [CatchableError]).} =
         try: target.spec.onRestart(globalJournal, prevTid)
         except Exception: discard   # user-supplied closure
 
-      target.mount = spawn target.spec.factory()
+      withCurrentSupervisor(s):
+        target.mount = spawn target.spec.factory()
 
 # --- Topology introspection ----------------------------------------------
 
@@ -466,63 +484,173 @@ proc topology*(s: Supervisor): seq[TopologyNode] =
 
 # --- Declarative supervisor: block ---------------------------------------
 
-macro supervisor*(name: untyped, body: untyped): untyped =
-  ## Declarative supervisor topology:
+macro supervisor*(body: untyped): untyped =
+  ## Anonymous unified supervisor (μb static-runtime bridge).
   ##
-  ##   supervisor appSup:
-  ##     maxRestarts = 5
-  ##     within = 10.seconds
-  ##     strategy = ssOneForOne
-  ##
-  ##     child("heartbeat", lcPermanent, heartbeatTask)
-  ##     child("agent",     lcTransient, agentLoop)
-  ##
-  ##   await appSup.run()                # later
-  ##
-  ## Config assignments (`name = value`) become named arguments on
-  ## `newSupervisor()`. `child(...)` calls become `addChild` calls.
+  ## Body recognizes `provides(A, B, ...)`, `child factoryIdent`, and
+  ## config assignments (`strategy = ...`, `maxRestarts = ...`,
+  ## `within = ...`). Emits a ref-object that inherits from
+  ## `Supervisor` and carries grant tokens for every provided cap.
+  ## Discharge of each `child` is a `when` check against the type's
+  ## `Grants*` concept satisfaction. The returned value runs its
+  ## declared children when `await sup.run()` is called.
   expectKind(body, nnkStmtList)
-
+  # Cap collection (recursive across nested supervisor: blocks).
+  var allCaps: HashSet[string]
+  collectAllProvidedCapNames(body, allCaps)
+  # Build the anonymous type: `ref object of Supervisor` + one grant
+  # field per cap.
+  let typeSym = genSym(nskType, "AnonSup")
+  var fields = newNimNode(nnkRecList)
+  var sortedCaps: seq[string]
+  for n in allCaps: sortedCaps.add n
+  for capName in sortedCaps:
+    if capName notin capMetaTable:
+      error("supervisor: capability `" & capName & "` not declared — " &
+            "use `cap T` for user caps or one of the built-ins")
+    let meta = capMetaTable[capName]
+    fields.add nnkIdentDefs.newTree(
+      ident(meta.grantField),
+      ident(meta.grantType),
+      newEmptyNode())
+  let typeDef = nnkTypeSection.newTree(
+    nnkTypeDef.newTree(
+      typeSym,
+      newEmptyNode(),
+      nnkRefTy.newTree(
+        nnkObjectTy.newTree(
+          newEmptyNode(),
+          nnkOfInherit.newTree(bindSym"Supervisor"),
+          fields))))
+  # Read config assignments from the body: `strategy = ...`,
+  # `maxRestarts = N`, `within = D`. Unrecognized assignments error.
   const KnownConfigKeys = ["strategy", "maxRestarts", "within"]
-
-  var supInit = newCall(bindSym"newSupervisor")
-  var addCalls: seq[NimNode] = @[]
-
+  var strategyExpr  = bindSym"ssOneForOne"
+  var maxRestartsExpr: NimNode = newLit(5)
+  var withinExpr: NimNode = newCall(bindSym"seconds", newLit(10))
   for stmt in body:
-    case stmt.kind
-    of nnkAsgn:
-      let key = stmt[0]
-      let val = stmt[1]
-      # Normalize via strVal: hygiene may wrap `key` as nnkSym (or
-      # nnkOpenSymChoice) when `supervisor:` is invoked inside a
-      # template. `strVal` returns the base name for any ident-like
-      # node, but bare `$node` on a gensym'd nnkSym would include
-      # the mangle suffix.
-      let keyName =
-        if key.kind in {nnkIdent, nnkSym, nnkOpenSymChoice}:
-          key.strVal
-        else:
-          ""
-      if keyName notin KnownConfigKeys:
-        error("supervisor: unknown config key `" & key.repr &
-              "` (expected one of " & $KnownConfigKeys & ")", key)
-      # Rebuild the named-argument key as a fresh ident — Nim's
-      # named-arg call form requires nnkIdent here; passing an
-      # nnkSym would error during semantic check.
-      supInit.add newTree(nnkExprEqExpr, ident(keyName), val)
-    of nnkCall:
-      if stmt[0].eqIdent("child"):
-        let addCall = newCall(newDotExpr(name, ident("addChild")))
-        for i in 1 ..< stmt.len:
-          addCall.add stmt[i]
-        addCalls.add addCall
-      else:
-        error("supervisor: unknown statement `" & stmt.repr &
-              "` (expected config assignment or child(...) call)", stmt)
+    if stmt.kind != nnkAsgn: continue
+    let key = stmt[0]
+    let keyName =
+      if key.kind in {nnkIdent, nnkSym, nnkOpenSymChoice}: key.strVal
+      else: ""
+    if keyName notin KnownConfigKeys:
+      error("supervisor: unknown config key `" & key.repr &
+            "` (expected one of " & $KnownConfigKeys & ")", key)
+    case keyName
+    of "strategy":    strategyExpr    = stmt[1]
+    of "maxRestarts": maxRestartsExpr = stmt[1]
+    of "within":      withinExpr      = stmt[1]
+    else: discard
+  # Constructor — Supervisor base fields use the resolved config exprs
+  # (defaults match newSupervisor). Grant fields follow.
+  var ctor = nnkObjConstr.newTree(
+    typeSym,
+    nnkExprColonExpr.newTree(ident("strategy"),    strategyExpr),
+    nnkExprColonExpr.newTree(ident("maxRestarts"), maxRestartsExpr),
+    nnkExprColonExpr.newTree(ident("within"),      withinExpr))
+  for capName in sortedCaps:
+    let meta = capMetaTable[capName]
+    ctor.add nnkExprColonExpr.newTree(
+      ident(meta.grantField),
+      newCall(ident(meta.grantType)))
+  # Walk body for child declarations. Three accepted shapes:
+  #   child fooTask                              # defaults: name=ident, lcPermanent
+  #   child fooTask, lcTransient                 # lifecycle override
+  #   child("explicit", lcTemporary, fooTask)    # back-compat paren form
+  var checks = newStmtList()
+  let supVar = genSym(nskLet, "sup")
+  var addChildCalls = newStmtList()
+  # Flatten all `child` statements, recursing into nested
+  # `supervisor:` blocks. Old semantics: nested blocks are
+  # organizational, contributing children + provides to the outer
+  # supervisor. Real nested runtime supervisor trees are a separate
+  # feature.
+  proc collectChildStmts(b: NimNode, acc: var seq[NimNode]) =
+    for st in b:
+      if st.kind in {nnkCommand, nnkCall} and
+         st[0].kind == nnkIdent and st[0].strVal == "child":
+        acc.add st
+      elif st.kind == nnkCall and st[0].kind == nnkIdent and
+           st[0].strVal == "supervisor" and st.len >= 2 and
+           st[1].kind == nnkStmtList:
+        collectChildStmts(st[1], acc)
+  var childStmts: seq[NimNode]
+  collectChildStmts(body, childStmts)
+  for stmt in childStmts:
+    var factoryIdent: NimNode
+    var lifecycleExpr: NimNode
+    var nameExpr: NimNode
+    if stmt.kind == nnkCommand:
+      # `child factoryIdent` or `child factoryIdent, lifecycle`
+      factoryIdent = stmt[1]
+      lifecycleExpr =
+        if stmt.len >= 3: stmt[2]
+        else: bindSym"lcPermanent"
+      nameExpr = newLit(factoryIdent.repr)
     else:
-      error("supervisor: body must be config assignments or " &
-            "child(name, lifecycle, factory) calls", stmt)
+      # `child("name", lifecycle, factoryIdent)` back-compat paren form
+      if stmt.len != 4:
+        error("supervisor: `child(...)` paren form expects exactly " &
+              "three arguments (name, lifecycle, factory); got " &
+              $(stmt.len - 1), stmt)
+      nameExpr      = stmt[1]
+      lifecycleExpr = stmt[2]
+      factoryIdent  = stmt[3]
+    let childName = factoryIdent.repr
+    # Missing `{.needs.}` is treated as the empty cap set. Children
+    # that don't touch capability-gated APIs (e.g., pure-compute tasks
+    # imported from a runtime-supervisor-only consumer) compose
+    # cleanly without forcing an explicit `{.needs: ().}` annotation.
+    let required =
+      if childName in procRequiresNames: procRequiresNames[childName]
+      else: @[]
+    let conjunction = conceptConjunctionFor(required, typeSym)
+    let nameLit = newLit(childName)
+    var requiredList, providedList, missingList = ""
+    var providedSet: HashSet[string]
+    for cn in sortedCaps: providedSet.incl cn
+    for i, cn in required:
+      if i > 0: requiredList.add ", "
+      requiredList.add cn
+      if cn notin providedSet:
+        if missingList.len > 0: missingList.add ", "
+        missingList.add cn
+    for i, cn in sortedCaps:
+      if i > 0: providedList.add ", "
+      providedList.add cn
+    let requiredLit = newLit(requiredList)
+    let providedLit = newLit(providedList)
+    let missingLit  = newLit(missingList)
+    checks.add quote do:
+      when not (`conjunction`):
+        {.error: "fresco capability discharge failed for `child " &
+                 `nameLit` & "`: required {" & `requiredLit` &
+                 "}, supervisor provides {" & `providedLit` &
+                 "}, missing {" & `missingLit` &
+                 "} — add the missing caps to a `provides(...)` " &
+                 "line in this supervisor or an ancestor.".}
+    let factoryClosure = quote do:
+      proc(): Future[void] {.closure, gcsafe, raises: [].} =
+        `factoryIdent`()
+    addChildCalls.add quote do:
+      addChild(`supVar`, `nameExpr`, `lifecycleExpr`, `factoryClosure`)
+  # Assemble: type def, discharge checks, value binding, addChild calls,
+  # final expression yielding the supervisor.
+  result = nnkBlockExpr.newTree(
+    newEmptyNode(),
+    nnkStmtList.newTree(
+      typeDef,
+      checks,
+      newLetStmt(supVar, ctor),
+      addChildCalls,
+      supVar))
 
-  result = newStmtList()
-  result.add newLetStmt(name, supInit)
-  for ac in addCalls: result.add ac
+macro supervisor*(name: untyped, body: untyped): untyped =
+  ## Named supervisor declaration — emits `let <name> = supervisor: <body>`,
+  ## delegating to the anonymous-form macro above. Same body grammar:
+  ## `provides(...)`, `child <factory>` (with optional comma-lifecycle),
+  ## `child("name", lifecycle, factory)` paren form, and config
+  ## assignments (`maxRestarts`, `strategy`, `within`).
+  expectKind(body, nnkStmtList)
+  result = newLetStmt(name, newCall(bindSym"supervisor", body))
