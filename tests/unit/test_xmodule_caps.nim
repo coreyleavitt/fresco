@@ -1,19 +1,20 @@
-## Cross-module compile-time capability discharge (#53).
+## Cross-module compile-time capability discharge.
 ##
 ## Empirically: module-scoped `{.compileTime.}` vars in Nim are
 ## shared across the compilation unit (not per-importer), so the
-## `{.needs.}` static blocks in dependency modules populate the same
-## `procRequiresTable` that downstream `staticSupervisor:` macros
-## query. This file pins that behavior so a future Nim/macro refactor
-## that breaks cross-module CT sharing turns red here.
+## `{.needs.}` pragma in dependency modules populates the same
+## `procRequiresNames` store that downstream `staticSupervisor:`
+## macros query. This file pins that behavior so a future Nim/macro
+## refactor that breaks cross-module CT sharing turns red here.
+##
+## Cross-module **user-cap** discharge is covered in test_capconcept's
+## "cross-module user-cap discharge" suite (uses `cap T` instead of
+## the retired `registerCap`).
 
 import std/unittest
 import fresco/reactive/capabilities
-import fresco/reactive/capset
 import xmodule_tasks_a
 import xmodule_tasks_b
-import xmodule_user_caps_a
-import xmodule_user_caps_b
 
 suite "cross-module discharge":
 
@@ -58,22 +59,3 @@ suite "cross-module discharge":
       child bothTaskA             # needs both, both provided
     check sup != nil
 
-## Module-level user-cap registration for the slot-allocator
-## cross-module check. The build succeeding (this module loaded
-## without "type ... is already registered") is the regression:
-## without the signatureHash-based dedup, `LocalCap` here would
-## have collided with the same-named types in xmodule_user_caps_*.
-type LocalCap = ref object
-registerCap LocalCap
-
-suite "cross-module discharge: user-cap slot allocator":
-
-  test "registerCap in different modules with the same short type name doesn't false-collide":
-    # Two distinct types named `MyCap` are defined and registered
-    # via `xmodule_user_caps_a` and `xmodule_user_caps_b` (loaded
-    # below). Plus `LocalCap` at this module's top level. All
-    # claim distinct slots — verified by the build succeeding.
-    # signatureHash makes the dedup key globally unique; without
-    # it, T.repr-based dedup would have tripped on the duplicate
-    # name.
-    check capKindFor(LocalCap).ord >= ord(ckUser0)

@@ -2,7 +2,6 @@
 
 import std/unittest
 import fresco/reactive/capabilities
-import fresco/reactive/capset
 
 # Tasks under test — declared at module scope so {.requires.} can stash
 # into the per-module CT table and the `staticSupervisor:` DSL in the
