@@ -217,6 +217,17 @@ proc newInputStream*(fd: cint = STDIN_FILENO,
     closing: newFuture[void]("InputStream.closing"),
   )
 
+proc pushKey*(s: InputStream, ev: KeyEvent) =
+  ## Synchronously feed a KeyEvent into the stream's queue. Used by
+  ## the headless test substrate (`headless/input`) to drive an app
+  ## without an fd — no termios, no escape-sequence encoding, no
+  ## `start(stream)` needed. Any awaiter of `nextKey` will receive
+  ## `ev` in FIFO order.
+  ##
+  ## Caller must ensure the queue is unbounded or has space (the
+  ## default `queueSize = 0` is unbounded).
+  s.queue.putNoWait(ev)
+
 proc start*(s: InputStream) =
   ## Put `fd` in cbreak + non-blocking mode and register the read hook
   ## with chronos. Must be called from within a running chronos dispatcher
