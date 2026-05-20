@@ -65,6 +65,8 @@ This positioning is precedented: LLVM started as compiler research that became i
 
 The split between `intonaco` (substrate) and `fresco` (terminal frontend) is drawn at the natural seam exposed by the codebase. The line is not arbitrary; it's where dependencies on `Region`, `Screen`, `Terminal`, and ANSI emission either appear or disappear.
 
+> **Sinopia is the third sibling that validates the seam.** Declared 2026-05-20 (see `docs/rfc-sinopia.md`), sinopia is a planned trace frontend depending on intonaco but with a render model that shares no spatial primitives with fresco — bindings emit time-series causal events instead of painting to a surface. Its existence is what makes the substrate-portability claim falsifiable: if intonaco's substrate has any quietly terminal-shaped assumption, sinopia won't build. fresco is *also* declared terminal-exclusively as of 2026-05-20 — non-terminal render models do not live in fresco; they live in sibling packages.
+
 ### intonaco contains — the *pure reactive substrate*, zero rendering opinions
 
 - `reactive/` — signals, computations, scopes (with `currentScope` chronos contextVar), context (provide/use), capabilities (cap T + concept discharge + `currentSup`), speculative scope, animation math (pure tween/easing — no rendering), collection signals with delta observers, static dependency extraction (`tracked:` macro)
