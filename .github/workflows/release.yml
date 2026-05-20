@@ -1,0 +1,152 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump type (use "none" to only increment prerelease number)'
+        required: true
+        type: choice
+        options:
+          - none
+          - patch
+          - minor
+          - major
+          - stable
+      prerelease:
+        description: 'Prerelease label (or none for stable release)'
+        required: true
+        default: 'no'
+        type: choice
+        options:
+          - 'no'
+          - alpha
+          - beta
+          - rc
+
+permissions:
+  contents: write
+
+jobs:
+  prepare-version:
+    name: Prepare version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      commit_sha: ${{ steps.version.outputs.commit_sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute and apply version
+        id: version
+        run: |
+          BUMP="${{ inputs.bump }}"
+          PRERELEASE="${{ inputs.prerelease }}"
+
+          # Read current version from fresco.nimble.
+          CURRENT=$(grep '^version' fresco.nimble | head -1 | sed 's/version *= *"\(.*\)"/\1/')
+          echo "Current version: $CURRENT"
+
+          # Parse current version.
+          BASE=$(echo "$CURRENT" | sed 's/-.*//')
+          MAJOR=$(echo "$BASE" | cut -d. -f1)
+          MINOR=$(echo "$BASE" | cut -d. -f2)
+          PATCH=$(echo "$BASE" | cut -d. -f3)
+          CURRENT_PRE_TYPE=$(echo "$CURRENT" | sed -n 's/.*-\([a-z]*\)\.\([0-9]*\)$/\1/p')
+          CURRENT_PRE_NUM=$(echo "$CURRENT" | sed -n 's/.*-\([a-z]*\)\.\([0-9]*\)$/\2/p')
+
+          # Validate inputs.
+          if [ "$BUMP" = "none" ] && [ "$PRERELEASE" = "no" ]; then
+            echo "::error::bump=none requires a prerelease label"
+            exit 1
+          fi
+          if [ "$BUMP" = "stable" ] && [ -z "$CURRENT_PRE_TYPE" ]; then
+            echo "::error::bump=stable requires a current prerelease version"
+            exit 1
+          fi
+
+          # Apply version bump.
+          case "$BUMP" in
+            major) MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0 ;;
+            minor) MINOR=$((MINOR + 1)); PATCH=0 ;;
+            patch) PATCH=$((PATCH + 1)) ;;
+            stable|none) ;; # keep base version as-is
+          esac
+
+          VERSION="${MAJOR}.${MINOR}.${PATCH}"
+
+          # Apply prerelease suffix.
+          if [ "$BUMP" = "stable" ] || [ "$PRERELEASE" = "no" ]; then
+            : # stable release, no suffix
+          elif [ "$BUMP" = "none" ] && [ "$CURRENT_PRE_TYPE" = "$PRERELEASE" ]; then
+            # Same prerelease type, just increment the number.
+            PRE_NUM=$((${CURRENT_PRE_NUM:-0} + 1))
+            VERSION="${VERSION}-${PRERELEASE}.${PRE_NUM}"
+          else
+            # New prerelease series.
+            VERSION="${VERSION}-${PRERELEASE}.1"
+          fi
+
+          echo "New version: $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          # Update fresco.nimble (the only version-bearing file).
+          sed -i "0,/^version .*/s//version       = \"$VERSION\"/" fresco.nimble
+
+          # Commit via GitHub API (signed).
+          make_blob() {
+            base64 -w 0 "$1" | jq -Rs '{content: ., encoding: "base64"}' | \
+              gh api repos/${{ github.repository }}/git/blobs --input - --jq '.sha'
+          }
+
+          NIMBLE_BLOB=$(make_blob fresco.nimble)
+
+          TREE_SHA=$(gh api repos/${{ github.repository }}/git/trees \
+            --input <(jq -n \
+              --arg base "${{ github.sha }}" \
+              --arg nimble "$NIMBLE_BLOB" \
+              '{base_tree: $base, tree: [
+                {path: "fresco.nimble", mode: "100644", type: "blob", sha: $nimble}
+              ]}') \
+            --jq '.sha')
+
+          COMMIT_SHA=$(gh api repos/${{ github.repository }}/git/commits \
+            -f message="Release v${VERSION}" \
+            -f tree="$TREE_SHA" \
+            -f "parents[]=${{ github.sha }}" \
+            --jq '.sha')
+
+          # Update branch ref.
+          gh api repos/${{ github.repository }}/git/refs/heads/${{ github.ref_name }} \
+            -X PATCH \
+            -f sha="$COMMIT_SHA"
+
+          # Create tag.
+          gh api repos/${{ github.repository }}/git/refs \
+            -f ref="refs/tags/v${VERSION}" \
+            -f sha="$COMMIT_SHA"
+
+          echo "commit_sha=$COMMIT_SHA" >> "$GITHUB_OUTPUT"
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release:
+    name: Create release
+    needs: prepare-version
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create GitHub release
+        run: |
+          VERSION="${{ needs.prepare-version.outputs.version }}"
+          if echo "$VERSION" | grep -qE '\-(alpha|beta|rc)\.'; then
+            gh release create "v$VERSION" \
+              --repo ${{ github.repository }} \
+              --generate-notes \
+              --prerelease
+          else
+            gh release create "v$VERSION" \
+              --repo ${{ github.repository }} \
+              --generate-notes
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
