@@ -82,6 +82,7 @@ task test, "run all tests":
     "tests/integration/test_persist.nim",
     "tests/integration/test_timewarp.nim",
     "tests/integration/test_devtools_panel.nim",
+    "tests/integration/test_devtools_panel_memorysink.nim",
     "tests/integration/test_context_isolation.nim",
     "tests/integration/test_topology.nim",
   ]

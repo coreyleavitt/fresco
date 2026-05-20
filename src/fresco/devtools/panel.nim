@@ -26,6 +26,7 @@ import ../reactive/binding
 import ../reactive/collection
 import ../task/supervisor
 import ../screen
+import ../render/layout as renderLayout
 
 type
   PanelState* = ref object
@@ -89,6 +90,56 @@ proc snapshotTopology(supervisors: openArray[Supervisor]): seq[TopologyNode] =
     for n in s.topology(): result.add n
 
 proc runDevtoolsPanel*(j: Journal, supervisors: seq[Supervisor],
+                      stream: InputStream,
+                      layout: renderLayout.Layout,
+                      commit: proc(layout: renderLayout.Layout) {.closure, gcsafe.})
+                      {.async: (raises: [Exception]).} =
+  ## Sink-agnostic devtools panel. Composes widgets against `layout`
+  ## and calls `commit(layout)` to publish each frame. The Screen-based
+  ## overload below is the production entry point; this overload exists
+  ## so MemorySink-backed headless tests (and any other Sink) can drive
+  ## the panel without a TerminalSink.
+  ##
+  ## Stopgap path per the Screen v2 RFC (#101); supersedes when the
+  ## full sink-polymorphic `Screen[S]` refactor lands.
+  {.cast(gcsafe).}:
+    let root = newScope()
+    try:
+      withScope(root):
+        let topo   = signal(snapshotTopology(supervisors))
+        let events = collection[Event](@[])
+        for e in j.events: events.push(e)
+        let state = newPanelState(j)
+
+        let h = layout.height
+        let thirds = max(1, h div 3)
+        let treeR   = newRegion(layout, 0,            0, thirds, layout.width)
+        let streamR = newRegion(layout, thirds,       0, thirds, layout.width)
+        let scrubR  = newRegion(layout, 2 * thirds,   0,
+                                max(1, h - 2 * thirds), layout.width)
+
+        bindRows treeR, 0 ..< treeR.height: renderTaskTree(topo())
+        bindCollection(streamR, 0 ..< streamR.height, events,
+                       proc(e: Event): string = renderEvent(e),
+                       mode = wmFromEnd)
+        bindRow scrubR, 0:
+          renderScrubber(state.scrubber.cursor, state.scrubber.total,
+                         max(4, scrubR.width - 16))
+        commit(layout)
+
+        while true:
+          let key = await stream.nextKey()
+          while events.len < j.events.len:
+            events.push(j.events[events.len])
+          topo.set(snapshotTopology(supervisors))
+          if not handleKey(state, key, j):
+            commit(layout)
+            return
+          commit(layout)
+    finally:
+      dispose(root)
+
+proc runDevtoolsPanel*(j: Journal, supervisors: seq[Supervisor],
                       stream: InputStream, screen: Screen)
                       {.async: (raises: [Exception]).} =
   ## Compose the devtools widgets into a running panel against
@@ -109,44 +160,12 @@ proc runDevtoolsPanel*(j: Journal, supervisors: seq[Supervisor],
   ## fires every ~100ms and re-syncs — out of scope for the C1 cut
   ## (the panel reacts to user input in real time; passive updates
   ## are visible on the next keystroke).
-  # cast(gcsafe): fresco is single-dispatcher; bindCollection isn't
-  # statically proven gcsafe because of its closure-capturing
-  # handler, but no concurrent thread touches our refs. Matches the
-  # pattern used in persist.nim, animation.nim, and timewarp.nim
-  # for the same reason.
-  {.cast(gcsafe).}:
-    let root = newScope()
-    try:
-      withScope(root):
-        let topo   = signal(snapshotTopology(supervisors))
-        let events = collection[Event](@[])
-        for e in j.events: events.push(e)
-        let state = newPanelState(j)
-
-        let h = screen.height
-        let thirds = max(1, h div 3)
-        let treeR   = newRegion(screen, 0,            0, thirds, screen.width)
-        let streamR = newRegion(screen, thirds,       0, thirds, screen.width)
-        let scrubR  = newRegion(screen, 2 * thirds,   0,
-                                max(1, h - 2 * thirds), screen.width)
-
-        bindRows treeR, 0 ..< treeR.height: renderTaskTree(topo())
-        bindCollection(streamR, 0 ..< streamR.height, events,
-                       proc(e: Event): string = renderEvent(e),
-                       mode = wmFromEnd)
-        bindRow scrubR, 0:
-          renderScrubber(state.scrubber.cursor, state.scrubber.total,
-                         max(4, scrubR.width - 16))
-        paint(screen)
-
-        while true:
-          let key = await stream.nextKey()
-          while events.len < j.events.len:
-            events.push(j.events[events.len])
-          topo.set(snapshotTopology(supervisors))
-          if not handleKey(state, key, j):
-            paint(screen)
-            return
-          paint(screen)
-    finally:
-      dispose(root)
+  # The production Screen-based entry point delegates to the
+  # sink-agnostic overload above, passing a commit callback that
+  # paints through Screen's TerminalSink. Headless tests can call
+  # the Layout+commit overload directly with a MemorySink.
+  let s = screen
+  await runDevtoolsPanel(j, supervisors, stream, s.layout,
+                         proc(l: renderLayout.Layout) {.gcsafe.} =
+                           {.cast(gcsafe).}:
+                             paint(s))
