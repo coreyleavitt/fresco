@@ -16,17 +16,21 @@
 
 import std/macros
 import ../screen
+import ../render/target
 import ./signal
 import ./scope
 import ./collection
 
-template bindRow*(region: Region, idx: int, body: untyped) =
-  ## Re-evaluate `body` (a string-yielding expression) on every tracked
-  ## signal change; write the result into row `idx` of `region`.
-  createEffect proc() =
-    region.setRow(idx, body)
+export target
 
-template bindRows*(region: Region, slice: HSlice[int, int],
+template bindRow*(target: RenderTarget, idx: int, body: untyped) =
+  ## Re-evaluate `body` (a string-yielding expression) on every tracked
+  ## signal change; write the result into row `idx` of `target`.
+  ## `target` is any `RenderTarget` (Region, HeadlessRenderTarget, etc.).
+  createEffect proc() =
+    target.setRow(idx, body)
+
+template bindRows*(target: RenderTarget, slice: HSlice[int, int],
                    body: untyped) =
   ## Re-evaluate `body` (a `seq[string]`-yielding expression) on every
   ## tracked signal change; lay the result into the rows covered by
@@ -39,7 +43,7 @@ template bindRows*(region: Region, slice: HSlice[int, int],
     if hi >= lo:
       for i in 0 .. (hi - lo):
         let line = if i < lines.len: lines[i] else: ""
-        region.setRow(lo + i, line)
+        target.setRow(lo + i, line)
 
 # --- Differential binding for CollectionSignal -----------------------------
 #
@@ -53,10 +57,12 @@ type WindowMode* = enum
   wmFromStart  ## visible window starts at items[0] (default; legacy behavior)
   wmFromEnd    ## visible window is the tail — last `winLen` items
 
-proc bindCollection*[T](region: Region, slice: HSlice[int, int],
-                        c: CollectionSignal[T],
-                        fmt: proc(x: T): string {.closure.},
-                        mode: WindowMode = wmFromStart) =
+proc bindCollection*[Target: RenderTarget; T](
+    target: Target, slice: HSlice[int, int],
+    c: CollectionSignal[T],
+    fmt: proc(x: T): string {.closure.},
+    mode: WindowMode = wmFromStart) =
+  mixin setRow, scrollUp
   ## Lay `c` across `slice` of `region`; on each delta, apply the
   ## minimal row update.
   ##
@@ -101,7 +107,7 @@ proc bindCollection*[T](region: Region, slice: HSlice[int, int],
   proc layRow(i: int) =
     if i < 0 or i >= winLen: return
     let line = if i < cache.len: cache[i] else: ""
-    region.setRow(lo + i, line)
+    target.setRow(lo + i, line)
 
   proc layAll() =
     for i in 0 ..< winLen:
@@ -172,7 +178,8 @@ proc bindCollection*[T](region: Region, slice: HSlice[int, int],
         # as unchanged (cache shifted to match target) and emits
         # only row winLen-1 (the new bottom). Net ANSI: scroll
         # command + one row's worth of paint.
-        region.scrollUp(1)
+        when target is ScrollableRenderTarget:
+          target.scrollUp(1)
         layAll()
       else:
         # All other deltas in tail mode: any of them can shift the
@@ -185,10 +192,11 @@ proc bindCollection*[T](region: Region, slice: HSlice[int, int],
           fmtVisible(items)
         layAll()
 
-template bindCollection*[T](region: Region, slice: HSlice[int, int],
-                            c: CollectionSignal[T]) =
+template bindCollection*[Target: RenderTarget; T](
+    target: Target, slice: HSlice[int, int],
+    c: CollectionSignal[T]) =
   ## Convenience overload using `$T` as the formatter.
-  bindCollection(region, slice, c, proc(x: T): string = $x)
+  bindCollection(target, slice, c, proc(x: T): string = $x)
 
 proc resolveBackIndex(rIdent, expr: NimNode): NimNode =
   ## Rewrite `^N` (from-end index) to `rIdent.height - N`. Leaves

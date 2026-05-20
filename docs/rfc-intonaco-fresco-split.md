@@ -65,26 +65,36 @@ This positioning is precedented: LLVM started as compiler research that became i
 
 The split between `intonaco` (substrate) and `fresco` (terminal frontend) is drawn at the natural seam exposed by the codebase. The line is not arbitrary; it's where dependencies on `Region`, `Screen`, `Terminal`, and ANSI emission either appear or disappear.
 
-### intonaco contains
+### intonaco contains — the *pure reactive substrate*, zero rendering opinions
 
 - `reactive/` — signals, computations, scopes (with `currentScope` chronos contextVar), context (provide/use), capabilities (cap T + concept discharge + `currentSup`), speculative scope, animation math (pure tween/easing — no rendering), collection signals with delta observers, static dependency extraction (`tracked:` macro)
-- `reactive/binding.nim` — but **rewritten** to depend on a `RenderTarget` interface (see below) rather than on `Region` directly. The terminal-specific `bindRow`/`bindRows`/`bindCollection` macros become parameterized over targets.
 - `task/` — Mount, spawn primitives, parallel collectors, multi-source receive, mailbox, supervisor (lcPermanent/lcTransient/lcTemporary, ssOneForOne/ssOneForAll/ssRestForOne, error policies, onRestart handlers, adopted task groups)
 - `journal/` — events, append-only log, JSONL persistence, rewindTo/resumeLive, snapshots, causal-chain ancestors
 - The capability concept substrate: `cap T` macro, `{.needs.}` pragma, `{.inferCaps.}` pragma, `supervisor:` macro (the unified one from #72), `currentSup()` accessor
 
-### fresco contains
+**Notably absent**: any rendering primitive. intonaco has `createEffect` (the substrate reactive primitive); it has *no* `RenderTarget`, no `bindRow`, no `bindCollection`, no row-based or cell-based or DOM-based render abstraction. Anything frontend-shaped lives in the frontend package.
+
+### fresco contains — terminal rendering + its own bindings
 
 - `terminal/` — termios (cbreak + crash-safe restore), ANSI emission helpers, signal hooks
 - `screen.nim` — Screen, Region, smart line-update diff
-- `render.nim` — the diff renderer (driver for the terminal RenderTarget)
+- `render.nim` — the diff renderer
 - `input.nim` — InputStream, cancel-safe nextKey
 - `events.nim` — KeyEvent, modifiers
 - `layout.nim` — vstack/hstack (terminal-specific, operates on Regions)
 - `hotkey/` — keyboard pattern matching (depends on KeyEvent which is terminal-specific)
-- A `TerminalRenderTarget` implementation that bridges `intonaco`'s binding system to fresco's Screen/Region
-- Terminal-specific cap concepts (TruecolorCap, SixelCap, KittyGraphicsCap, etc. — added by the terminal RFC) — these are intonaco-style caps but declared in fresco because they're terminal-domain
+- **`bindings/`** — `bindRow`, `bindRows`, `bindCollection` (built on intonaco's `createEffect`). The row-based render model these assume is a terminal-domain choice; web/file/voice frontends would have different binding shapes.
+- **`render/target.nim`** — `RenderTarget` concept (row-based; terminal-domain by definition of being row-based); `ScrollableRenderTarget` and other layered concepts; `Region` as one impl; future `HeadlessRenderTarget` as the second
+- Terminal-specific cap concepts (TruecolorCap, SixelCap, KittyGraphicsCap, etc. — added by the terminal RFC) — these consume intonaco's `cap T` machinery but declare terminal-domain tokens
 - `devtools/` — the panel + widgets. Lives in fresco because the panel is a terminal-rendered consumer. The query-substrate primitives (from the observability RFC) live in intonaco; the panel that visualizes them lives in fresco.
+
+### Why bindings + RenderTarget belong in fresco, not intonaco
+
+Earlier drafts of this RFC put `binding.nim` in intonaco "rewritten to depend on a RenderTarget interface." Re-examined: that was wrong. The row-based render model assumed by `bindRow` / `bindRows` / `bindCollection` *is* a terminal-domain abstraction. A web frontend wouldn't use `setRow(idx: int, content: string)` — it would use DOM operations. A file-output frontend would stream text without addressable rows. A voice/TTS frontend wouldn't render at all.
+
+The unifying primitive across every frontend is **`createEffect`** (already in intonaco): *"when these signals change, run this side-effecting body."* Everything above that is frontend-specific glue. fresco's `bindRow` is one such glue layer (built on `createEffect`); a future `fresco-web`'s `bindElement` would be a different glue layer (also built on `createEffect`), with its own `WebTarget` concept that's nothing like `RenderTarget`.
+
+Keeping intonaco purely substrate-shaped means future frontends don't have to retrofit a row-based abstraction they don't want. Each frontend defines its own render model in its own terms; intonaco's contract is just "fine-grained reactive primitives that survive `await`."
 
 ### Pieces that aren't immediately obvious
 
@@ -126,15 +136,18 @@ intonaco's existing cap system is concept-based for the architectural reasons do
 
 Three phases. Each independently shippable. The phases are *not* "the split happens in one go" — they're a careful sequence that validates the abstraction before committing to the package boundary.
 
-### Phase 1: `RenderTarget` interface inside the current package
+### Phase 1: `RenderTarget` concept (fresco-side), binding refactor
 
-Land `RenderTarget` as a concept. Refactor `binding.nim` to use it. `Region` becomes the existing impl. No package boundary change; the binding macros now operate on `RenderTarget` instead of `Region`, but at runtime the same code runs.
+Land `RenderTarget` as a fresco-side concept (`src/fresco/render/target.nim`). Refactor `bindRow` / `bindRows` / `bindCollection` to be concept-typed instead of `Region`-typed. `Region` continues as the canonical impl. No package boundary change yet; the macros change shape, internals stay similar, all existing tests pass without modification.
 
-This is mechanical refactoring. The macros change shape, internals stay similar, all existing tests should pass without modification. Estimated 2–3 cycles.
+The work is *not* "prepare bindings for the substrate move" (they never go to intonaco). It is "give fresco's terminal bindings an abstraction over render targets so a headless driver can plug in as a second consumer." Phase 2 then validates the abstraction is real by building that headless driver.
+
+Estimated 2–3 cycles.
 
 **Acceptance:**
-- `RenderTarget` concept declared
-- `bindRow`/`bindRows`/`bindCollection` parameterized over `RenderTarget`
+- `RenderTarget` concept declared in fresco
+- `ScrollableRenderTarget` (or equivalent) as a layered concept for the `scrollUp` optimization
+- `bindRow` / `bindRows` / `bindCollection` parameterized over `RenderTarget`; `wmFromEnd` fast-path uses `ScrollableRenderTarget` when available, falls back to repaint otherwise
 - `Region` continues to work as the implementation
 - All existing tests pass
 - A trivial in-memory `RenderTarget` implementation exists in the test harness (proves the abstraction is real)

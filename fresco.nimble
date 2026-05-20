@@ -34,6 +34,7 @@ task test, "run all tests":
     "tests/unit/test_layout.nim",
     "tests/unit/test_reactive.nim",
     "tests/unit/test_binding.nim",
+    "tests/unit/test_render_target.nim",
     "tests/unit/test_context.nim",
     "tests/unit/test_dsl.nim",
     "tests/unit/test_aggregate_import.nim",
