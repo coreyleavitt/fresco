@@ -3,6 +3,7 @@
 **Status**: Draft
 **Author**: Corey Leavitt
 **Supersedes**: #57 (v3: devtools binary / sidecar app shell)
+**Companion to**: `docs/rfc-devtools-experience.md` — this RFC specifies the **substrate** (queries, predicates, subscriptions, journal access); the devtools-experience RFC specifies the **surface** (what users see, how they interact, the novel UX claims). Both reference each other.
 
 ## Why an RFC and not a /tdd cycle
 
@@ -147,6 +148,8 @@ j.arm do (e: Event) -> bool:
 
 The plain form is two extra lines, no macro to debug, and the predicate body is regular Nim that gets full type checking. The DSL form's appeal is shallower than it looks.
 
+**Predicate evaluator.** When predicates are *authored interactively* (the REPL or notebook cells, not in source code), they're parsed as expressions in the restricted-DSL specified in `docs/rfc-devtools-experience.md` ("Predicate evaluator architecture"). When they're authored *in source code* (developer using `j.arm do (e) -> bool: ...`), they're regular Nim closures. The two are the same predicate-shape, but the in-source form uses Nim's full type checking and the interactively-authored form uses the restricted DSL with a registered-predicate extension for full-Nim escape. See the devtools-experience RFC for the DSL spec.
+
 **Not generic.** The substrate operates concretely on `Journal`/`Event`/`Topology`. Extracting a generic "event log observability" library would require a concept/protocol that journals implement; fresco's `Event` is a kind-discriminated union with bespoke fields per variant, not a generic record. Generic abstraction would be pure overhead with zero second-consumer benefit.
 
 **Subscription substrate.** Backed by chronos-native streaming primitives. New events flow through `journalEvent:` already; we attach an internal observer that fans out to subscribed `Future[Event]`s matching their predicates. Backpressure handled by the consumer (slow subscribers drop events with a warning, fast subscribers see everything).
@@ -199,6 +202,8 @@ Touches `src/fresco/screen.nim` (Screen gets an `active` field + paint-gating), 
 ## Layer 3: renderers
 
 Each consumes the substrate; none knows about the others.
+
+> **The UX of each renderer is specified in `docs/rfc-devtools-experience.md`.** This section sketches what each renderer *is*; the experience RFC details what each *does* and what's novel about each. The two RFCs are tightly coupled.
 
 ### Panel (the existing thing, retrofitted)
 
