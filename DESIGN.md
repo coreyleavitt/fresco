@@ -2,17 +2,47 @@
 
 > Source of truth for architecture and locked decisions. Issues reference section anchors here.
 
+## Three-package architecture
+
+fresco is the **terminal frontend** of a three-package reactive system:
+
+```
+fresco              — terminal frontend (this repo; terminal-exclusively)
+  ↓ depends on
+intonaco            — pure reactive substrate (signals/scopes/supervision/journal/caps)
+  ↑ depends on
+sinopia             — trace frontend; substrate validator + observability tool
+```
+
+Names map literally to three layers of Renaissance fresco-making: *intonaco* (plaster), *sinopia* (red-pigment preparatory underdrawing), and the *fresco* (finished painting). The packages are siblings — fresco does not own the reactive primitives.
+
+**As of 2026-05-20** the single `fresco` repo still contains both substrate and terminal code; the mechanical split into three packages is Phase 3 of `docs/rfc-intonaco-fresco-split.md`. T1-T3 below stay in fresco; T4 moves to intonaco. Frontend-specific glue that depends on `createEffect` (bindRow / bindCollection / RenderTarget concept) stays in fresco because the row-based render model is terminal-domain.
+
+Companion docs:
+- `docs/rfc-intonaco-fresco-split.md` — the split rationale, where the line lives, and the phasing
+- `docs/rfc-sinopia.md` — the trace frontend that validates intonaco's portability
+- `docs/rfc-reactive-observability.md`, `docs/rfc-devtools-experience.md`, `docs/rfc-terminal-interaction.md`, `docs/rfc-information-flow.md`, `docs/roadmap-compile-time-research.md`
+
+## Stable non-negotiables
+
+Beyond the operational invariants in CLAUDE.md (crash-safe termios restore, single chronos dispatcher, no stdout writes, ANSI-only, no VDOM in v0):
+
+- **Compile-time-first.** When a property can be enforced at compile time or at runtime, the substrate enforces it at compile time. Cap concept satisfaction, `tracked:` static dependency extraction, supervisor concept discharge — these are the consistent expression of the rule. New primitives are evaluated against it.
+- **Research drives engineering.** Every substrate-level RFC ships theoretical contribution + engineering primitives + research artifact. Both audiences served from one source.
+- **fresco is terminal-exclusively.** Non-terminal rendering models belong in sibling packages (sinopia / hypothetical future fresco-web). Do not add web/voice/headless abstractions in fresco.
+
 ## Vision
 
-A terminal-UI **kernel** for Nim. The bottom three tiers (T1-T3) provide pure infrastructure — raw-mode TTY, async keystreams, region-based smart rendering, layout. The top tier (T4) provides the **only user-facing API**: a reactive component system designed for long-running, causally-linked, observable processes — the shape an AI coding agent UI actually needs.
+A terminal-UI library for Nim, built on a reactive substrate that is not terminal-specific. The bottom three tiers (T1-T3) provide pure terminal infrastructure — raw-mode TTY, async keystreams, region-based smart rendering, layout. The top tier (T4) is the substrate it sits on — a reactive component system designed for long-running, causally-linked, observable processes. T4 lives in fresco today but moves to intonaco at the split's Phase 3.
 
 What it explicitly is NOT:
 - A retained-mode widget grab-bag (no imperative widgets surface to callers; T4 is the surface)
 - A virtual DOM or React reconciler (signals + compile-time dataflow, no VDOM)
 - A flexbox layout engine (caller composes via `vstack`/`hstack` DSL; explicit, predictable)
 - A monolithic event loop (chronos provides one; fresco hooks in)
+- A general-purpose render kernel that targets web/voice/headless (sinopia is the sibling that proves the substrate is portable; fresco does not chase those frontends itself)
 
-The wedge is **kernel-plus-one-API**: solve the hard parts (raw-mode TTY, render-without-clobber, async input, reactive scheduling, journaled state) once and well; expose them through a single, opinionated, novel reactive surface. This is what makes it useful for [amoxtli](https://github.com/coreyleavitt/amoxtli) and for any other Nim CLI that needs a serious interactive surface for long-running processes.
+The wedge is **substrate-plus-terminal-frontend**: solve the hard parts (raw-mode TTY, render-without-clobber, async input, reactive scheduling, journaled state) once and well; expose them through a single, opinionated, novel reactive surface, with the substrate cleanly separable so other frontends can target it. This is what makes it useful for [amoxtli](https://github.com/coreyleavitt/amoxtli) and for any other Nim CLI that needs a serious interactive surface for long-running processes.
 
 ## Identity
 
