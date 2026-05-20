@@ -97,6 +97,13 @@ proc runDevtoolsPanel*(j: Journal, supervisors: seq[Supervisor],
   ## scrubber (bottom third). `q` exits; ←/→ scrub; Escape resumes
   ## live; Enter pins the cursor's event for causal inspection.
   ##
+  ## Headless usage: construct `screen` via `newScreen(h, w)` with
+  ## synthetic dimensions; the panel runs against it normally and
+  ## you read rendered content via `screen.regions[i].target`. The
+  ## TerminalSink writes its bytes to fd unconditionally (no real
+  ## terminal needed; the bytes are discarded if fd is /dev/null).
+  ## See test_devtools_panel.nim for the pattern.
+  ##
   ## Polling: topology and the journal stream sync once per key
   ## event. For a more responsive panel, add a chronos timer that
   ## fires every ~100ms and re-syncs — out of scope for the C1 cut

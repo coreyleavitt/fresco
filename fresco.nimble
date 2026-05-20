@@ -38,6 +38,7 @@ task test, "run all tests":
     "tests/unit/test_layout_sink.nim",
     "tests/unit/test_synthetic_input.nim",
     "tests/unit/test_run_headless.nim",
+    "tests/unit/test_terminal_sink.nim",
     "tests/unit/test_context.nim",
     "tests/unit/test_dsl.nim",
     "tests/unit/test_aggregate_import.nim",
