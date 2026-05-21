@@ -31,6 +31,7 @@ task test, "run all tests":
     "tests/unit/test_termios.nim",
     "tests/unit/test_render.nim",
     "tests/unit/test_screen.nim",
+    "tests/unit/test_screen_v2.nim",
     "tests/unit/test_layout.nim",
     "tests/unit/test_reactive.nim",
     "tests/unit/test_binding.nim",

@@ -11,9 +11,11 @@
 ## terminal-specific and stateful across the whole process.
 
 import std/posix
+import chronos
 import ./render
 import ./render/layout
 import ./render/sink/terminal
+import ./reactive/signal
 
 export layout.Region, layout.set, layout.markDirty, layout.setRow, layout.scrollUp
 
@@ -44,12 +46,19 @@ type
   Screen* = ref object
     layout*: Layout
     sink*: TerminalSink
+    size*: Signal[(int, int)]
+      ## Reactive view of the terminal's (height, width). Bindings
+      ## reading this re-run when the terminal resizes — replaces the
+      ## old `isResizePending()` polling pattern. Driven by
+      ## `setSize` (test-driven or out-of-band reattach) or by
+      ## `watchResizes` (SIGWINCH-driven background task).
 
 proc newScreen*(height, width: int, fd: cint = STDERR_FILENO): Screen =
   ## Explicit-size constructor. Used by tests and any caller that
   ## already knows the dimensions; bypasses TIOCGWINSZ.
   Screen(layout: newLayout(height, width),
-         sink: newTerminalSink(fd))
+         sink: newTerminalSink(fd),
+         size: signal((height, width)))
 
 proc newScreen*(fd: cint = STDERR_FILENO): Screen =
   let (h, w) = queryWinsize(fd)
@@ -100,24 +109,54 @@ proc uninstallResizeHandler*() =
   discard signal(SIGWINCH, SIG_DFL)
   resizePending = false
 
-proc resize*(s: Screen) =
-  ## Re-query terminal size, resize the renderer, mark every region
-  ## pending. Regions that no longer fit are clamped in place.
-  let (h, w) = queryWinsize(s.fd)
-  s.layout.height = h
-  s.layout.width  = w
-  # Drop the sink's renderer cache — terminal contents are now unknown.
+proc setSize*(s: Screen, height, width: int) =
+  ## Update Screen's dimensions to (height, width). Clamps regions that
+  ## overflow the new bounds, invalidates the sink's render cache, and
+  ## writes the `size` signal so reactive subscribers re-run.
+  ##
+  ## Called by `watchResizes` after SIGWINCH, by tests driving synthetic
+  ## resizes, and by out-of-band reattach handlers (terminal multiplexer
+  ## reattach, etc.).
+  s.layout.height = height
+  s.layout.width  = width
   s.sink.invalidate()
   for r in s.layout.regions:
-    if r.row >= h:
+    if r.row >= height:
       r.height = 0
-    elif r.row + r.height > h:
-      r.height = h - r.row
-    if r.col >= w:
+    elif r.row + r.height > height:
+      r.height = height - r.row
+    if r.col >= width:
       r.width = 0
-    elif r.col + r.width > w:
-      r.width = w - r.col
+    elif r.col + r.width > width:
+      r.width = width - r.col
     if r.target.len > r.height:
       r.target.setLen(r.height)
     r.pending = true
   resizePending = false
+  s.size.set((height, width))
+
+proc resize*(s: Screen) =
+  ## Re-query terminal size from the kernel and apply via setSize.
+  ## Kept as a convenience for SIGWINCH-driven callers; new code should
+  ## subscribe to `s.size` or use `watchResizes(s)`.
+  let (h, w) = queryWinsize(s.fd)
+  setSize(s, h, w)
+
+proc watchResizes*(s: Screen): Future[void] {.async: (raises: [CancelledError]).} =
+  ## Long-running task that drives `s.size` from SIGWINCH events.
+  ##
+  ## Polls the process-global `resizePending` flag set by the SIGWINCH
+  ## handler (`installResizeHandler` must be called separately). On each
+  ## detected change, re-queries the terminal size and calls `setSize`.
+  ## Cancel the returned future to stop the loop.
+  ##
+  ## Polling cadence is 100ms — well below human-perceptible resize
+  ## latency, well above the cost of an idle wake. The polling cost is
+  ## the price of staying signal-handler-safe without enabling the
+  ## thread-required ThreadSignalPtr primitive; the cadence can be
+  ## tightened by replacing this with an eventfd / self-pipe path later
+  ## behind the same public API.
+  while true:
+    await sleepAsync(100.milliseconds)
+    if resizePending:
+      resize(s)
