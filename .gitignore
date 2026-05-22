@@ -6,9 +6,6 @@ nimcache/
 # Docker dev home (mirrors recall's pattern — gitignored writable nimble cache)
 .docker-home/
 
-# Vendored chronos fork (gitignored; populated by hand-copy from
-# ~/projects/chronos — same pattern as amoxtli vendoring fresco at lib/).
-lib/
 
 # Editor noise
 .vscode/
