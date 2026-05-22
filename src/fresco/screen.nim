@@ -125,25 +125,60 @@ proc paint*[S: Sink](s: Screen[S]) =
   s.sink.commit(s.layout)
 
 # --- SIGWINCH -------------------------------------------------------------
+#
+# Self-pipe trick. POSIX signal handlers can call only async-signal-safe
+# functions; `write(2)` to a pipe IS safe but firing a chronos AsyncEvent
+# is not (the callback list can do arbitrary work). The handler writes
+# one byte to a non-blocking pipe; `watchResizes` registers the read end
+# with the chronos dispatcher and wakes the instant the byte arrives.
+# Zero idle wakeups, immediate-response latency.
 
-var resizePending: bool
-  ## Process-wide flag set by the SIGWINCH handler. Callers read via
-  ## `isResizePending()` and reset it by calling `resize()`.
+var
+  winchPipe: array[2, cint] = [-1.cint, -1.cint]
+    ## [read, write] fds of the self-pipe. Initialized by
+    ## `installResizeHandler`; cleared by `uninstallResizeHandler`.
+  winchRegistered: bool
+    ## Tracks whether the read fd is registered with chronos so we know
+    ## whether to unregister it on teardown. Distinct from `winchPipe[0]
+    ## != -1` because the dispatcher may not exist at install time.
+  resizePending: bool
+    ## Process-wide flag mirroring whether a SIGWINCH has been delivered
+    ## since last drain. Kept for `isResizePending()` compatibility; new
+    ## code subscribes to the size signal instead.
 
-proc isResizePending*(): bool = resizePending
+proc isResizePending*(): bool {.deprecated: "subscribe to screen.size".} =
+  resizePending
 
 proc winchHandler(sig: cint) {.noconv.} =
+  # Async-signal-safe path only: write one byte, set the flag. Nim
+  # seqs and the GC are off-limits here.
   resizePending = true
+  if winchPipe[1] >= 0:
+    var b = byte('x')
+    discard write(winchPipe[1], addr b, 1)
 
 proc installResizeHandler*() =
-  ## Installs a SIGWINCH handler that sets the resize-pending flag.
-  ## Callers poll via `isResizePending()` and call `resize()` when
-  ## it's true; signal handlers can't safely mutate Nim seqs.
+  ## Open the SIGWINCH self-pipe and install the signal handler. Safe
+  ## to call multiple times — second + subsequent calls reuse the
+  ## existing pipe.
+  if winchPipe[0] < 0:
+    doAssert pipe(winchPipe) == 0, "fresco: SIGWINCH pipe() failed"
+    # Non-blocking on both ends. Read returns EAGAIN when drained;
+    # write from the handler never blocks even under burst SIGWINCH.
+    discard fcntl(winchPipe[0], F_SETFL, O_NONBLOCK)
+    discard fcntl(winchPipe[1], F_SETFL, O_NONBLOCK)
   discard signal(SIGWINCH, winchHandler)
 
 proc uninstallResizeHandler*() =
   discard signal(SIGWINCH, SIG_DFL)
   resizePending = false
+  if winchRegistered and winchPipe[0] >= 0:
+    try: unregister(AsyncFD(winchPipe[0])) except CatchableError: discard
+    winchRegistered = false
+  for i in 0 .. 1:
+    if winchPipe[i] >= 0:
+      discard close(winchPipe[i])
+      winchPipe[i] = -1
 
 proc setSize*[S: Sink](s: Screen[S], height, width: int) =
   ## Update Screen's dimensions to (height, width). Clamps regions that
@@ -180,21 +215,43 @@ proc resize*(s: TerminalScreen) =
   let (h, w) = queryWinsize(s.fd)
   setSize(s, h, w)
 
-proc watchResizes*(s: TerminalScreen): Future[void] {.async: (raises: [CancelledError]).} =
+proc waitWinchByte(): Future[void] {.async.} =
+  ## Suspend until the SIGWINCH self-pipe is readable, then drain it.
+  ## Uses chronos's `addReader` for zero-wakeup wait — the dispatcher
+  ## fires the callback only when bytes actually arrive on the pipe.
+  let fd = AsyncFD(winchPipe[0])
+  if not winchRegistered:
+    try: register(fd) except OSError: discard
+    winchRegistered = true
+  let fut = newFuture[void]("fresco.winchPipe")
+  proc onReadable(udata: pointer) {.gcsafe.} =
+    if not fut.finished():
+      fut.complete()
+  try: addReader(fd, onReadable)
+  except OSError: discard
+  try:
+    await fut
+  finally:
+    try: removeReader(fd) except OSError: discard
+  # Drain whatever arrived; multiple SIGWINCHes can coalesce into one
+  # wake. Returns to the loop which calls resize once.
+  var buf: array[64, byte]
+  while true:
+    let n = posix.read(winchPipe[0], addr buf, sizeof(buf))
+    if n <= 0: break
+
+proc watchResizes*(s: TerminalScreen): Future[void] {.async.} =
   ## Long-running task that drives `s.size` from SIGWINCH events.
   ##
-  ## Polls the process-global `resizePending` flag set by the SIGWINCH
-  ## handler (`installResizeHandler` must be called separately). On each
-  ## detected change, re-queries the terminal size and calls `setSize`.
-  ## Cancel the returned future to stop the loop.
+  ## Sleeps on the SIGWINCH self-pipe (registered with chronos's
+  ## dispatcher). On wake — i.e. when the signal handler has written
+  ## a byte — drains the pipe, re-queries the terminal size, and calls
+  ## `setSize`. Zero idle wakeups; immediate response.
   ##
-  ## Polling cadence is 100ms — well below human-perceptible resize
-  ## latency, well above the cost of an idle wake. The polling cost is
-  ## the price of staying signal-handler-safe without enabling the
-  ## thread-required ThreadSignalPtr primitive; the cadence can be
-  ## tightened by replacing this with an eventfd / self-pipe path later
-  ## behind the same public API.
+  ## `installResizeHandler()` must have been called before this future
+  ## is awaited. Cancel the returned future to stop the loop.
+  doAssert winchPipe[0] >= 0,
+    "fresco: watchResizes requires installResizeHandler() first"
   while true:
-    await sleepAsync(100.milliseconds)
-    if resizePending:
-      resize(s)
+    await waitWinchByte()
+    resize(s)
