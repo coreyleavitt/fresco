@@ -31,17 +31,18 @@ proc app(stream: InputStream, screen: Screen)
       region(panel):
         row 0: "fresco counter — press + / -, q or Ctrl-C to quit"
         row 1: "count: " & $count()
-      paint(screen)
+
+      # Auto-paint task: notices dirty regions every ~33ms and commits
+      # through the sink. No manual paint(screen) calls in the event
+      # loop — bindings just mark dirty and the next tick paints.
+      let painter = runAutoPaint(screen)
+      defer: painter.cancelSoon()
 
       while true:
         receive:
           on stream as ev:
-            Char('+'):
-              count := count() + 1
-              paint(screen)
-            Char('-'):
-              count := count() - 1
-              paint(screen)
+            Char('+'): count := count() + 1
+            Char('-'): count := count() - 1
             Char('q'): return
             Ctrl('c'): return
             _: discard

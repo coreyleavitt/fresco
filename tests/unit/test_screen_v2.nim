@@ -136,3 +136,68 @@ suite "Screen v2: sink-polymorphic Screen[S]":
     check r.height == 2          # 7 - 5 = 2
     check r.target.len == 2       # truncated
     check observed[^1] == (7, 20) # signal updated
+
+suite "Screen v2: auto-paint":
+
+  test "runAutoPaint paints within one tick after a dirty mark":
+    proc inner(): Future[void] {.async: (raises: [Exception]).} =
+      let mem = newMemorySink()
+      let s = newScreen(mem, 2, 10)
+      let r = newRegion(s, 0, 0, 2, 10)
+      let painter = runAutoPaint(s)
+      defer: painter.cancelSoon()
+      check mem.rows.len == 0   # nothing committed yet
+      r.set(["hello", "world"])
+      await sleepAsync(80.milliseconds)  # > one 33ms tick
+      check mem.rows.len == 2
+      check mem.rows[0] == "hello"
+      check mem.rows[1] == "world"
+    waitFor inner()
+
+  test "runAutoPaint is a no-op when no region is dirty":
+    proc inner(): Future[void] {.async: (raises: [Exception]).} =
+      let mem = newMemorySink()
+      let s = newScreen(mem, 2, 10)
+      discard newRegion(s, 0, 0, 2, 10)  # region exists but not set
+      let painter = runAutoPaint(s)
+      defer: painter.cancelSoon()
+      await sleepAsync(100.milliseconds)  # ~3 ticks
+      check mem.rows.len == 0   # paint was never called
+    waitFor inner()
+
+  test "cancelling runAutoPaint stops the auto-paint loop":
+    proc inner(): Future[void] {.async: (raises: [Exception]).} =
+      let mem = newMemorySink()
+      let s = newScreen(mem, 1, 10)
+      let r = newRegion(s, 0, 0, 1, 10)
+      let painter = runAutoPaint(s)
+      r.set(["first"])
+      await sleepAsync(80.milliseconds)
+      check mem.rows[0] == "first"
+      painter.cancelSoon()
+      await sleepAsync(20.milliseconds)  # let cancellation propagate
+      # After cancel, subsequent dirty marks should NOT trigger paint.
+      r.set(["second"])
+      await sleepAsync(100.milliseconds)
+      check mem.rows[0] == "first"  # MemorySink wasn't called again
+    waitFor inner()
+
+  test "two Screens have independent runAutoPaint tasks":
+    proc inner(): Future[void] {.async: (raises: [Exception]).} =
+      let memA = newMemorySink()
+      let memB = newMemorySink()
+      let sA = newScreen(memA, 1, 10)
+      let sB = newScreen(memB, 1, 10)
+      let rA = newRegion(sA, 0, 0, 1, 10)
+      let rB = newRegion(sB, 0, 0, 1, 10)
+      let pA = runAutoPaint(sA)
+      let pB = runAutoPaint(sB)
+      defer:
+        pA.cancelSoon()
+        pB.cancelSoon()
+      rA.set(["A"])
+      rB.set(["B"])
+      await sleepAsync(80.milliseconds)
+      check memA.rows[0] == "A"
+      check memB.rows[0] == "B"
+    waitFor inner()

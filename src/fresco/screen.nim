@@ -124,6 +124,33 @@ proc paint*[S: Sink](s: Screen[S]) =
   mixin commit
   s.sink.commit(s.layout)
 
+const AutoPaintInterval* = 33.milliseconds
+  ## Auto-paint cadence (~30fps). Each tick is microseconds + an
+  ## O(regions) flag check when nothing is dirty; the cost is far below
+  ## human-perceptible latency and far above what a busy main loop
+  ## generates in input events.
+
+proc anyPending(layout: Layout): bool =
+  for r in layout.regions:
+    if r.pending or r.pendingScroll != 0: return true
+  false
+
+proc runAutoPaint*[S: Sink](s: Screen[S]): Future[void] {.async.} =
+  ## Long-running task that paints the screen whenever a region is dirty.
+  ##
+  ## Polls every `AutoPaintInterval` and calls `paint(s)` if any region
+  ## is pending. Production callers `asyncSpawn` this near their input
+  ## loop and `cancelSoon` it on shutdown; see examples/. Headless tests
+  ## that want deterministic paint timing simply don't spawn it and call
+  ## `paint(s)` directly between phases.
+  ##
+  ## Same lifecycle shape as `watchResizes`: opt-in, explicit cancel,
+  ## no entanglement with Screen's constructor.
+  while true:
+    await sleepAsync(AutoPaintInterval)
+    if anyPending(s.layout):
+      paint(s)
+
 # --- SIGWINCH -------------------------------------------------------------
 #
 # Self-pipe trick. POSIX signal handlers can call only async-signal-safe

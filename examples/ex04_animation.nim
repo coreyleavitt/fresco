@@ -53,14 +53,11 @@ proc app(stream: InputStream, screen: Screen)
         row 6: ""
         row 7: "watch the bouncy spring overshoot and settle"
 
-      # Re-paint on every signal change. Without this createEffect the
-      # bindings update target buffers but the renderer never flushes.
-      createEffect proc() =
-        discard tweenVal()
-        discard springVal()
-        discard bouncyVal()
-        discard target()
-        paint(screen)
+      # Auto-paint: animation frames mark regions dirty as the tween/
+      # spring updates each signal; runAutoPaint commits them at ~30fps.
+      # Replaces the manual createEffect-then-paint pattern.
+      let painter = runAutoPaint(screen)
+      defer: painter.cancelSoon()
 
       while true:
         receive:
