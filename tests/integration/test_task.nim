@@ -4,9 +4,9 @@
 
 import std/unittest
 import chronos
-import fresco/reactive/scope
-import fresco/reactive/signal
-import fresco/task/core
+import intonaco/reactive/scope
+import intonaco/reactive/signal
+import intonaco/task/core
 
 proc tick(): Future[void] {.async: (raises: [Exception]).} =
   ## Yield to the dispatcher one tick.

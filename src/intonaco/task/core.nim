@@ -15,9 +15,9 @@
 ## the parent disposes its children, which cancels their Futures.
 
 import chronos
-import ../reactive/scope
-import ../journal/events
-import ../journal/log
+import intonaco/reactive/scope
+import intonaco/journal/events
+import intonaco/journal/log
 import ./types
 
 export types  # Mount, MountCollector, parallelCollector — public surface

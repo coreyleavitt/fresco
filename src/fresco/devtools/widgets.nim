@@ -12,9 +12,9 @@
 ## behavior, only string output.
 
 import std/strutils
-import ../task/supervisor
-import ../journal/events
-import ../journal/log
+import intonaco/task/supervisor
+import intonaco/journal/events
+import intonaco/journal/log
 import ../events as input
 
 proc renderTaskTree*(topo: openArray[TopologyNode]): seq[string] =

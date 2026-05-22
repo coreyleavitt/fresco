@@ -43,8 +43,8 @@
 
 import std/[macros, sets, tables, unicode]
 import chronos
-import ../events
-import ../input
+import ./events
+import ./input
 
 
 const atomMap = {

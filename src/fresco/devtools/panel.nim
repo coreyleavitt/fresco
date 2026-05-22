@@ -17,14 +17,14 @@ import chronos
 import ./widgets
 import ../events as input
 import ../input as inputs
-import ../journal/events
-import ../journal/log
-import ../journal/timewarp
-import ../reactive/scope
-import ../reactive/signal
+import intonaco/journal/events
+import intonaco/journal/log
+import intonaco/journal/timewarp
+import intonaco/reactive/scope
+import intonaco/reactive/signal
 import ../reactive/binding
-import ../reactive/collection
-import ../task/supervisor
+import intonaco/reactive/collection
+import intonaco/task/supervisor
 import ../screen
 import ../render/sink
 

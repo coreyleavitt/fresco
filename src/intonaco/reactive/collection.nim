@@ -34,8 +34,8 @@
 import ./subscribable
 import ./scope
 import ./speculative
-import ../journal/events
-import ../journal/log
+import intonaco/journal/events
+import intonaco/journal/log
 
 type
   DeltaKind* = enum

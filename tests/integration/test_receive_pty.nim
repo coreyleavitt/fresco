@@ -5,11 +5,11 @@ import std/[posix, termios, unicode]
 import chronos
 import fresco/input as fresco_input
 import fresco/events
-import fresco/task/receive
-import fresco/task/mailbox
+import fresco/receive
+import intonaco/task/mailbox
 
-import fresco/reactive/scope
-import fresco/journal/log
+import intonaco/reactive/scope
+import intonaco/journal/log
 
 proc posix_openpt(flags: cint): cint {.importc, header: "<stdlib.h>".}
 proc grantpt(fd: cint): cint           {.importc, header: "<stdlib.h>".}

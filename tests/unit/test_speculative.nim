@@ -1,9 +1,9 @@
 {.experimental: "callOperator".}
 
 import std/unittest
-import fresco/reactive/scope
-import fresco/reactive/signal
-import fresco/reactive/speculative
+import intonaco/reactive/scope
+import intonaco/reactive/signal
+import intonaco/reactive/speculative
 
 suite "speculative":
 

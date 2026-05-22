@@ -10,9 +10,9 @@ import fresco/input as fresco_input
 import fresco/events as keyevents
 import fresco/devtools/panel
 import fresco/devtools/widgets
-import fresco/journal/events
-import fresco/journal/log
-import fresco/task/supervisor
+import intonaco/journal/events
+import intonaco/journal/log
+import intonaco/task/supervisor
 import fresco/screen
 
 proc posix_openpt(flags: cint): cint {.importc, header: "<stdlib.h>".}

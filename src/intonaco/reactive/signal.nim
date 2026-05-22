@@ -26,8 +26,8 @@ import ./subscribable
 export subscribable
 import ./speculative
 import ./restoration
-import ../journal/events
-import ../journal/log
+import intonaco/journal/events
+import intonaco/journal/log
 
 type
   Signal*[T] = ref object of Subscribable
@@ -41,7 +41,7 @@ proc signal*[T](initial: T, label = ""): Signal[T] =
   ## used by the journal for `ekSignalWrite` events — unlabeled
   ## signals are excluded from state-restoration projection.
   ##
-  ## If `pendingRestoration` (see `fresco/reactive/restoration`)
+  ## If `pendingRestoration` (see `intonaco/reactive/restoration`)
   ## contains `label`, the journal-staged value replaces `initial`
   ## (read-and-remove). Empty labels and labels not in the staging
   ## table short-circuit at one table lookup — non-restoration

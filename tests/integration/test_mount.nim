@@ -4,10 +4,10 @@
 
 import std/unittest
 import chronos
-import fresco/reactive/scope
-import fresco/reactive/signal
-import fresco/task/core
-import fresco/task/mount
+import intonaco/reactive/scope
+import intonaco/reactive/signal
+import intonaco/task/core
+import intonaco/task/mount
 
 proc tick(): Future[void] {.async: (raises: [CancelledError]).} =
   await sleepAsync(0.milliseconds)

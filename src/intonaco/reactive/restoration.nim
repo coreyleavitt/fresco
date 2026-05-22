@@ -18,8 +18,8 @@
 ## initial — corrupt journal entries don't crash the new task.
 
 import std/[strutils, tables]
-import ../journal/events
-import ../journal/log
+import intonaco/journal/events
+import intonaco/journal/log
 import ./scope
 
 var pendingRestoration* {.threadvar.}: Table[string, string]

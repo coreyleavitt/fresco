@@ -2,11 +2,11 @@
 
 import std/[unittest, strutils]
 import fresco/screen
-import fresco/reactive/scope
-import fresco/reactive/signal
+import intonaco/reactive/scope
+import intonaco/reactive/signal
 import fresco/reactive/binding
-import fresco/reactive/collection
-import fresco/reactive/speculative
+import intonaco/reactive/collection
+import intonaco/reactive/speculative
 
 suite "bindRow":
 

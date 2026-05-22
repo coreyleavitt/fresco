@@ -2,12 +2,12 @@
 
 import std/[unittest, tables, os, times]
 import chronos
-import fresco/journal/events
-import fresco/journal/log
-import fresco/journal/persist
-import fresco/journal/timewarp
-import fresco/reactive/scope
-import fresco/reactive/signal
+import intonaco/journal/events
+import intonaco/journal/log
+import intonaco/journal/persist
+import intonaco/journal/timewarp
+import intonaco/reactive/scope
+import intonaco/reactive/signal
 
 suite "timewarp: rewindTo + resumeLive":
 

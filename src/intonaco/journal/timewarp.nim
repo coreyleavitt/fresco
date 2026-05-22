@@ -25,8 +25,8 @@
 import std/[strutils, tables]
 import ./events
 import ./log
-import ../reactive/scope
-import ../reactive/signal
+import intonaco/reactive/scope
+import intonaco/reactive/signal
 
 type
   SignalApplier* = proc(repr: string) {.closure, gcsafe, raises: [].}

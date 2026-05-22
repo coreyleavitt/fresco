@@ -6,9 +6,9 @@
 ## without runtime instrumentation.
 
 import std/[tables, unittest]
-import fresco/reactive/scope
-import fresco/reactive/signal
-import fresco/reactive/tracked
+import intonaco/reactive/scope
+import intonaco/reactive/signal
+import intonaco/reactive/tracked
 
 suite "trackedEffect: static dep extraction":
 

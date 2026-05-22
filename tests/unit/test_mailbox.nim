@@ -7,7 +7,7 @@
 
 import std/unittest
 import chronos
-import fresco/task/mailbox
+import intonaco/task/mailbox
 
 suite "Mailbox: push + nextEvent":
 

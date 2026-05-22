@@ -1,7 +1,7 @@
 import std/unittest
 import chronos
-import fresco/journal/events
-import fresco/journal/log
+import intonaco/journal/events
+import intonaco/journal/log
 
 suite "journal: id generators":
 

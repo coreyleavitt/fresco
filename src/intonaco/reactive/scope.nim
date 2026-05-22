@@ -11,7 +11,7 @@
 ## common case of opening a fresh root.
 
 import chronos/contextvars
-import ../journal/events
+import intonaco/journal/events
 
 type
   ProviderEntry* = object

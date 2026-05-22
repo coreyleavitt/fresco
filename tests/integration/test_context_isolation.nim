@@ -16,14 +16,14 @@
 
 import std/[tables, unittest]
 import chronos
-import fresco/journal/events
-import fresco/journal/log
-import fresco/reactive/scope
-import fresco/reactive/signal
-import fresco/reactive/collection
-import fresco/reactive/speculative
-import fresco/task/core
-import fresco/task/parallel
+import intonaco/journal/events
+import intonaco/journal/log
+import intonaco/reactive/scope
+import intonaco/reactive/signal
+import intonaco/reactive/collection
+import intonaco/reactive/speculative
+import intonaco/task/core
+import intonaco/task/parallel
 
 proc tick(): Future[void] {.async: (raises: [CancelledError]).} =
   await sleepAsync(0.milliseconds)

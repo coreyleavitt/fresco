@@ -1,6 +1,6 @@
 import std/unittest
-import fresco/reactive/scope
-import fresco/reactive/context
+import intonaco/reactive/scope
+import intonaco/reactive/context
 
 type
   ModelClient = ref object

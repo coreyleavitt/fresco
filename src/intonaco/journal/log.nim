@@ -13,7 +13,7 @@
 import std/[tables, times, sequtils]
 import chronos
 import ./events
-import ../reactive/scope
+import intonaco/reactive/scope
 
 type
   Snapshot* = object

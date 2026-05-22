@@ -16,11 +16,11 @@
 ## `atomKey(kF1)`, `charKey(Rune('?'))`) to build the matcher.
 
 import chronos/contextvars
-import ../events
-import ../input
-import ../reactive/scope
-import ../journal/events as jev
-import ../journal/log
+import ./events
+import ./input
+import intonaco/reactive/scope
+import intonaco/journal/events as jev
+import intonaco/journal/log
 
 template hotkey*(stream: InputStream, key: KeyEvent, body: untyped): untyped =
   ## Run `body` when the given key arrives on `stream`. Auto-unregisters

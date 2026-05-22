@@ -9,10 +9,10 @@
 ## requiring `--threads:on`.
 
 import std/[os, unittest]
-import fresco/concurrency
-import fresco/journal/events
-import fresco/journal/log
-import fresco/journal/persist
+import intonaco/concurrency
+import intonaco/journal/events
+import intonaco/journal/log
+import intonaco/journal/persist
 
 suite "concurrency: assertDispatcherThread":
 

@@ -9,8 +9,8 @@
 ## without any reference to Screen.
 
 import std/unittest
-import fresco/reactive/scope
-import fresco/reactive/signal
+import intonaco/reactive/scope
+import intonaco/reactive/signal
 import fresco/reactive/binding
 import fresco/render/layout
 import fresco/render/sink

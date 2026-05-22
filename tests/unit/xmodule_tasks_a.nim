@@ -2,7 +2,7 @@
 ## test (#53). Defines tasks with `{.needs.}` annotations to be
 ## consumed by a `supervisor:` in a different module.
 
-import fresco/reactive/capabilities
+import intonaco/reactive/capabilities
 
 proc fsTaskA*() {.needs: FsReadCap.} = discard
 

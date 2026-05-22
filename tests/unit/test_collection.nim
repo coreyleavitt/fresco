@@ -1,12 +1,12 @@
 {.experimental: "callOperator".}
 
 import std/[unittest, strutils]
-import fresco/reactive/scope
-import fresco/reactive/signal
-import fresco/reactive/collection
-import fresco/reactive/speculative
-import fresco/journal/events
-import fresco/journal/log
+import intonaco/reactive/scope
+import intonaco/reactive/signal
+import intonaco/reactive/collection
+import intonaco/reactive/speculative
+import intonaco/journal/events
+import intonaco/journal/log
 
 suite "CollectionSignal":
 

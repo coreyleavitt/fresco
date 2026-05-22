@@ -1,9 +1,9 @@
 ## Multi-tier snapshot history (#49).
 
 import std/[os, tables, unittest]
-import fresco/journal/events
-import fresco/journal/log
-import fresco/journal/persist
+import intonaco/journal/events
+import intonaco/journal/log
+import intonaco/journal/persist
 
 suite "journal: multi-snapshot foundation":
 

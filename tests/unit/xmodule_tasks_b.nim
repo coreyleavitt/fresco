@@ -3,7 +3,7 @@
 ## supervisor in a third module can compose tasks declared across
 ## two separate dependency modules.
 
-import fresco/reactive/capabilities
+import intonaco/reactive/capabilities
 
 proc procTaskB*() {.needs: ProcessCap.} = discard
 

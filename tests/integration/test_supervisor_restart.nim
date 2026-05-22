@@ -5,13 +5,13 @@
 
 import std/[unittest, tables, strutils]
 import chronos
-import fresco/journal/events
-import fresco/journal/log
-import fresco/reactive/scope
-import fresco/reactive/signal
-import fresco/reactive/restoration
-import fresco/task/core
-import fresco/task/supervisor
+import intonaco/journal/events
+import intonaco/journal/log
+import intonaco/reactive/scope
+import intonaco/reactive/signal
+import intonaco/reactive/restoration
+import intonaco/task/core
+import intonaco/task/supervisor
 
 # Module-level types + restore overload for the #46 test. Has to live
 # at module scope (not inside the test body) — Nim's `mixin` symbol

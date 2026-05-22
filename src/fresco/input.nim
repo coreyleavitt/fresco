@@ -14,10 +14,10 @@ import std/posix
 import chronos
 import ./terminal/termios
 import ./events
-import ./reactive/scope
+import intonaco/reactive/scope
 
-import ./journal/events as jev
-import ./journal/log
+import intonaco/journal/events as jev
+import intonaco/journal/log
 
 const DefaultEscTimeout* = 50.milliseconds
 

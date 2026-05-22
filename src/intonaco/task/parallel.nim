@@ -16,8 +16,8 @@
 import chronos
 import ./core
 
-import ../journal/events   # for `$` on TaskId
-import ../journal/log
+import intonaco/journal/events   # for `$` on TaskId
+import intonaco/journal/log
 
 proc awaitParallel(mounts: seq[Mount]) {.async: (raises: [CatchableError]).} =
   ## Wait for every Mount. On first failure: cancel siblings, drain

@@ -3,11 +3,11 @@
 
 import std/unittest
 import chronos
-import fresco/reactive/scope
-import fresco/task/core
-import fresco/task/parallel
-import fresco/journal/events
-import fresco/journal/log
+import intonaco/reactive/scope
+import intonaco/task/core
+import intonaco/task/parallel
+import intonaco/journal/events
+import intonaco/journal/log
 
 proc tick(): Future[void] {.async: (raises: [CancelledError]).} =
   await sleepAsync(0.milliseconds)

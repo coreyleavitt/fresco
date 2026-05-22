@@ -1,11 +1,11 @@
 {.experimental: "callOperator".}
 
 import std/[unittest, strformat]
-import fresco/reactive/scope
-import fresco/reactive/subscribable
-import fresco/reactive/signal
-import fresco/reactive/collection
-import fresco/reactive/static_graph
+import intonaco/reactive/scope
+import intonaco/reactive/subscribable
+import intonaco/reactive/signal
+import intonaco/reactive/collection
+import intonaco/reactive/static_graph
 
 suite "tracked: static dependency tracking":
 

@@ -7,9 +7,9 @@
 
 import std/unittest
 import chronos
-import fresco/reactive/capabilities
-import fresco/task/core
-import fresco/task/supervisor
+import intonaco/reactive/capabilities
+import intonaco/task/core
+import intonaco/task/supervisor
 import ../unit/xmodule_concept_caps
 
 suite "supervisor bridge: tracer — declared children actually run":

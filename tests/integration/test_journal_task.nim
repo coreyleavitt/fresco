@@ -2,11 +2,11 @@
 
 import std/unittest
 import chronos
-import fresco/journal/events
-import fresco/journal/log
-import fresco/reactive/scope
-import fresco/reactive/signal
-import fresco/task/core
+import intonaco/journal/events
+import intonaco/journal/log
+import intonaco/reactive/scope
+import intonaco/reactive/signal
+import intonaco/task/core
 
 
 proc tick(): Future[void] {.async: (raises: [CancelledError]).} =

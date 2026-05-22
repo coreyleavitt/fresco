@@ -9,8 +9,8 @@
 import std/[unittest, posix]
 import chronos
 import fresco/screen
-import fresco/reactive/signal
-import fresco/reactive/scope
+import intonaco/reactive/signal
+import intonaco/reactive/scope
 
 var SIGWINCH {.importc, header: "<signal.h>".}: cint
 

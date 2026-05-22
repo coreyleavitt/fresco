@@ -8,9 +8,9 @@
 import std/[unittest, strutils]
 import chronos
 import results
-import fresco/task/core
-import fresco/task/group
-import fresco/task/supervisor
+import intonaco/task/core
+import intonaco/task/group
+import intonaco/task/supervisor
 
 suite "task group: standalone primitive":
 

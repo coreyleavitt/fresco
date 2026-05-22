@@ -13,8 +13,8 @@
 ##     spawn worker()
 
 import chronos/contextvars
-import ../reactive/scope
-import ../reactive/signal
+import intonaco/reactive/scope
+import intonaco/reactive/signal
 import ./core
 
 template mountWhen*(cond: untyped, body: untyped): untyped =

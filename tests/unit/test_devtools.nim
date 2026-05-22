@@ -9,12 +9,12 @@
 import std/[strutils, unicode, unittest, times]
 import fresco/devtools/widgets
 import fresco/devtools/panel
-import fresco/reactive/scope
-import fresco/reactive/signal
-import fresco/task/supervisor
-import fresco/journal/events
-import fresco/journal/log
-import fresco/journal/timewarp
+import intonaco/reactive/scope
+import intonaco/reactive/signal
+import intonaco/task/supervisor
+import intonaco/journal/events
+import intonaco/journal/log
+import intonaco/journal/timewarp
 import fresco/events as input
 
 suite "devtools widgets: task tree":

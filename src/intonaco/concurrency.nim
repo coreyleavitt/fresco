@@ -14,7 +14,7 @@
 ##
 ## ## Usage
 ##
-##   import fresco/concurrency
+##   import intonaco/concurrency
 ##   ...
 ##   assertDispatcherThread()   # call before any disk-corruption-prone op
 ##

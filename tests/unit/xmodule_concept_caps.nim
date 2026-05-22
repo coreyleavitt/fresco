@@ -4,7 +4,7 @@
 ## discharges this task — proves user caps cross module boundaries
 ## without registerCap / bitmap encoding.
 
-import fresco/task/supervisor
+import intonaco/task/supervisor
 
 cap CrossModCap
 

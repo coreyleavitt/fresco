@@ -17,9 +17,9 @@
 import std/macros
 import ../screen
 import ../render/target
-import ./signal
-import ./scope
-import ./collection
+import intonaco/reactive/signal
+import intonaco/reactive/scope
+import intonaco/reactive/collection
 
 export target
 

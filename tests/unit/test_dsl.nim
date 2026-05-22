@@ -4,8 +4,8 @@
 
 import std/unittest
 import fresco/screen
-import fresco/reactive/scope
-import fresco/reactive/signal
+import intonaco/reactive/scope
+import intonaco/reactive/signal
 import fresco/reactive/binding
 
 suite "DSL: state block":

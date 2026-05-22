@@ -4,9 +4,9 @@
 
 import std/[unittest, math]
 import chronos
-import fresco/reactive/scope
-import fresco/reactive/signal
-import fresco/reactive/animation
+import intonaco/reactive/scope
+import intonaco/reactive/signal
+import intonaco/reactive/animation
 
 suite "easing curves":
 

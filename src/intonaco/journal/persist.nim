@@ -18,7 +18,7 @@
 import std/[json, options, os, tables, times]
 import ./events
 import ./log
-import ../concurrency
+import intonaco/concurrency
 
 const
   JournalSchemaVersion* = 4

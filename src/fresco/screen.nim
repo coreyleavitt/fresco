@@ -16,7 +16,7 @@ import ./render
 import ./render/layout
 import ./render/sink
 import ./render/sink/terminal
-import ./reactive/signal
+import intonaco/reactive/signal
 
 # Re-export so consumers of Screen automatically see TerminalSink's
 # commit/invalidate/flush — required for the Sink concept to verify

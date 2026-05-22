@@ -1,7 +1,7 @@
 import std/unittest
-import fresco/reactive/scope
-import fresco/reactive/context
-import fresco/reactive/capabilities
+import intonaco/reactive/scope
+import intonaco/reactive/context
+import intonaco/reactive/capabilities
 
 suite "capabilities":
 

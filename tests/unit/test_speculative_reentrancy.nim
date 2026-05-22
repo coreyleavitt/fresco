@@ -6,10 +6,10 @@
 ## including conditional reads and write-during-rollback cascades.
 
 import std/unittest
-import fresco/reactive/scope
-import fresco/reactive/signal
-import fresco/reactive/speculative
-import fresco/reactive/subscribable
+import intonaco/reactive/scope
+import intonaco/reactive/signal
+import intonaco/reactive/speculative
+import intonaco/reactive/subscribable
 
 suite "speculative reentrancy: source/observer wiring after rollback":
 

@@ -21,10 +21,10 @@ import chronos/contextvars
 import ./core
 import ./group
 
-import ../reactive/scope
-import ../reactive/capabilities
-import ../journal/events as jev
-import ../journal/log
+import intonaco/reactive/scope
+import intonaco/reactive/capabilities
+import intonaco/journal/events as jev
+import intonaco/journal/log
 
 export group
 export capabilities

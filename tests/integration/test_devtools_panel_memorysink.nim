@@ -10,9 +10,9 @@ import fresco/headless/input
 import fresco/events as keyevents
 import fresco/screen
 import fresco/devtools/panel
-import fresco/journal/events
-import fresco/journal/log
-import fresco/task/supervisor
+import intonaco/journal/events
+import intonaco/journal/log
+import intonaco/task/supervisor
 import fresco/render/sink/memory
 
 suite "devtools panel: headless via MemoryScreen":

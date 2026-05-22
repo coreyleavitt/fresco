@@ -1,9 +1,9 @@
 ## On-disk journal persistence + crash recovery.
 
 import std/[unittest, os, times, json]
-import fresco/journal/events
-import fresco/journal/log
-import fresco/journal/persist
+import intonaco/journal/events
+import intonaco/journal/log
+import intonaco/journal/persist
 
 proc tempPath(): string =
   getTempDir() / ("fresco-journal-test-" & $getCurrentProcessId() & "-" &

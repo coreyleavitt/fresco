@@ -12,7 +12,7 @@
 ## the retired `registerCap`).
 
 import std/unittest
-import fresco/task/supervisor
+import intonaco/task/supervisor
 import xmodule_tasks_a
 import xmodule_tasks_b
 

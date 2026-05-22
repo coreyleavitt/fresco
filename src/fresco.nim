@@ -66,30 +66,30 @@ import fresco/layout
 export layout
 
 # T4 — reactive
-import fresco/reactive/scope
-import fresco/reactive/signal
+import intonaco/reactive/scope
+import intonaco/reactive/signal
 import fresco/reactive/binding
-import fresco/reactive/context
-import fresco/reactive/speculative
-import fresco/reactive/animation
-import fresco/reactive/collection
-import fresco/reactive/static_graph
-import fresco/reactive/capabilities
+import intonaco/reactive/context
+import intonaco/reactive/speculative
+import intonaco/reactive/animation
+import intonaco/reactive/collection
+import intonaco/reactive/static_graph
+import intonaco/reactive/capabilities
 export scope, signal, binding, context, speculative, animation, collection,
        static_graph, capabilities
 
 # T4 — task
-import fresco/task/core
+import intonaco/task/core
 
-import fresco/task/receive
-import fresco/task/parallel
-import fresco/task/mount
-import fresco/task/hotkey
-import fresco/task/supervisor
+import fresco/receive
+import intonaco/task/parallel
+import intonaco/task/mount
+import fresco/hotkey
+import intonaco/task/supervisor
 export core, receive, parallel, mount, hotkey, supervisor
 
 # T4 — journal (v2.1 + v2.4)
-import fresco/journal/events as journal_events
-import fresco/journal/log    as journal_log
-import fresco/journal/persist as journal_persist
+import intonaco/journal/events as journal_events
+import intonaco/journal/log    as journal_log
+import intonaco/journal/persist as journal_persist
 export journal_events, journal_log, journal_persist

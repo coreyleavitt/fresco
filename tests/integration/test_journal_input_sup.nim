@@ -4,13 +4,13 @@ import std/[unittest, strutils]
 import std/[posix, termios]
 import chronos
 import fresco/events
-import fresco/journal/events as jev
-import fresco/journal/log
+import intonaco/journal/events as jev
+import intonaco/journal/log
 import fresco/input as fresco_input
-import fresco/reactive/scope
-import fresco/task/core
-import fresco/task/supervisor
-import fresco/task/hotkey
+import intonaco/reactive/scope
+import intonaco/task/core
+import intonaco/task/supervisor
+import fresco/hotkey
 
 proc posix_openpt(flags: cint): cint {.importc, header: "<stdlib.h>".}
 proc grantpt(fd: cint): cint           {.importc, header: "<stdlib.h>".}

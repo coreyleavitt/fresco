@@ -5,8 +5,8 @@ import std/[posix, termios]
 import chronos
 import fresco/events
 import fresco/input as fresco_input
-import fresco/reactive/scope
-import fresco/task/hotkey
+import intonaco/reactive/scope
+import fresco/hotkey
 
 proc posix_openpt(flags: cint): cint {.importc, header: "<stdlib.h>".}
 proc grantpt(fd: cint): cint           {.importc, header: "<stdlib.h>".}
