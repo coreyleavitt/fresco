@@ -65,6 +65,16 @@ type
     ## Production screen: ANSI emission to a file descriptor, SIGWINCH-
     ## driven resize. Default for `newScreen()` with no sink arg.
 
+  ScreenLike* = concept s
+    ## Structural concept describing the observable surface of a screen.
+    ## Consumers that just need to operate on "anything screen-shaped"
+    ## (e.g. future trace frontends, alternative spatial models) can
+    ## take a `ScreenLike` instead of pinning to `Screen[S]`. Today's
+    ## fresco consumers use `Screen[S]` directly; ScreenLike is the
+    ## opt-in flexibility for non-Screen sibling frontends.
+    s.layout is Layout
+    s.size is Signal[(int, int)]
+
 proc newScreen*(height, width: int, fd: cint = STDERR_FILENO): TerminalScreen =
   ## Explicit-size constructor with the default TerminalSink. The most
   ## common entry point: production apps that already know the

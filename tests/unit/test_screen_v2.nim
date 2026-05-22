@@ -112,6 +112,15 @@ suite "Screen v2: sink-polymorphic Screen[S]":
     check mem.rows[1] == "beta"
     check mem.rows[2] == "gamma"
 
+  test "ScreenLike concept matches both TerminalScreen and MemoryScreen":
+    # Pure compile-time check: any proc taking ScreenLike accepts both
+    # variants. If this compiles, the concept is wired correctly.
+    proc takesScreenLike[T: ScreenLike](s: T): int = s.layout.height
+    let t = newScreen(5, 20)
+    let m = newScreen(newMemorySink(), 3, 10)
+    check takesScreenLike(t) == 5
+    check takesScreenLike(m) == 3
+
   test "setSize on MemoryScreen clamps regions and writes signal":
     let mem = newMemorySink()
     let s = newScreen(mem, 10, 20)
