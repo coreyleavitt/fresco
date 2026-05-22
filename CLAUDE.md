@@ -16,7 +16,11 @@ intonaco            — pure reactive substrate (signals/scopes/supervision/jour
 sinopia             — trace frontend; substrate validator + observability tool
 ```
 
-The three names map to three layers of Renaissance fresco-making (*intonaco* plaster, *sinopia* underdrawing, *fresco* painting). intonaco and sinopia are sibling repos; the mechanical split is Phase 3 of `docs/rfc-intonaco-fresco-split.md`. **Today the single `fresco` repo still contains both substrate and terminal code**; treat that as a transitional state — substrate work should be authored against the post-split shape (no terminal assumptions; no row/region in substrate primitives), and terminal work should stay terminal-shaped. See `docs/rfc-sinopia.md` for what the second frontend looks like and why it exists.
+The three names map to three layers of Renaissance fresco-making (*intonaco* plaster, *sinopia* underdrawing, *fresco* painting). intonaco and sinopia are sibling repos; the mechanical split is Phase 3 of `docs/rfc-intonaco-fresco-split.md`.
+
+**Split status (2026-05-21):** *soft split* COMPLETE at commit `1440932` — substrate code at `src/intonaco/`, terminal frontend at `src/fresco/`, both in this repo, 570 tests passing. *Hard split* (intonaco as a separately published package) BLOCKED on a `nimble v0.22.2` vnext SAT-solver bug with chained URL requires. Unblock work-in-progress: building `milpa` (separate repo, Python dep resolver, KDL manifest) to replace nimble's resolution layer. Until milpa lands, write substrate code under `src/intonaco/` and frontend code under `src/fresco/` — the directory boundary IS the architectural seam; only the package boundary is pending.
+
+See `docs/rfc-sinopia.md` for what the second frontend looks like and why it exists.
 
 fresco-the-frontend is async on chronos, ANSI-only (no curses), region-based rendering (no VDOM in v0), **terminal-exclusively** (decided 2026-05-20 — fresco does not chase web/voice/headless frontends; sinopia and any future siblings handle those). Library-only Nimble package; sibling to [amoxtli](https://github.com/coreyleavitt/amoxtli), which is the primary downstream consumer. The whole design is shaped by being a library: no `main`-owning runtime, no stdout writes (stdout belongs to the caller's pipe — UI renders to stderr), no second async runtime.
 

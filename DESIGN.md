@@ -16,7 +16,7 @@ sinopia             — trace frontend; substrate validator + observability tool
 
 Names map literally to three layers of Renaissance fresco-making: *intonaco* (plaster), *sinopia* (red-pigment preparatory underdrawing), and the *fresco* (finished painting). The packages are siblings — fresco does not own the reactive primitives.
 
-**As of 2026-05-20** the single `fresco` repo still contains both substrate and terminal code; the mechanical split into three packages is Phase 3 of `docs/rfc-intonaco-fresco-split.md`. T1-T3 below stay in fresco; T4 moves to intonaco. Frontend-specific glue that depends on `createEffect` (bindRow / bindCollection / RenderTarget concept) stays in fresco because the row-based render model is terminal-domain.
+**As of 2026-05-21**, the *soft split* is complete (commit `1440932`): substrate code at `src/intonaco/`, terminal frontend at `src/fresco/`, both in this one repo. 570 tests passing. The *hard split* (intonaco as its own published package) is blocked on a `nimble v0.22.2` vnext SAT-solver bug with chained URL requires; unblock is in progress via `milpa` (separate repo, Python dep resolver, KDL manifest). The directory boundary IS the architectural seam — substrate code goes under `src/intonaco/`, frontend under `src/fresco/`. Phase 3 of `docs/rfc-intonaco-fresco-split.md` describes the full mechanical split; the deployment path through `milpa` is documented in the project's session memory and will become a separate RFC when milpa stabilizes.
 
 Companion docs:
 - `docs/rfc-intonaco-fresco-split.md` — the split rationale, where the line lives, and the phasing

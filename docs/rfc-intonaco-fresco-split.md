@@ -175,6 +175,12 @@ Estimated 2–3 cycles. Probably worth its own small RFC since the test-harness 
 
 ### Phase 3: Mechanical package split
 
+**Status as of 2026-05-21**: split into two sub-phases — *soft split* (directory reorganization within fresco repo) is COMPLETE at commit `1440932`; *hard split* (intonaco as a separate published package fresco depends on) is BLOCKED on a `nimble v0.22.2` vnext SAT solver bug. The substrate code at `coreyleavitt/intonaco` was pushed during a hard-split attempt and remains there, but fresco still builds from its local `src/intonaco/` directory pending the unblock.
+
+The unblock path is the `milpa` tool (separate repo, Python, KDL manifest) which replaces nimble's dep resolution. See `coreyleavitt/milpa` once it lands; the rationale for building a separate dep resolver instead of patching nimble is in fresco's session memory under `reference_milpa` / `reference_nimble_url_resolver_bug`.
+
+The remaining description in this section is the original Phase-3 design from 2026-05-19. Read it for the *what* (which files live where); the *how* (nimble URL requires) is no longer the deployment plan.
+
 Once the abstraction is proven by two consumers (terminal + headless), the package split is mechanical:
 
 - Move `reactive/`, `task/`, `journal/`, `cap T`, `{.needs.}`, `{.inferCaps.}`, `supervisor:` macro, observability substrate to `intonaco/`
