@@ -17,6 +17,12 @@ type
 proc newMemorySink*(): MemorySink =
   MemorySink(rows: @[])
 
+proc invalidate*(s: MemorySink) = discard
+  ## No-op: MemorySink has no render cache. Each `commit` captures
+  ## fresh from the layout's regions, so there's nothing to invalidate
+  ## on resize. Exists so `Screen[S].setSize` can call `s.sink.invalidate()`
+  ## without a compile-time branch on S.
+
 proc commit*(s: MemorySink, layout: Layout) =
   ## Capture the layout's current composed state. Each region's
   ## `target` is placed at its (row, col); cells outside any region

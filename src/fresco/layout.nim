@@ -10,19 +10,20 @@
 
 import std/math
 import ./screen
+import ./render/sink
 
 type
-  VStack* = ref object
-    screen*: Screen
+  VStack*[S: Sink] = ref object
+    screen*: Screen[S]
     weights*: seq[int]
     top*, left*, width*: int
     height*: int           # -1 means "screen.height - top"
     regions*: seq[Region]
 
-proc effectiveHeight(v: VStack): int =
+proc effectiveHeight[S: Sink](v: VStack[S]): int =
   if v.height < 0: v.screen.height - v.top else: v.height
 
-proc effectiveWidth(v: VStack): int =
+proc effectiveWidth[S: Sink](v: VStack[S]): int =
   if v.width < 0: v.screen.width - v.left else: v.width
 
 proc splitRows*(total: int, weights: openArray[int]): seq[(int, int)] =
@@ -44,7 +45,7 @@ proc splitRows*(total: int, weights: openArray[int]): seq[(int, int)] =
     cursor += h
     allocated += h
 
-proc applyGeometry(v: VStack) =
+proc applyGeometry[S: Sink](v: VStack[S]) =
   let h = effectiveHeight(v)
   let w = effectiveWidth(v)
   let slots = splitRows(h, v.weights)
@@ -56,13 +57,13 @@ proc applyGeometry(v: VStack) =
     v.regions[i].width  = w
     v.regions[i].markDirty()
 
-proc newVStack*(screen: Screen,
-                weights: openArray[int],
-                top = 0, left = 0,
-                height = -1, width = -1): VStack =
+proc newVStack*[S: Sink](screen: Screen[S],
+                          weights: openArray[int],
+                          top = 0, left = 0,
+                          height = -1, width = -1): VStack[S] =
   ## Create the stack and the underlying Regions. Regions are sized
   ## proportionally; you can `set` content on each one as usual.
-  result = VStack(
+  result = VStack[S](
     screen: screen,
     weights: @weights,
     top: top, left: left,
@@ -85,7 +86,7 @@ proc newVStack*(screen: Screen,
     region.height = slot[1]
     result.regions.add region
 
-proc relayout*(v: VStack) =
+proc relayout*[S: Sink](v: VStack[S]) =
   ## Recompute geometry against the screen's current size. Call this
   ## after `screen.resize()` fires on SIGWINCH.
   applyGeometry(v)

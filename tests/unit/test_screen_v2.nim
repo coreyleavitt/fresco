@@ -88,3 +88,42 @@ suite "Screen v2: reactive size signal":
       check observed[^1] != (10, 20)   # signal changed away from initial
 
     waitFor inner()
+
+import fresco/render/sink/memory
+import fresco/render/layout
+
+suite "Screen v2: sink-polymorphic Screen[S]":
+
+  test "Screen[MemorySink] constructs with size signal at given dims":
+    let mem = newMemorySink()
+    let s = newScreen(mem, 5, 20)
+    check s.size() == (5, 20)
+    check s.layout.height == 5
+    check s.layout.width == 20
+
+  test "paint(memoryScreen) captures bound content via MemorySink":
+    let mem = newMemorySink()
+    let s = newScreen(mem, 3, 10)
+    let r = newRegion(s, 0, 0, 3, 10)
+    r.set(["alpha", "beta", "gamma"])
+    paint(s)
+    check mem.rows.len == 3
+    check mem.rows[0] == "alpha"
+    check mem.rows[1] == "beta"
+    check mem.rows[2] == "gamma"
+
+  test "setSize on MemoryScreen clamps regions and writes signal":
+    let mem = newMemorySink()
+    let s = newScreen(mem, 10, 20)
+    let r = newRegion(s, 5, 0, 5, 20)
+    r.set(["a", "b", "c", "d", "e"])
+    var observed: seq[(int, int)]
+    let root = newScope()
+    defer: dispose(root)
+    withScope(root):
+      createEffect:
+        observed.add(s.size())
+    setSize(s, 7, 20)
+    check r.height == 2          # 7 - 5 = 2
+    check r.target.len == 2       # truncated
+    check observed[^1] == (7, 20) # signal updated

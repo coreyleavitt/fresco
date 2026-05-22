@@ -1,21 +1,21 @@
-## Devtools panel headless test (Screen v2 issue #101 stopgap).
+## Devtools panel headless test (Screen v2 Phase 2 — closes #99 / #101).
 ##
-## Exercises `runDevtoolsPanel` via the layout+commit-callback overload
-## under a `MemorySink`. Validates that the panel composes its widgets
-## and renders without a real terminal or PTY.
+## Exercises `runDevtoolsPanel` directly under a `MemoryScreen` (=
+## `Screen[MemorySink]`). The generic version dispatches paint through
+## the Sink concept; no terminal, no PTY, no callback shimming.
 
 import std/[unittest, strutils, unicode]
 import chronos
 import fresco/headless/input
 import fresco/events as keyevents
+import fresco/screen
 import fresco/devtools/panel
 import fresco/journal/events
 import fresco/journal/log
 import fresco/task/supervisor
-import fresco/render/layout
 import fresco/render/sink/memory
 
-suite "devtools panel: headless via MemorySink + commit-callback":
+suite "devtools panel: headless via MemoryScreen":
 
   test "panel renders widgets into MemorySink and exits on 'q'":
     proc inner(): Future[void] {.async: (raises: [Exception]).} =
@@ -29,21 +29,18 @@ suite "devtools panel: headless via MemorySink + commit-callback":
       discard j.logSignalWrite(t, NoEvent, "x", "2")
 
       let sup = newSupervisor()
-      let layout = newLayout(12, 60)
-      let memSink = newMemorySink()
+      let screen = newScreen(newMemorySink(), 12, 60)
 
       proc feeder() {.async: (raises: [Exception]).} =
         await sleepAsync(20.milliseconds)
         stream.pushKey(KeyEvent(kind: kChar, rune: "q".runeAt(0)))
 
       asyncSpawn feeder()
-      await runDevtoolsPanel(j, @[sup], stream, layout,
-                             proc(l: Layout) = memSink.commit(l))
+      await runDevtoolsPanel(j, @[sup], stream, screen)
 
-      check layout.regions.len == 3
-      # Stream region (middle third) should contain the rendered events.
+      check screen.regions.len == 3
       var sawSignalWrite = false
-      for line in memSink.rows:
+      for line in screen.sink.rows:
         if "write x=2" in line: sawSignalWrite = true
       check sawSignalWrite
 

@@ -23,7 +23,15 @@ DOCKER_HOME="${PROJECT_DIR}/.docker-home"
 ensure_docker_home() { mkdir -p "${DOCKER_HOME}"; }
 
 docker_run() {
-    docker run --rm \
+    # --network host: bypass the docker bridge network. On this host
+    # (WSL2 bridged-to-Windows networking) the default bridge
+    # intermittently loses outbound connectivity to public hosts —
+    # network prune and dockerd restart only fix it transiently. Host
+    # network shares the WSL/Windows net namespace, which works
+    # reliably. This is a host-environment workaround; if the bridge
+    # network stabilizes (or a different host is used) this flag can
+    # be dropped.
+    docker run --rm --network host \
         --user "${HOST_UID}:${HOST_GID}" \
         --volume "${PROJECT_DIR}:/workspace" \
         --volume "${DOCKER_HOME}:/dockerhome" \
@@ -53,8 +61,9 @@ case "${cmd}" in
         ;;
     shell)
         ensure_docker_home
-        # -ti for interactive shell
-        docker run --rm -ti \
+        # -ti for interactive shell; --network host for the same reason
+        # as docker_run() above.
+        docker run --rm -ti --network host \
             --user "${HOST_UID}:${HOST_GID}" \
             --volume "${PROJECT_DIR}:/workspace" \
             --volume "${DOCKER_HOME}:/dockerhome" \

@@ -45,7 +45,7 @@ suite "VStack":
     let s = newScreen(10, 80)
     let v = newVStack(s, weights = [1, 1])
     check v.regions[0].height == 5
-    s.height = 20
+    setSize(s, 20, 80)
     v.relayout()
     check v.regions[0].height == 10
     check v.regions[1].row == 10

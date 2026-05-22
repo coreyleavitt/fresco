@@ -11,12 +11,26 @@ srcDir        = "src"
 
 requires "nim >= 2.0.0"
 
-# Async runtime. Pinned to our fork's `feat/contextvars` branch while
-# the upstream PR (continuation-local storage primitive — see
-# docs/rfc-chronos-contextvars.md) is in review. When upstream accepts,
-# this drops back to `requires "chronos >= <version-with-contextvars>"`.
-# amoxtli rides the same fork during the interim.
-requires "https://github.com/coreyleavitt/chronos.git#feat/contextvars"
+# Async runtime: chronos. Vendored locally at lib/chronos (gitignored)
+# from our fork's `feat/contextvars` branch, while the upstream PR
+# (continuation-local storage primitive — see
+# docs/rfc-chronos-contextvars.md) is in review. The vendoring avoids
+# nimble's URL-based dep resolution (broken in v0.22.2 vnext SAT solver
+# for non-named requires). config.nims puts lib/chronos on the import
+# path so `import chronos/...` resolves. When upstream chronos lands
+# the contextvars primitive, this drops back to a normal version pin
+# (and lib/chronos goes away).
+#
+# Populate lib/chronos via:  cp -r ~/projects/chronos lib/chronos && rm -rf lib/chronos/.git
+#
+# Chronos's transitive deps (chronos's own `requires` block) — nimble
+# resolves these from the official package list; only the URL-based
+# chronos requires itself was problematic.
+requires "results"
+requires "stew >= 0.5.0"
+requires "bearssl >= 0.2.8"
+requires "httputils"
+requires "unittest2"
 
 # Test runner. `nimble test` compiles each tests/**/*.nim file with
 # std/unittest. Run via `./dev test`. List individual test files here

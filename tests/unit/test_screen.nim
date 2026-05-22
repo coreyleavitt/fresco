@@ -81,12 +81,7 @@ suite "Region flush semantics":
     r.set(["a", "b", "c", "d", "e"])
     check r.target.len == 5
     # Simulate a SIGWINCH that shrunk the terminal so the region
-    # overflows the bottom edge — what `resize` does internally on
-    # detecting the new winsize.
-    s.height = 7
-    if r.row + r.height > s.height:
-      r.height = s.height - r.row
-    s.resize()  # In CI, queryWinsize falls back to (24,80) and may
-                # re-expand. The invariant we care about is what
-                # resize guarantees about target vs height.
+    # overflows the bottom edge — setSize does the clamping + target
+    # truncation that `resize` would do internally on a real SIGWINCH.
+    setSize(s, 7, 20)
     check r.target.len <= r.height

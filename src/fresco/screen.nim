@@ -14,8 +14,16 @@ import std/posix
 import chronos
 import ./render
 import ./render/layout
+import ./render/sink
 import ./render/sink/terminal
 import ./reactive/signal
+
+# Re-export so consumers of Screen automatically see TerminalSink's
+# commit/invalidate/flush — required for the Sink concept to verify
+# `TerminalSink` satisfies it at generic-instantiation sites in
+# downstream code. Non-default sinks (MemorySink, future sinks) must
+# be imported explicitly by their consumers.
+export terminal
 
 export layout.Region, layout.set, layout.markDirty, layout.setRow, layout.scrollUp
 
@@ -43,49 +51,67 @@ proc queryWinsize*(fd: cint): tuple[height, width: int] =
 # --- Screen: Layout + TerminalSink wrapper --------------------------------
 
 type
-  Screen* = ref object
+  Screen*[S: Sink] = ref object
     layout*: Layout
-    sink*: TerminalSink
+    sink*: S
     size*: Signal[(int, int)]
-      ## Reactive view of the terminal's (height, width). Bindings
-      ## reading this re-run when the terminal resizes — replaces the
+      ## Reactive view of the screen's (height, width). Bindings
+      ## reading this re-run when the screen is resized — replaces the
       ## old `isResizePending()` polling pattern. Driven by
       ## `setSize` (test-driven or out-of-band reattach) or by
-      ## `watchResizes` (SIGWINCH-driven background task).
+      ## `watchResizes` (SIGWINCH-driven background task; terminal only).
 
-proc newScreen*(height, width: int, fd: cint = STDERR_FILENO): Screen =
-  ## Explicit-size constructor. Used by tests and any caller that
-  ## already knows the dimensions; bypasses TIOCGWINSZ.
-  Screen(layout: newLayout(height, width),
-         sink: newTerminalSink(fd),
-         size: signal((height, width)))
+  TerminalScreen* = Screen[TerminalSink]
+    ## Production screen: ANSI emission to a file descriptor, SIGWINCH-
+    ## driven resize. Default for `newScreen()` with no sink arg.
 
-proc newScreen*(fd: cint = STDERR_FILENO): Screen =
+proc newScreen*(height, width: int, fd: cint = STDERR_FILENO): TerminalScreen =
+  ## Explicit-size constructor with the default TerminalSink. The most
+  ## common entry point: production apps that already know the
+  ## dimensions (e.g. amoxtli sizing its panel against a parent layout).
+  TerminalScreen(layout: newLayout(height, width),
+                 sink: newTerminalSink(fd),
+                 size: signal((height, width)))
+
+proc newScreen*[S: Sink](sink: S, height, width: int): Screen[S] =
+  ## Explicit-sink constructor. Used by tests (with MemorySink) and any
+  ## non-default sink choice (file, websocket, IPC). No TIOCGWINSZ —
+  ## the caller knows the synthetic dimensions.
+  Screen[S](layout: newLayout(height, width),
+            sink: sink,
+            size: signal((height, width)))
+
+proc newScreen*(fd: cint = STDERR_FILENO): TerminalScreen =
+  ## TIOCGWINSZ-querying constructor. Used by production apps that
+  ## paint to the real terminal.
   let (h, w) = queryWinsize(fd)
   newScreen(h, w, fd)
 
-proc height*(s: Screen): int {.inline.} = s.layout.height
-proc width*(s: Screen): int {.inline.} = s.layout.width
-proc fd*(s: Screen): cint {.inline.} = s.sink.fd
-proc regions*(s: Screen): seq[Region] {.inline.} = s.layout.regions
+proc height*[S: Sink](s: Screen[S]): int {.inline.} = s.layout.height
+proc width*[S: Sink](s: Screen[S]): int {.inline.} = s.layout.width
+proc regions*[S: Sink](s: Screen[S]): seq[Region] {.inline.} = s.layout.regions
 
-# Setters so tests/callers can mutate Screen.height / Screen.width
-# directly — preserves the field-syntax API from the pre-split Screen.
-proc `height=`*(s: Screen, v: int) {.inline.} = s.layout.height = v
-proc `width=`*(s: Screen, v: int) {.inline.} = s.layout.width = v
+proc fd*(s: TerminalScreen): cint {.inline.} = s.sink.fd
+  ## Only meaningful for TerminalScreen; MemoryScreen has no file
+  ## descriptor (commits to in-memory rows).
 
-proc newRegion*(s: Screen, row, col, height, width: int): Region =
-  ## Allocate a Region on this Screen's underlying Layout.
+proc newRegion*[S: Sink](s: Screen[S], row, col, height, width: int): Region =
+  ## Allocate a Region on this Screen's underlying Layout. Generic
+  ## across sink type because regions are spatial coordination only —
+  ## they don't know how the sink emits.
   newRegion(s.layout, row, col, height, width)
 
-proc flush*(s: Screen): string =
-  ## Returns the ANSI bytes needed to bring the screen to its target
+proc flush*(s: TerminalScreen): string =
+  ## Returns the ANSI bytes needed to bring the terminal to its target
   ## state. Idempotent: a second flush with no changes returns "".
+  ## Terminal-only — MemoryScreen doesn't emit bytes.
   s.sink.flush(s.layout)
 
-proc paint*(s: Screen) =
-  ## Convenience: flush + write the resulting bytes to `s.fd`.
-  ## Handles partial writes + EINTR internally.
+proc paint*[S: Sink](s: Screen[S]) =
+  ## Commit the layout through the sink. For TerminalScreen this emits
+  ## ANSI to the fd; for MemoryScreen it captures rows; for any other
+  ## sink it does whatever that sink's `commit` does.
+  mixin commit
   s.sink.commit(s.layout)
 
 # --- SIGWINCH -------------------------------------------------------------
@@ -109,7 +135,7 @@ proc uninstallResizeHandler*() =
   discard signal(SIGWINCH, SIG_DFL)
   resizePending = false
 
-proc setSize*(s: Screen, height, width: int) =
+proc setSize*[S: Sink](s: Screen[S], height, width: int) =
   ## Update Screen's dimensions to (height, width). Clamps regions that
   ## overflow the new bounds, invalidates the sink's render cache, and
   ## writes the `size` signal so reactive subscribers re-run.
@@ -117,6 +143,7 @@ proc setSize*(s: Screen, height, width: int) =
   ## Called by `watchResizes` after SIGWINCH, by tests driving synthetic
   ## resizes, and by out-of-band reattach handlers (terminal multiplexer
   ## reattach, etc.).
+  mixin invalidate
   s.layout.height = height
   s.layout.width  = width
   s.sink.invalidate()
@@ -135,14 +162,15 @@ proc setSize*(s: Screen, height, width: int) =
   resizePending = false
   s.size.set((height, width))
 
-proc resize*(s: Screen) =
+proc resize*(s: TerminalScreen) =
   ## Re-query terminal size from the kernel and apply via setSize.
   ## Kept as a convenience for SIGWINCH-driven callers; new code should
-  ## subscribe to `s.size` or use `watchResizes(s)`.
+  ## subscribe to `s.size` or use `watchResizes(s)`. Terminal-only —
+  ## MemoryScreen has no kernel to query.
   let (h, w) = queryWinsize(s.fd)
   setSize(s, h, w)
 
-proc watchResizes*(s: Screen): Future[void] {.async: (raises: [CancelledError]).} =
+proc watchResizes*(s: TerminalScreen): Future[void] {.async: (raises: [CancelledError]).} =
   ## Long-running task that drives `s.size` from SIGWINCH events.
   ##
   ## Polls the process-global `resizePending` flag set by the SIGWINCH
