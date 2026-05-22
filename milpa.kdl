@@ -1,0 +1,16 @@
+// fresco's milpa manifest. Declares URL deps that nimble v0.22.2 can't
+// resolve via its broken SAT solver; milpa fetches them into _deps/ and
+// emits nim.cfg with the right --path: lines.
+//
+// See ../milpa for the resolver itself, and ../intonaco for the
+// substrate this depends on.
+
+deps {
+    // Reactive substrate. Pinned to main while intonaco is pre-1.0 —
+    // milpa locks to the resolved SHA in milpa.lock so reproducibility
+    // doesn't depend on branch mutability. chronos comes in
+    // transitively via intonaco.nimble's requires.
+    intonaco git=(url)"https://github.com/coreyleavitt/intonaco.git" ref="main"
+}
+
+kind "library"

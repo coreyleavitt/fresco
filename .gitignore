@@ -3,6 +3,13 @@ bin/
 nimcache/
 *.exe
 
+# milpa-managed dep tree + generated nim config. Lockfile is gitignored
+# because fresco is a library — consumers re-resolve via their own
+# milpa run. See milpa.kdl `kind "library"`.
+_deps/
+nim.cfg
+milpa.lock
+
 # Docker dev home (mirrors recall's pattern — gitignored writable nimble cache)
 .docker-home/
 
