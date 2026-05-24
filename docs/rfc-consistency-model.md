@@ -145,10 +145,12 @@ fresco's binding layer (`bindRow`/`bindCollection`/`region`) gets rewritten to e
 4. **Compile-time height carrier** — `heightOf`/`composeHeight`/`withHeight` in `height.nim` (`007eea5`, intonaco#51). The `{.height: N.}` pragma read via getImpl+eqIdent (cross-module; `getCustomPragmaVal` fails across the typed-param boundary). `heightOf` is **partial** (`none` = not in the static fragment) so `composeHeight` propagates `none` on any unresolvable dep — making the static fragment **downward-closed**, which is what secures Lemma B at the static/dynamic seam.
 5. **The hybrid classifier** — `classify(body): Classification{tier; height|reason}` in `classify.nim` (`e1cbf49`, intonaco#52). Composes #50 (opacity gate) + #51 (height resolution) + **callee-based** read detection (`()`/`get`, not arg-type — `fmtSig(a)` is AST-identical to `a()` otherwise). **v1 = bail-first**; the larger static fragment via descend-and-collect is the measurement-gated enhancement intonaco#57. Soundness pinned negatively: runtime-keyed / hidden / opaque / FFI / unbaked / mixed reads **never** classify static.
 
+6. **Architecture B wiring** — `construct.nim` (`9536c4b`, intonaco#53): `computed`/`effect`/`dynamic` binding-owning macros + `archBAction` pure policy. STATIC bakes `{.height:h.}` onto the binding AND passes it as the runtime `fixedHeight`; `Computation.heightFixed` suppresses subscribe-time accumulation so the **baked height drives the scheduler** (the cross-check's teeth: a conditional node bakes the over-approx across both arms — height 3 — where accumulation sees only the taken branch (2) and would glitch). DYNAMIC → runtime floor + a consequence-tier warning (`-d:intonacoStrict` → hard error; `dynamic:` escapes it). `signals:` bakes source heights (0).
+
 **NEXT:**
-6. **Architecture B wiring** — bake `classify`'s height onto `createComputed` (+ init the runtime `Subscribable.height` from it for static nodes; runtime floor for dynamic), then the **worklist glitch cross-check** (classified height == runtime-accumulated height ⟹ glitch-free, catching any too-low height) + warning/`dynamic:`/`-d:intonacoStrict` + the `intonaco/verification` contract (intonaco#53/#55).
-7. **Convergence concepts** (`CommutativeMonoid`/`Joinable`) + the propagation-identity token (intonaco#54).
-8. **fresco conformance** under strict; **mechanized proof** (Lean/Rocq: Lemma 2 + Lemma B) for the research artifact (intonaco#56).
+7. **`intonaco/verification` Diagnostic contract** (intonaco#55) — refine #53's raw warning/error strings into the consequence-tier grammar (`Severity`/`GlossaryTerm`/`validate`); gates checkers 2–5.
+8. **Convergence concepts** (`CommutativeMonoid`/`Joinable`) + the propagation-identity token (intonaco#54).
+9. **fresco conformance** under strict; **mechanized proof** (Lean/Rocq: Lemma 2 + Lemma B) for the research artifact (intonaco#56).
 
 ## Provenance
 
