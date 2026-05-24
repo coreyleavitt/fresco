@@ -2,7 +2,7 @@
 
 **Status**: Draft
 **Author**: Corey Leavitt
-**Companion to**: `docs/rfc-reactive-observability.md` (substrate), `docs/rfc-information-flow.md` (verification source), `docs/rfc-terminal-interaction.md` (rendering substrate)
+**Companion to**: `docs/rfc-reactive-observability.md` (substrate), `docs/rfc-consistency-model.md` (verification source), `docs/rfc-terminal-interaction.md` (rendering substrate)
 
 ## Why this RFC exists
 
@@ -32,7 +32,7 @@ The panel is built using fresco's own region/binding/receive/hotkey machinery. I
 
 ### 5. The experience scales with the substrate.
 
-As research RFCs land (information-flow, effect classification, temporal invariants, etc.), their static analysis results surface as new devtools views automatically. The devtools experience grows along with what intonaco can prove.
+As research RFCs land (consistency / glitch-freedom, substructural caps, refinement types, guarded productivity), their static analysis results surface as new devtools views automatically. The devtools experience grows along with what intonaco can prove.
 
 ## The ten novel features
 
@@ -217,50 +217,39 @@ Supervisor tree with each node's grants. Children inherit their parent's grants.
 
 ### 5. Verification view
 
-**What it is.** As research RFCs land (information-flow, effect classification, temporal invariants, UI completeness), their static analysis results surface in the panel. Each verification is a green checkmark or a red error annotation. Devtools becomes the user-facing surface for the compile-time research claims.
+**What it is.** As research RFCs land (consistency / glitch-freedom, substructural caps, refinement types, guarded productivity), their verification results surface in the panel — compile-time-checked, with consistency additionally reporting how much of the graph is statically scheduled vs handled by the runtime dynamic tier. Each verification is a green checkmark or a red error annotation. Devtools becomes the user-facing surface for the substrate's correctness claims.
 
-**Motivating scenario.** You're an AI agent dev. You want to know: does user input ever reach the file-write sink without sanitization? You open verification view; the information-flow path is shown; if any path is unauthorized, it's highlighted red with the flow chain. If everything is verified, you see green checkmarks for "no unauthorized information flow."
+**Motivating scenario.** You're building a reactive UI and want to know: can any value ever be read half-updated? You open verification view; consistency shows a green check when the scheduler guarantees it, and a value that depends on itself, or a value-rule violation, is highlighted with the offending site and a plain-language fix.
 
-**Concrete UI sketch.**
+**Concrete UI sketch (L0 — default; glossary terms only, no internal vocabulary).** Per the consistency RFC's `intonaco/verification` contract, the default surface uses developer-facing terms; raw internals (`height`, `SCC`, `Monotonic[int]`, `linear`) appear only under the `x` expert toggle.
 
 ```
  ┌─Verification Status───────────────────────────────────────────────┐
  │                                                                   │
- │  ✓ Information flow                                               │
- │       Trusted → Trusted  (43 paths verified safe)                 │
- │       Untrusted → Untrusted  (12 paths)                           │
- │       Untrusted → Trusted via SanitizerCap  (8 sites)             │
+ │  ✓ Consistency        no value can be read half-updated            │
+ │                       3 sources safe to merge in any order         │
  │                                                                   │
- │  ✗ Information flow                                               │
- │       Untrusted → Trusted WITHOUT declassification  (1 violation) │
- │       └─ userInput → toolCallArgs (line 142): missing sanitize()  │
- │       └─ [j] jump to source                                       │
+ │  ✗ Productive loops   1 value depends on itself with no guard      │
+ │       └─ total (line 142) — add a `next` guard, or break with peek │
+ │       └─ [Enter] jump to source                                    │
  │                                                                   │
- │  ✓ Effect classification                                          │
- │       All `pure` intents verified pure (28 functions)             │
- │       All `render` intents verified read-only (12 bindings)       │
+ │  ✓ Capabilities       all requirements satisfied; none over-used   │
  │                                                                   │
- │  ✓ Cap discharge                                                  │
- │       All {.needs.} requirements satisfied at spawn sites         │
+ │  ⚠ Value rules        1 forbidden write                            │
+ │       └─ counter (line 87) — may only increase; this decrements    │
  │                                                                   │
- │  ⚠ Temporal invariants                                            │
- │       counter: Monotonic[int] — 1 forbidden write detected        │
- │       └─ decrement at line 87 violates Monotonic                  │
- │                                                                   │
- │  ✓ UI completeness                                                │
- │       All 4 state variants covered by bindings                    │
- │                                                                   │
- │  [Tab] next issue    [j] jump to source    [r] re-verify          │
+ │  [j/k] issue  [Tab] category  [l/h] expand/collapse  [x] expert    │
  └───────────────────────────────────────────────────────────────────┘
 ```
 
-Aggregated verification status. Each category (information flow, effects, caps, temporal, UI completeness) shows its result. Failures expand to show the specific code site. Tab cycles through issues. The view re-runs verification on `r` or auto-refreshes on save.
+Each row is a checker from the shared `Diagnostic` contract; failures expand (`l`) to the `{symptom · site · rule · fix}` grammar. The `x` expert toggle reveals L2 internals (computed heights, SCC membership, raw refinement types) behind a visible `[expert]` indicator.
 
-**Interaction model.**
+**Interaction model (two axes — see consistency RFC "Devtools TUI").**
 
-- `Tab` cycle issues
-- `j` jump to source file/line of focused issue
-- `Enter` expand details on focused issue
+- `j/k` move between issues; `Tab/S-Tab` cycle categories
+- `l/h` deepen / collapse (L0 ✓ → L1 issue+site → fix detail); L0 never auto-expands
+- `x` toggle L2 expert internals (`[expert]` indicator shown)
+- `Enter` jump to source; `c` copy issue in the bug-report grammar; `r` re-verify
 - `r` force re-verify
 
 **Implementation notes.** Each research RFC's static analysis produces results that the panel queries. The protocol: each RFC exposes a `verificationResults(): seq[Issue]` proc; the panel aggregates and renders. As new research RFCs land, they plug in by extending this protocol.

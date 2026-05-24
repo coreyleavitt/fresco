@@ -249,7 +249,7 @@ Entirely fresco-side, with caveats:
 
 ### Compile-time research roadmap (`docs/roadmap-compile-time-research.md`, to be written next)
 
-Entirely intonaco-side. The six research directions (information-flow analysis, effect/intent classification, linear caps, temporal invariants, UI completeness proofs, reactive ABI) all live in intonaco. The roadmap document is written for the post-split structure.
+Entirely intonaco-side. The five research directions (consistency model / glitch-freedom [lead], reactive transactions, substructural types under re-execution, refinement types, guarded productivity) all live in intonaco, riding on the shared `tracked:` walker platform. The roadmap document is written for the post-split structure. (The roadmap was rebuilt 2026-05-23; the earlier IFC / effect-rows / ABI directions were killed and UI-completeness moved to fresco — see the roadmap's "Rejected / superseded directions".)
 
 UI completeness proofs are a slight exception — they touch both packages (the substrate verifies the proofs; the terminal renderer demonstrates them). The headline research RFC will treat them as intonaco substrate work with fresco-side validation.
 
@@ -286,7 +286,7 @@ Mentioned in earlier discussions. Now formalized as two-track:
 **intonaco 1.0:**
 - Cap system stable (no more rewrites)
 - Observability substrate landed (RFC complete, phases 1-3 shipped)
-- At least one major compile-time-research RFC landed (probably information-flow as the highest-leverage first)
+- At least one major compile-time-research RFC landed (the consistency model / glitch-freedom as the foundational lead the other directions build on)
 - Reactive substrate API frozen (no more renames of core types)
 - Documentation site live
 

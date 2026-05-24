@@ -1,8 +1,8 @@
 # RFC: Static UI completeness proofs
 
-**Status**: Stub
+**Status**: Stub — **fresco-side frontend research note** (moved out of the intonaco substrate roadmap in the 2026-05-23 rebuild; the verified UI graph is frontend-domain, not substrate).
 **Author**: Corey Leavitt
-**Companion to**: `docs/roadmap-compile-time-research.md` (direction 5 of 6), `docs/rfc-effect-classification.md` (prerequisite). Bridges `intonaco` (verification) and `fresco` (rendering).
+**Companion to**: `docs/roadmap-compile-time-research.md` (§"Rejected / superseded directions" records the move). Frontend-domain: the UI graph being verified is fresco-side.
 
 ## Premise
 

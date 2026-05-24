@@ -1,303 +1,158 @@
 # Roadmap: compile-time-first research substrate
 
-**Status**: Active roadmap
+**Status**: Active roadmap (rebuilt 2026-05-23 after an honest pass — see "Rejected / superseded directions")
 **Author**: Corey Leavitt
-**Companion to**: `docs/rfc-intonaco-fresco-split.md` (the identity & structural commitment), `docs/rfc-information-flow.md` (headline research RFC), individual stub RFCs for the five other research directions.
+**Companion to**: `docs/rfc-intonaco-fresco-split.md` (the identity & structural commitment), `docs/rfc-consistency-model.md` (lead research RFC), and the per-direction RFCs.
 
 ## Why this document exists
 
 The `intonaco`/`fresco` split RFC declares two non-negotiable theses:
 
-1. **Compile-time-first**: when a property can be enforced at compile time, the substrate prefers compile-time over runtime
-2. **Research drives engineering**: every substrate RFC ships theoretical contribution + engineering primitives + research artifact
+1. **Compile-time-first**: when a property can be enforced at compile time, the substrate prefers compile-time over runtime.
+2. **Research drives engineering**: every substrate RFC ships a theoretical contribution + engineering primitives + a research artifact.
 
-This roadmap is the concrete program of work that operationalizes those theses. It identifies six research directions, each individually significant, each producing user-facing engineering primitives as derivatives, each contributing to a coherent compile-time-first reactive substrate.
+This roadmap operationalizes those theses. It identifies **five research directions** plus a **shared analysis platform**, each riding on intonaco's static dependency extraction.
 
-The six are listed in implementation priority order, with rationale for ordering, prerequisite dependencies, and rough effort estimates.
+The selection bar (applied honestly, after a first cut that didn't survive scrutiny):
 
-## The six directions
+- **Pushes the reactive-substrate space forward** — *novel, OR currently lacking in reactive substrates with research-grade depth available.* Porting a mature framework into a substrate that lacks it is legitimate, provided there's real depth to mine.
+- **Leverages Nim-specific features** — typed macros, concepts, `effecttraits`, `static[T]`, `distinct T`, custom pragmas, ORC/ARC. If it would be equally easy elsewhere, it isn't pulling Nim's weight.
+- **Compile-time safety as the discipline** — runtime checks are the fallback, not the spec.
+- **No security theater, no false sense of security** — we do not ship flashy features that are mostly useless or that imply guarantees the substrate can't honor.
 
-### 1. Static information-flow analysis through the reactive graph
+## The shared platform
 
-**Theoretical contribution**: information-flow type system layered on intonaco's static dependency graph (from `tracked:`). Signals carry trust labels (`Trusted[T]`, `Untrusted[T]`, custom labels for domain-specific taint). The reactive graph IS the dataflow graph; static analysis verifies that data with one label cannot reach a sink requiring a different label without passing through an authorized transformation.
+All five directions ride on **one walk**: the `tracked:` typed-macro walker that extracts the static dependency graph. The same descent yields, by different projections:
 
-**Engineering primitives that fall out:**
-- `Signal[Untrusted[T]]` typed signals
-- `sanitize[T](u: Untrusted[T]): T {.needs: SanitizerCap.}` declassification helper
-- Compile-time `{.error: ...}` when untrusted data reaches a typed-trusted sink
-- Domain-specific taint labels (e.g., PII tracking, secret tracking, user-input flow)
-- **Static cycle detection** as a side product (the analysis traverses the graph; cycles are detected as a side-effect)
-- **Dead-signal elimination** as a side product (signals with no reachable sinks can be flagged)
+- dependency edges (scheduling — already shipped)
+- topological heights and SCCs (consistency, productivity)
+- consumption multisets (substructural)
+- write-site enumeration (refinement)
+- recursion structure (productivity)
 
-**Research artifact**: blog post / workshop paper on the unification of reactive dataflow graphs with information-flow type systems. The headline claim: prior IFC work assumes manual dataflow annotation; intonaco's `tracked:` provides the dataflow automatically, making IFC viable for general reactive programs.
+**Building five separate analysis passes would defeat the entire thesis.** Each direction extends the walker's labelling function; none introduces a parallel traversal.
 
-**Why first**: highest leverage. Directly addresses AI agent / security-conscious UI use cases (prompt injection, untrusted tool-call inputs, PII propagation). Builds on `tracked:` which is already shipped. Subsumes static cycle detection (an obvious engineering win). The hardest of the six but unlocks the most.
+### The meta-thesis (the genuinely all-CS-novel contribution)
 
-**Prerequisites**: `tracked:` (shipped); type-level labels (small extension to the cap concept system); macro analysis of reactive transformations.
+> **The typed reactive AST is a compile-time analysis platform.** A family of substrate properties — compile-time glitch-free scheduling, substructural discipline, refinement invariants, guarded productivity — is statically decided from one walk over the reactive graph. The platform claim is the novel meta-contribution; the individual analyses are honest substrate-gap ports with research-grade depth.
 
-**Estimated effort**: 6 months full RFC + implementation. ~2000 LoC of substrate code + significant macro work + tests.
+This replaces the abandoned "Reactive Coincidence Schema" framing, which was anchored to information-flow control — a direction we cut (see below).
 
-**RFC stub**: `docs/rfc-information-flow.md` (drafted in detail as the headline research RFC).
+**Note (2026-05-23, consistency RFC round 5):** direction 1 schedules the **statically-resolvable fragment at compile time** (the differentiator) and falls back to a runtime scheduler for the dynamic tier (collections, conditional reads). Round 3 briefly cut the compile-time tier on a soundness bug in a *global-table* mechanism; round 5 restored it via a sound *compositional per-site* mechanism (pending engine re-vet of the Nim mechanics). So glitch-free scheduling is a member of the statically-decided family — for the resolvable fragment — exactly as the platform thesis claims.
 
----
+## The five directions
 
-### 2. Effect / intent classification — three-axis static verification
+### 1. Formal consistency model for reactive updates — **LEAD**
 
-**Theoretical contribution**: orthogonal three-axis classification of reactive code:
-- **Capabilities** (authority — *what's this code allowed to do?*) — already shipped via the cap concept system
-- **Effects** (observable interactions — *what does this code actually do?*) — pure / signal-read / signal-write / async-suspend / IO / blocking. Inferred by macro analysis of the body, statically verifiable.
-- **Intent** (purpose — *what is this code trying to accomplish?*) — render / decide / fetch / mutate / audit / supervise. User-declared, machine-checked for consistency with inferred effects.
+**Gap**: every mainstream reactive substrate has a *runtime* glitch-free scheduler; **none decides scheduling at compile time**, and intonaco has no glitch-free scheduler at all today. **Depth**: **compile-time glitch-free scheduling** of the statically-resolvable fragment (the differentiator — resolved compositionally per construction site, sound by construction) on top of a runtime scheduler for the dynamic tier, with a formally-proved observational-glitch-freedom + cross-propagation-quiescence guarantee spanning the verified static/dynamic seam, plus a corrected two-tier convergence algebra. Sits under every other direction (they all reason about when/in what order a derivation re-runs).
 
-Static verification: the macro proves that declared intent matches inferred effects (a `render` intent doesn't mutate; a `pure` intent doesn't suspend; etc.).
+**RFC**: `docs/rfc-consistency-model.md` (full draft).
 
-**Engineering primitives that fall out:**
-- `{.effect.}` pragma declaring intent
-- Compile-time verification of intent vs effects
-- Specialized notification dispatch for pure computations
-- Effect deduplication (identical effects merge into one observer)
-- Static "this is pure" proofs usable for memoization
+### 2. Reactive transaction model
 
-**Research artifact**: Koka-style effect inference adapted to reactive substrate. Paper claim: prior effect systems assume sequential code; reactive systems have *temporal* effects (signal writes propagate to observers eventually). Effect classification must account for the propagation.
+**Gap**: reactive STM is essentially undone — no signals substrate offers user-delimited atomic regions with abort/commit/retry and isolation. **Depth**: isolation levels for *push-based* observation, and compositional commit under re-execution. **Foothold**: speculative scopes are already ~70% of this. Explicit scoped strengthening of the consistency model's implicit per-propagation atomicity.
 
-**Why second**: builds on the type-level infrastructure from (1). Unifies caps + effects + intent into one substrate. Provides the static foundation that (3), (4), and (6) all consume.
+**RFC**: `docs/rfc-reactive-transactions.md` (stub).
 
-**Prerequisites**: information-flow substrate (1) provides the type-level extension machinery.
+### 3. Substructural types under reactive re-execution
 
-**Estimated effort**: 4 months. ~1500 LoC + macro work + tests.
+**Gap**: substructural typing (linear/affine/bounded caps) is absent from reactive substrates. **Depth**: classical substructural systems assume single execution; reactive derivations re-run, so *what does linearity even mean under multi-shot re-execution?* De-risked — the gap-level port stands even if the re-execution theorem doesn't.
 
-**RFC stub**: `docs/rfc-effect-classification.md` (stub).
+**RFC**: `docs/rfc-substructural-reexecution.md` (stub).
 
----
+### 4. Refinement types for reactive signals
 
-### 3. Linear / affine capability tokens
+**Gap**: refinement types over mutable reactive values don't exist in the substrate space. **Depth**: invariants (`Bounded`) and successive-value relations (`Monotonic`) that must hold across an *unbounded write sequence*, every write site discharged at compile time. (Honest core of the old "temporal invariants" stub; `EventuallyConsistent` moved to direction 1, `StableWithin` dropped as timing.)
 
-**Theoretical contribution**: lift the cap concept system from "Boolean" (you have it or you don't) to **substructural** (you have it N times, or once, or it must be consumed). Borrows from Rust's affine types and from linear logic. Compile-time tracking of cap usage count.
+**RFC**: `docs/rfc-refinement-types.md` (stub).
 
-**Engineering primitives that fall out:**
-- `cap MyCap, cardinality = Linear` — must be used exactly once
-- `cap MyCap, cardinality = Affine` — may be used at most once
-- `cap MyCap, cardinality = Bounded[N]` — may be used up to N times
-- One-time deploy tokens, transactional resource handles, single-shot speculative scopes — all statically verifiable
-- Rate-limited API call budgets verified at compile time
+### 5. Guarded productivity for reactive derivations
 
-**Research artifact**: paper on substructural capability typing in a reactive substrate. Connection to Rust's ownership; novelty in applying to dynamic-cardinality scenarios (Bounded[N] with runtime N).
+**Gap**: guarded recursion / coinductive productivity is absent from reactive substrates. **Depth**: distinguish *productive* cyclic structures (animation clocks, streams that advance through a guard) from divergent ones — turning the consistency model's "no cycles allowed" into "exactly the productive cycles allowed." Promoted to flagship (not a mere component) because guardedness is a substantial type-theoretic contribution.
 
-**Why third**: builds on (2)'s effect machinery (consumption is an effect kind). Provides the static-resource-management story that some research directions (especially observability + rewriteable history) want.
-
-**Prerequisites**: effect classification (2).
-
-**Estimated effort**: 3 months. ~800 LoC + macro work + tests.
-
-**RFC stub**: `docs/rfc-linear-caps.md` (stub).
-
----
-
-### 4. Type-level temporal invariants
-
-**Theoretical contribution**: signals carry temporal invariants at the type level:
-- `Monotonic[int]` — value never decreases
-- `Bounded[int, 0..100]` — value stays in range
-- `EventuallyConsistent[Pair[A, B]]` — A and B agree within K events
-- `StableWithin[ms]` — value doesn't change more than once per K milliseconds
-
-Compile-time verification: every write to such a signal preserves the invariant. Goes beyond Rust's type-level constants (static) to dynamic-value invariants tracked through the reactive graph.
-
-**Engineering primitives that fall out:**
-- Provably-monotonic counters
-- Provably-clamped progress indicators
-- Provably-bounded rate limiters
-- Static stability proofs for UI (no flicker invariant)
-- **Static cycle detection** as a side product (cycles in invariants are detectable)
-
-**Research artifact**: TLA+-style temporal logic adapted to compile-time-checked reactive signals. Paper claim: temporal logic for reactive systems is usually runtime-verified (TLA+ trace checking, runtime assertion frameworks); doing it at compile time over the type system is novel.
-
-**Why fourth**: builds on (1)'s information-flow infrastructure (invariants are flow constraints over time). Could plausibly precede (2)/(3) if a strong consumer use case appears.
-
-**Prerequisites**: information-flow (1) for the type-level machinery.
-
-**Estimated effort**: 4 months. ~1200 LoC + macro work + tests.
-
-**RFC stub**: `docs/rfc-temporal-invariants.md` (stub).
-
----
-
-### 5. Static UI completeness proofs
-
-**Theoretical contribution**: given the reactive graph and the typed state model, prove at compile time:
-- **Exhaustiveness**: for every state variant, some binding renders it
-- **Reachability**: every binding is reachable from some user input or external event
-- **Liveness**: bindings whose preconditions hold will eventually render
-- **Determinism**: same input sequence produces same render output (given the journal)
-
-Like exhaustiveness checking for `case` statements, generalized to the reactive UI graph.
-
-**Engineering primitives that fall out:**
-- Compile error when a state variant has no binding
-- Compile error when a binding is dead
-- Compile-time liveness proofs for critical UI paths
-- Journal-based determinism verification
-
-**Research artifact**: connection to academic reactive frameworks (Concur, FRP papers) that proved similar properties but never shipped as usable libraries. Paper claim: practical UI completeness checking at the language level, with the reactive substrate providing the necessary structural information.
-
-**Why fifth**: touches both intonaco (verification) and fresco (rendering — the UI graph being verified is fresco-side). Builds on effect classification (2) — the "render" intent + UI graph is the verification target.
-
-**Prerequisites**: effect classification (2). Benefits from temporal invariants (4) for liveness proofs.
-
-**Estimated effort**: 5 months. ~1500 LoC + macro work + tests. Bridges intonaco and fresco; substantial coordination across the package boundary.
-
-**RFC stub**: `docs/rfc-ui-completeness-proofs.md` (stub).
-
----
-
-### 6. Reactive ABI stability checking
-
-**Theoretical contribution**: a fresco / intonaco program (or library) declares a *reactive surface* — its set of public signals, their types, the bindings/effects users can attach. ABI compatibility is statically verifiable: V2 of a library is backward-compatible with V1 if every V1 consumer's bindings still type-check against V2's surface.
-
-Like semver but actually verified rather than human-declared.
-
-**Engineering primitives that fall out:**
-- `reactiveAbi:` macro declaring a public reactive surface
-- Compile-time backward-compatibility checking when comparing two ABI declarations
-- Plugin system support (plugins declare what they touch; host verifies)
-- Multi-process versioning (IPC contracts between processes)
-
-**Research artifact**: paper on reactive-graph ABI stability. Most ABI work targets function signatures; reactive ABI is novel because the unit of stability is a reactive-graph node and its observers.
-
-**Why last**: builds on everything else. The reactive surface includes signals (1), effects (2), caps (3 + 2), temporal invariants (4), UI completeness (5). Stable ABI requires stable definitions of all these things.
-
-**Prerequisites**: ideally all five other directions, though a partial implementation could ship earlier with future-extension hooks.
-
-**Estimated effort**: 4 months. ~1000 LoC + tooling for compatibility checking + tests. Less new substrate, more "synthesize across the existing substrate."
-
-**RFC stub**: `docs/rfc-reactive-abi.md` (stub).
-
----
+**RFC**: `docs/rfc-guarded-productivity.md` (stub).
 
 ## Phasing and dependencies
 
 ```
-                 ┌─────────────────────────────────────┐
-                 │  1. Information-flow                │
-                 │     (subsumes static cycle detect)  │
-                 └──────────────────┬──────────────────┘
-                                    │
-                ┌───────────────────┼───────────────────┐
-                │                   │                   │
-                ▼                   ▼                   ▼
-       ┌────────────────┐  ┌────────────────┐  ┌────────────────┐
-       │ 2. Effect      │  │ 4. Temporal    │  │ (other future) │
-       │    classification │    invariants  │  │                │
-       └────────┬───────┘  └────────┬───────┘  └────────────────┘
-                │                   │
-                ▼                   │
-       ┌────────────────┐           │
-       │ 3. Linear caps │           │
-       └────────┬───────┘           │
-                │                   │
-                ▼                   ▼
-       ┌─────────────────────────────────────┐
-       │ 5. UI completeness proofs           │
-       │    (bridges intonaco + fresco)      │
-       └──────────────────┬──────────────────┘
-                          │
-                          ▼
-                 ┌─────────────────────────┐
-                 │ 6. Reactive ABI         │
-                 │    (synthesizes all)    │
-                 └─────────────────────────┘
+        ┌───────────────────────────────────────────┐
+        │   Shared platform: the tracked: walker      │
+        │   (heights · SCCs · consumption · writes)   │
+        └───────────────────────┬─────────────────────┘
+                                │
+                                ▼
+                ┌───────────────────────────────┐
+                │  1. Consistency model (LEAD)   │
+                │  compile-time glitch-free sched │
+                └───────────────┬───────────────┘
+                                │
+        ┌───────────────┬───────┴───────┬───────────────┐
+        ▼               ▼               ▼               ▼
+┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+│ 2. Trans-    │ │ 3. Substr-   │ │ 4. Refine-   │ │ 5. Guarded   │
+│    actions   │ │    uctural   │ │    ment      │ │    product-  │
+│ (foothold:   │ │ (re-exec     │ │ (write-site  │ │    ivity     │
+│  speculative)│ │  semantics)  │ │  discharge)  │ │ (good cycles)│
+└──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘
 ```
 
-**Hard dependencies** (you can't ship the bottom without the top):
-- (2) needs (1)'s type-level extension machinery
-- (3) needs (2)'s effect substrate
-- (4) needs (1)
-- (5) needs (2), benefits from (4)
-- (6) ideally needs all five
+**Hard dependency**: all four follow the consistency model — it defines re-execution count (consumed by 3), the cycle/SCC machinery (extended by 5), the write-site walk (consumed by 4), and the per-propagation atomicity that transactions (2) strengthen.
 
-**Soft dependencies** (you can ship in parallel but coordination helps):
-- (4) and (2)/(3) can run in parallel after (1)
-- (5) can start once (2) is well-defined even if (3) and (4) are still in flight
+**Soft**: 2–5 can run in parallel once 1 lands; 2 and 3 want coordination (transaction boundary as consumption boundary); 1 and 5 want coordination (cycles-as-errors vs productive-cycles-allowed).
 
-**Recommended cadence**: one major research RFC every 4–6 months, parallel with surface engineering work on fresco (driver abstraction, widget library, layout system, etc.). Total roadmap: roughly 2–3 years.
+**Recommended cadence**: one major research RFC every 4–6 months, parallel with fresco surface engineering. Total roadmap: ~2 years for the five.
+
+## Rejected / superseded directions
+
+Recorded so the reasoning isn't re-litigated. (The killed RFCs were deleted 2026-05-23; git preserves them.)
+
+- **Information-flow control (IFC) — KILLED.** Not for lack of novelty, for *falseness*: API-layer auth is the default and correct control point for data; substrate-layer IFC is downstream of the real control and provides either redundant checks or a false sense of security (labels the LLM/agent loop launders anyway). Prompt-injection, PII, and secret-token framings all failed the "where does the dangerous flow actually live?" test — it lives in the agent loop / data layer, not the reactive UI. No honest security story exists at the substrate layer.
+- **Effect / intent classification (rows) — KILLED as a direction.** UI-shaped intent vocabulary (render/decide/mutate) with thin research value over Koka-style rows. The genuinely useful part — effect/dependency extraction — is **absorbed into the shared walker platform**, which every surviving direction consumes. The intent surface stays dead.
+- **Reactive ABI stability — KILLED.** Engineering with known tools (semver, type-shape diff); no research depth to mine.
+- **Static UI completeness proofs — MOVED to fresco.** Research-shaped but frontend-domain (the UI graph being verified is fresco-side), so it belongs in fresco's frontend research notes, not intonaco's substrate roadmap. `docs/rfc-ui-completeness-proofs.md` retained as a fresco-side note.
 
 ## Surface engineering work in parallel
 
-The research roadmap doesn't replace the surface engineering work. In parallel with the six research directions, the following ship as pure engineering RFCs:
+Unchanged by the research rebuild. In parallel with the five directions, these ship as pure engineering RFCs and don't gate on the research:
 
-- **Driver abstraction** (terminal / headless / web / file) — completes the intonaco/fresco split's promise
-- **Widget library** (DataTable, Tree, OptionList, Form, MarkdownViewer, TextArea) — Textual-tier widget coverage
-- **Layout system upgrade** (flex / grid / constraint-based) — beyond vstack/hstack
-- **Transient interaction DSL** (`prompt`, `ask`, `confirm`) — one-liner ergonomics
-- **Styling layer** (reactive themes + Style records)
-- **Documentation site** + public docs (public adoption depends on this)
-
-These are not research-driven. They're engineering investments fresco-the-library needs to be production-grade. They run independently of the research roadmap and don't gate on it.
+- Driver abstraction (terminal / headless) — completes the split's promise
+- Widget library (DataTable, Tree, OptionList, Form, MarkdownViewer, TextArea)
+- Layout system upgrade (flex / grid / constraint-based)
+- Transient interaction DSL (`prompt`, `ask`, `confirm`)
+- Styling layer (reactive themes + Style records)
+- Documentation site + public docs
 
 ## Cross-cutting principles
 
-These apply to every research direction:
-
 ### Compile-time-first
-
-When a property can be enforced at compile time, the implementation enforces it at compile time. Runtime checks are fallbacks for genuinely dynamic cases (e.g., a cap value provided by user input must be checked at runtime; everything else is static).
+When a property can be enforced at compile time, the implementation enforces it there. Runtime checks are fallbacks for genuinely dynamic cases.
 
 ### Engineering primitives ship with theory
-
-Every research RFC has a section enumerating user-facing primitives. The engineering audience can read just that section and adopt the primitives without understanding the theory.
+Every RFC enumerates user-facing primitives; the engineering audience can adopt them without the theory.
 
 ### Research artifact accompanies each RFC
-
-Blog post minimum; paper/talk preferred. Articulates the theoretical contribution to the academic audience.
+Blog post minimum; paper/talk preferred.
 
 ### Validation by example
-
-Each research direction includes an example consumer that exercises the new substrate. The information-flow RFC includes an "untrusted user input → tool call" example; effect classification includes a "pure computation memoization" example; etc. The example becomes a tutorial, a regression test, and a marketing artifact.
+Each direction ships an example consumer that exercises the new substrate — tutorial, regression test, and artifact in one.
 
 ### Cross-direction coherence
-
-The six directions are designed to compose. An information-flow-typed signal that's also temporal-invariant-tagged and effect-classified is a coherent multi-axis typed value, not a layered mess. RFC design checks for compositional cleanliness before commitment.
+The five compose: a signal can be glitch-free-scheduled, transaction-scoped, cardinality-tracked, refinement-typed, and productivity-checked as one coherent multi-axis value, not a layered mess. RFC design checks compositional cleanliness before commitment.
 
 ## What 1.0 means for intonaco
 
 Per the split RFC's two-track 1.0 criterion, intonaco 1.0 requires:
 
-- Cap system stable (no rewrites — μb shipped)
-- Observability substrate landed (RFC complete, phases 1-3 shipped)
-- **At least direction (1) of this roadmap landed** — information-flow as the headline compile-time-research contribution
+- Cap system stable (μb shipped)
+- Observability substrate landed (phases 1–3)
+- **At least direction (1) — the consistency model — landed**, as the foundational compile-time-research contribution that the rest build on.
 
-Directions (2)–(6) are post-1.0 work. 1.0 represents "the substrate is research-grade, but only the foundational research direction has shipped; the rest are roadmapped."
-
-This is the analogue of how LLVM 1.0 shipped with the basic SSA compiler infrastructure but not every subsequent optimization pass. The 1.0 commitment is to the architecture and the foundational research; later releases extend.
-
-## Why six directions instead of three or twelve
-
-Six is the natural set when you audit *what intonaco specifically enables that other reactive runtimes cannot*. Each direction requires intonaco's substrate to be possible:
-
-- (1) needs the static reactive graph (`tracked:`)
-- (2) needs effect inference machinery + the cap substrate
-- (3) needs the cap substrate
-- (4) needs the type-level extension machinery
-- (5) needs the UI rendering + reactive substrate
-- (6) synthesizes all of the above
-
-A different reactive library would have different research directions because its substrate enables different things. Six is what intonaco's specific affordances support.
-
-Fewer than six leaves load-bearing directions unbuilt. More than six dilutes focus; the additional directions would be either repackagings of these six or genuinely new substrates that should be their own roadmap.
+Directions (2)–(5) are post-1.0. 1.0 means "the substrate is research-grade and the foundational direction has shipped; the rest are roadmapped." (Analogue: LLVM 1.0 shipped the SSA infrastructure, not every later pass.)
 
 ## Adoption pattern
 
-Each research RFC produces:
-
-1. A new module in intonaco (e.g., `intonaco/flow` for information-flow)
-2. New macros and type-level machinery
-3. New cap tokens or concepts
-4. Updated docs / tutorials
-5. Example consumer in `examples/`
-6. Blog post / research artifact
-7. Regression test suite that pins the theoretical claim
-
-Existing intonaco consumers can opt in to new research substrates incrementally. None of the six is *required* — a consumer can use intonaco's base reactive substrate without any research extensions. The extensions add safety/optimization properties for consumers that choose to engage with them.
+Each research RFC produces: a new intonaco module, new macros/type-level machinery, new caps/concepts, updated docs, an `examples/` consumer, a research artifact, and a regression suite pinning the theoretical claim. All five are opt-in — a consumer can use intonaco's base reactive substrate with none of them.
 
 ## Decision log
 
-(Empty initially. Decisions made during implementation get appended.)
+- **2026-05-23** — Rebuilt the roadmap from six directions to five + shared platform. Killed IFC (security theater; API auth is the correct layer), effect/intent rows (absorbed useful part into the platform; intent surface dead), and reactive ABI (engineering, not research). Moved UI completeness to fresco. Promoted a new lead — the consistency model (compile-time glitch-freedom) — and added the reactive transaction model and guarded productivity as flagships. Re-scoped linear caps → substructural-under-re-execution and temporal invariants → refinement types. Dropped the IFC-anchored "Reactive Coincidence Schema" meta-thesis in favor of "typed reactive AST as a compile-time analysis platform."

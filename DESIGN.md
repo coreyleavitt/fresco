@@ -21,7 +21,7 @@ Names map literally to three layers of Renaissance fresco-making: *intonaco* (pl
 Companion docs:
 - `docs/rfc-intonaco-fresco-split.md` — the split rationale, where the line lives, and the phasing
 - `docs/rfc-sinopia.md` — the trace frontend that validates intonaco's portability
-- `docs/rfc-reactive-observability.md`, `docs/rfc-devtools-experience.md`, `docs/rfc-terminal-interaction.md`, `docs/rfc-information-flow.md`, `docs/roadmap-compile-time-research.md`
+- `docs/rfc-reactive-observability.md`, `docs/rfc-devtools-experience.md`, `docs/rfc-terminal-interaction.md`, `docs/rfc-consistency-model.md`, `docs/roadmap-compile-time-research.md`
 
 ## Stable non-negotiables
 
