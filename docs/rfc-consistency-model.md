@@ -147,8 +147,9 @@ fresco's binding layer (`bindRow`/`bindCollection`/`region`) gets rewritten to e
 
 6. **Architecture B wiring** — `construct.nim` (`9536c4b`, intonaco#53): `computed`/`effect`/`dynamic` binding-owning macros + `archBAction` pure policy. STATIC bakes `{.height:h.}` onto the binding AND passes it as the runtime `fixedHeight`; `Computation.heightFixed` suppresses subscribe-time accumulation so the **baked height drives the scheduler** (the cross-check's teeth: a conditional node bakes the over-approx across both arms — height 3 — where accumulation sees only the taken branch (2) and would glitch). DYNAMIC → runtime floor + a consequence-tier warning (`-d:intonacoStrict` → hard error; `dynamic:` escapes it). `signals:` bakes source heights (0).
 
+7. **`intonaco/verification` Diagnostic contract** — `verification.nim` (`7e0f47a`, intonaco#55): `Diagnostic`/`Severity`/`GlossaryTerm` (the union across all 5 directions) + `validate` (word-boundary internal-token rejection, expert bypass) + `group`/`surfaced` (an `sevError` root pauses its downstream cascade) + `render` (substrate-baseline message; panels are frontend). Added `subject: SignalId` over the sketch — grouping needs signal identity. Proven to fit AND catch the consistency checker's `height`-leaking reason (adoption: intonaco#59; transitive grouping: intonaco#58). This is the shared contract checkers 2–5 implement.
+
 **NEXT:**
-7. **`intonaco/verification` Diagnostic contract** (intonaco#55) — refine #53's raw warning/error strings into the consequence-tier grammar (`Severity`/`GlossaryTerm`/`validate`); gates checkers 2–5.
 8. **Convergence concepts** (`CommutativeMonoid`/`Joinable`) + the propagation-identity token (intonaco#54).
 9. **fresco conformance** under strict; **mechanized proof** (Lean/Rocq: Lemma 2 + Lemma B) for the research artifact (intonaco#56).
 
