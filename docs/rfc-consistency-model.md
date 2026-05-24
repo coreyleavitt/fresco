@@ -56,6 +56,15 @@ The two compose: **AST walk for specificity (which signal, what height), effect 
 - **`SignalWrite`** — `set` can't carry it as a *declared* tag (it journals → `TimeEffect`/`RootEffect`, and propagates → arbitrary observer effects, so a `tags:[X]` upper bound blows out). Instead a pure `proc setRaw {.tags:[SignalWrite].} = s.val = v` carries it, and `setCore` routes its store through `setRaw` — a declared tag *injects* into callers, so everything calling `set` carries `SignalWrite`. Lever: `{.forbids: [SignalWrite].}` = "render can't mutate."
 - **`forbids` is surgically precise** (verified): it rejects an effect and its *subtypes*, not the `RootEffect` *supertype*. So a proc carrying the catch-all `RootEffect` (which `set` does, via `notify`) is **not** falsely rejected by `forbids[SignalRead]`/`forbids[SignalWrite]` — the levers work in real, effect-laden code.
 
+### Implemented: the purity oracle + effect firewall (#50, committed intonaco `4f0380a`)
+
+`src/intonaco/reactive/purity.nim` — the reusable purity primitive the classifier (#52) and directions #4/#46 consume. Two queries:
+
+- **`reactiveEffects(n): Reactivity{effects, opaque}`** — specific effects from `getTagsList` *plus* an `opaque` flag set when the compiler punted (bare `RootEffect`). Because the compiler emits `RootEffect` for **dynamic dispatch, async bodies, and indirect proc-value calls** alike (all verified), the `opaque` flag catches every punt-shape in one query — no per-shape blocklist to keep exhaustive.
+- **`opaqueReactiveCalls(body, strict): seq[OpaqueCall]`** — the lone opacity `getTagsList` is *blind* to: FFI (`importc` → `@[]`). Contract-based: callback FFI needs `{.effectsOf.}`; no-callback FFI is trusted unless `strict` (← `defined(intonacoStrict)`), which requires a `{.forbids:[SignalRead,SignalWrite].}` vouch — closing the exotic hardcoded-`exportc` gap.
+
+**The enabling substrate change — the effect firewall:** `{.cast(tags:[]).}` wraps `notify`'s observer dispatch (subscribable.nim) and `setCore`'s journal write (signal.nim). An observer's / the journal's effects are fired *by the scheduler/substrate*, not by the writing code — so they must not leak into a writer's inferred `tags`. Without it, every `set` carries `RootEffect` and the opacity signal is worthless. This is the *correct effect model* (a write's reactive effect is `SignalWrite`, full stop), and it's **inference-only — runtime is unchanged** (intonaco suite + 569-test fresco regression both green). Net: opacity is **sound by construction** (the compiler's own punt-signal + a strict FFI contract), not a maintained enumeration of call shapes.
+
 **FFI is forced, not bailed.** Since `getTagsList` is blind to C bodies, the rule is: `effectsOf` composes with `importc` (verified — `proc cFn(cb) {.importc, effectsOf: cb.}` propagates the callback's reads), and an `importc` proc with a callback param but *no* `effectsOf` is **detectable at compile time** (`getImpl` exposes pragmas + params, verified). So the classifier *errors* on such a call inside a reactive body ("annotate `effectsOf` or wrap in `dynamic:`"), hard under `-d:intonacoStrict`, rather than silently treating it as pure. Non-callback FFI has no parameter path to a signal; the allowlist covers only the exotic C-hardcodes-a-Nim-`exportc`-reader residual. A binding-generator macro (or `softlink`) is the natural place to enforce/auto-add `effectsOf`.
 
 ### Architecture B — forced default, sound floor, explicit escape hatch
@@ -132,10 +141,10 @@ fresco's binding layer (`bindRow`/`bindCollection`/`region`) gets rewritten to e
 0. Standalone test harness — `milpa.kdl` + `nimble test` (`6b7d9d8`, intonaco#47).
 1. **Worklist scheduler** (the sound floor) + the ≤1-observer fast path (`989a7e4`, intonaco#48).
 2. **Effect-tagged signal reads/writes** + `forbids` levers + the forced-FFI rule (`1fb0da0`, intonaco#49).
+3. **Reactive-purity oracle + effect firewall** — `reactiveEffects`/`opaqueReactiveCalls` in `purity.nim` (`4f0380a`, intonaco#50). Reusable by #52/#4/#46.
 
 **NEXT:**
-3. **The `effecttraits` purity gate** as a reusable primitive (intonaco#50 / T1 — `/tdd`; de-risked by `spike_effecttraits`/`spike_ffi_detect`). Shared with #4/#46.
-4. **Compile-time compositional height resolution** + the `{.height.}` carrier + the AST/effect hybrid classifier (intonaco#51/#52).
+4. **Compile-time compositional height resolution** + the `{.height.}` carrier (intonaco#51), then **the classifier** composing height-resolution + the #50 purity oracle (intonaco#52).
 5. **Architecture B wiring** — warning/`dynamic:`/`-d:intonacoStrict` + the `intonaco/verification` contract (intonaco#53/#55).
 6. **Convergence concepts** (`CommutativeMonoid`/`Joinable`) + the propagation-identity token (intonaco#54).
 7. **fresco conformance** under strict; **mechanized proof** (Lean/Rocq: Lemma 2 + Lemma B) for the research artifact (intonaco#56).
