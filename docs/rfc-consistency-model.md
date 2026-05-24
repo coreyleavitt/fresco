@@ -142,12 +142,13 @@ fresco's binding layer (`bindRow`/`bindCollection`/`region`) gets rewritten to e
 1. **Worklist scheduler** (the sound floor) + the ≤1-observer fast path (`989a7e4`, intonaco#48).
 2. **Effect-tagged signal reads/writes** + `forbids` levers + the forced-FFI rule (`1fb0da0`, intonaco#49).
 3. **Reactive-purity oracle + effect firewall** — `reactiveEffects`/`opaqueReactiveCalls` in `purity.nim` (`4f0380a`, intonaco#50). Reusable by #52/#4/#46.
+4. **Compile-time height carrier** — `heightOf`/`composeHeight`/`withHeight` in `height.nim` (`007eea5`, intonaco#51). The `{.height: N.}` pragma read via getImpl+eqIdent (cross-module; `getCustomPragmaVal` fails across the typed-param boundary). `heightOf` is **partial** (`none` = not in the static fragment) so `composeHeight` propagates `none` on any unresolvable dep — making the static fragment **downward-closed**, which is what secures Lemma B at the static/dynamic seam.
+5. **The hybrid classifier** — `classify(body): Classification{tier; height|reason}` in `classify.nim` (`e1cbf49`, intonaco#52). Composes #50 (opacity gate) + #51 (height resolution) + **callee-based** read detection (`()`/`get`, not arg-type — `fmtSig(a)` is AST-identical to `a()` otherwise). **v1 = bail-first**; the larger static fragment via descend-and-collect is the measurement-gated enhancement intonaco#57. Soundness pinned negatively: runtime-keyed / hidden / opaque / FFI / unbaked / mixed reads **never** classify static.
 
 **NEXT:**
-4. **Compile-time compositional height resolution** + the `{.height.}` carrier (intonaco#51), then **the classifier** composing height-resolution + the #50 purity oracle (intonaco#52).
-5. **Architecture B wiring** — warning/`dynamic:`/`-d:intonacoStrict` + the `intonaco/verification` contract (intonaco#53/#55).
-6. **Convergence concepts** (`CommutativeMonoid`/`Joinable`) + the propagation-identity token (intonaco#54).
-7. **fresco conformance** under strict; **mechanized proof** (Lean/Rocq: Lemma 2 + Lemma B) for the research artifact (intonaco#56).
+6. **Architecture B wiring** — bake `classify`'s height onto `createComputed` (+ init the runtime `Subscribable.height` from it for static nodes; runtime floor for dynamic), then the **worklist glitch cross-check** (classified height == runtime-accumulated height ⟹ glitch-free, catching any too-low height) + warning/`dynamic:`/`-d:intonacoStrict` + the `intonaco/verification` contract (intonaco#53/#55).
+7. **Convergence concepts** (`CommutativeMonoid`/`Joinable`) + the propagation-identity token (intonaco#54).
+8. **fresco conformance** under strict; **mechanized proof** (Lean/Rocq: Lemma 2 + Lemma B) for the research artifact (intonaco#56).
 
 ## Provenance
 
