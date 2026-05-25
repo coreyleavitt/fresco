@@ -151,8 +151,11 @@ fresco's binding layer (`bindRow`/`bindCollection`/`region`) gets rewritten to e
 
 8. **Convergence concepts** — `convergence.nim` (`888cbb2`, intonaco#54): `CommutativeMonoid` (merge+unit) / `Joinable` (merge-only) concepts + `converge` (order-independent fold) + `holds{Commutative,Associative,Idempotent}` law witness-checks (**exhaustive = a proof on finite types** via `allValues`, sampled otherwise). Honest split: concepts recognize *shape*; laws are *witness-checked*, never claimed structurally proven. The propagation-identity token + serialize-vs-merge scheduler integration is the scheduler half, deferred to intonaco#60 (needs a concurrent-async-source consumer).
 
-**NEXT:**
-9. **fresco conformance** under strict; **mechanized proof** (Lean/Rocq: Lemma 2 observational glitch-freedom + Lemma B cross-tier monotonicity) for the research artifact (intonaco#56).
+9. **Mechanized proof** (the research artifact) — `proofs/Consistency.lean` (`31abf5b`, intonaco#56): a Lean 4, **mathlib-free, sorry-free** proof. `lemmaB` (cross-tier monotonicity, the novel core), `oracleFixpoint`, `confluence` (Lemma 1), `glitchFree` (Lemma 2), `heightOrderedCorrect`, and `worklistCorrect` (the **actual** min-height worklist algorithm — closes idealized-vs-real). Axiom-clean (only propext / Quot.sound / Classical.choice). **Honest positioning:** the glitch-freedom *theorem* is known — paper-proven for runtime FRP (FrTime, REScala), machine-checked for synchronous dataflow (Vélus, Coq); the contribution is the **synthesis** — a machine-checked proof for a *compile-time-scheduled, hybrid-tier* reactive substrate. Scope: static/acyclic fragment + the operational worklist. Feedback/cycles → intonaco#46 (guarded productivity, by the acyclicity boundary); dynamic-tier accumulation → intonaco#61 (the non-novel runtime floor).
+
+**The consistency lead is COMPLETE.** Every load-bearing claim is now shipped code or a machine-checked theorem.
+
+**NEXT (downstream):** **fresco conformance** under `-d:intonacoStrict` (the proof-of-discipline; the `signals:`/`Computation` changes need a fresco regression first).
 
 ## Provenance
 
