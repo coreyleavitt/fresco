@@ -5,6 +5,7 @@ import intonaco/reactive/scope
 import intonaco/reactive/signal
 import intonaco/reactive/runtime
 import intonaco/reactive/collection
+import intonaco/reactive/deltafloor      # onDelta (the floor — tests subscribe directly)
 import intonaco/reactive/speculative
 import intonaco/journal/events
 import intonaco/journal/log

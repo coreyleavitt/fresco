@@ -19,6 +19,9 @@ import ../screen
 import ../render/target
 import intonaco/reactive/signal
 import intonaco/reactive/collection
+import intonaco/reactive/deltafloor   # onDelta — bindCollection's windowed view is
+                                      # legitimately dynamic, so it reaches the floor
+                                      # explicitly (the greppable classifier-bypass)
 import intonaco/reactive/construct
 
 export target
