@@ -149,9 +149,10 @@ fresco's binding layer (`bindRow`/`bindCollection`/`region`) gets rewritten to e
 
 7. **`intonaco/verification` Diagnostic contract** — `verification.nim` (`7e0f47a`, intonaco#55): `Diagnostic`/`Severity`/`GlossaryTerm` (the union across all 5 directions) + `validate` (word-boundary internal-token rejection, expert bypass) + `group`/`surfaced` (an `sevError` root pauses its downstream cascade) + `render` (substrate-baseline message; panels are frontend). Added `subject: SignalId` over the sketch — grouping needs signal identity. Proven to fit AND catch the consistency checker's `height`-leaking reason (adoption: intonaco#59; transitive grouping: intonaco#58). This is the shared contract checkers 2–5 implement.
 
+8. **Convergence concepts** — `convergence.nim` (`888cbb2`, intonaco#54): `CommutativeMonoid` (merge+unit) / `Joinable` (merge-only) concepts + `converge` (order-independent fold) + `holds{Commutative,Associative,Idempotent}` law witness-checks (**exhaustive = a proof on finite types** via `allValues`, sampled otherwise). Honest split: concepts recognize *shape*; laws are *witness-checked*, never claimed structurally proven. The propagation-identity token + serialize-vs-merge scheduler integration is the scheduler half, deferred to intonaco#60 (needs a concurrent-async-source consumer).
+
 **NEXT:**
-8. **Convergence concepts** (`CommutativeMonoid`/`Joinable`) + the propagation-identity token (intonaco#54).
-9. **fresco conformance** under strict; **mechanized proof** (Lean/Rocq: Lemma 2 + Lemma B) for the research artifact (intonaco#56).
+9. **fresco conformance** under strict; **mechanized proof** (Lean/Rocq: Lemma 2 observational glitch-freedom + Lemma B cross-tier monotonicity) for the research artifact (intonaco#56).
 
 ## Provenance
 
