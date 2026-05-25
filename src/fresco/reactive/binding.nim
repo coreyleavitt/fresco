@@ -18,16 +18,18 @@ import std/macros
 import ../screen
 import ../render/target
 import intonaco/reactive/signal
-import intonaco/reactive/scope
 import intonaco/reactive/collection
+import intonaco/reactive/construct
 
 export target
 
 template bindRow*(target: RenderTarget, idx: int, body: untyped) =
   ## Re-evaluate `body` (a string-yielding expression) on every tracked
-  ## signal change; write the result into row `idx` of `target`.
-  ## `target` is any `RenderTarget` (Region, HeadlessRenderTarget, etc.).
-  createEffect proc() =
+  ## signal change; write the result into row `idx` of `target`. Routes through
+  ## the `effect:` macro, so it's classified at the call site: directly-named
+  ## (baked) signal reads schedule statically; anything unresolvable falls to the
+  ## sound runtime floor (a warning; an error under `-d:intonacoStrict`).
+  effect:
     target.setRow(idx, body)
 
 template bindRows*(target: RenderTarget, slice: HSlice[int, int],
@@ -36,7 +38,7 @@ template bindRows*(target: RenderTarget, slice: HSlice[int, int],
   ## tracked signal change; lay the result into the rows covered by
   ## `slice`. Rows in the slice that don't have a corresponding entry
   ## in the seq are blanked.
-  createEffect proc() =
+  effect:
     let lines = body
     let lo = slice.a
     let hi = slice.b

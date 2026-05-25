@@ -8,6 +8,7 @@ import intonaco/journal/persist
 import intonaco/journal/timewarp
 import intonaco/reactive/scope
 import intonaco/reactive/signal
+import intonaco/reactive/runtime
 
 suite "timewarp: rewindTo + resumeLive":
 

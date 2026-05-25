@@ -3,6 +3,7 @@
 import std/unittest
 import intonaco/reactive/scope
 import intonaco/reactive/signal
+import intonaco/reactive/runtime
 
 suite "scope":
 

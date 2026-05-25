@@ -8,6 +8,7 @@
 import std/unittest
 import intonaco/reactive/scope
 import intonaco/reactive/signal
+import intonaco/reactive/runtime
 import intonaco/reactive/speculative
 import intonaco/reactive/subscribable
 

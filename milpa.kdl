@@ -5,6 +5,9 @@
 // See ../milpa for the resolver itself, and ../intonaco for the
 // substrate this depends on.
 
+name "fresco"
+src_dir "src"
+
 deps {
     // Reactive substrate. Pinned to main while intonaco is pre-1.0 —
     // milpa locks to the resolved SHA in milpa.lock so reproducibility

@@ -3,6 +3,7 @@
 import std/[unittest, strutils]
 import intonaco/reactive/scope
 import intonaco/reactive/signal
+import intonaco/reactive/runtime
 import intonaco/reactive/collection
 import intonaco/reactive/speculative
 import intonaco/journal/events

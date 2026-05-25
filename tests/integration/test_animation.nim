@@ -6,6 +6,7 @@ import std/[unittest, math]
 import chronos
 import intonaco/reactive/scope
 import intonaco/reactive/signal
+import intonaco/reactive/runtime
 import intonaco/reactive/animation
 
 suite "easing curves":

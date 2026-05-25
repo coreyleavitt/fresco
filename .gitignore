@@ -25,3 +25,4 @@ milpa.lock
 
 # Local-only env
 .env
+.milpa-cache/

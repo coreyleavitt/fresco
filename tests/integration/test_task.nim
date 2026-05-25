@@ -6,6 +6,7 @@ import std/unittest
 import chronos
 import intonaco/reactive/scope
 import intonaco/reactive/signal
+import intonaco/reactive/runtime
 import intonaco/task/core
 
 proc tick(): Future[void] {.async: (raises: [Exception]).} =
