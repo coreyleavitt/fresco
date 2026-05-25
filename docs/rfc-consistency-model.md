@@ -155,7 +155,15 @@ fresco's binding layer (`bindRow`/`bindCollection`/`region`) gets rewritten to e
 
 **The consistency lead is COMPLETE.** Every load-bearing claim is now shipped code or a machine-checked theorem.
 
-**NEXT (downstream):** **fresco conformance** under `-d:intonacoStrict` (the proof-of-discipline; the `signals:`/`Computation` changes need a fresco regression first).
+**NEXT (downstream):** ~~fresco conformance under `-d:intonacoStrict`~~ — **DONE** (intonaco `63ea104`, fresco `26c825b`): `bindRow`/`bindRows` → `effect:` (static for `signals:`-baked reads; `nimble strictcheck` proves it), `bindCollection` stays lazy/windowed, tests on `intonaco/reactive/runtime`. 570 fresco green.
+
+## Reactive collection algebra (extends direction 1 to collections)
+
+Incremental reactive collections on the same compile-time-scheduled substrate (intonaco, 2026-05-25). A `CollectionSignal[T]` emits typed positional deltas (insert/remove/update/clear/replace + a batched speculative rollback), delivered through the **height-ordered scheduler** (per-consumer buffered `Computation`, NOT an eager fanout — the eager version glitched diamonds; an interim `batched` band-aid was added then removed, since consistency is the heights, not batching).
+
+A closed algebra of **LINEAR** operators where `incremental == apply-to-delta` is sound by construction (DBSP's linear-operator theorem): **`derive`** (map), **`keep`** (filter, with a source→view rank/index-translation), **`fold`** (aggregate over a commutative group — `convergence`'s monoid/group concepts). Compile-time-scheduled macros (height baked; `CollectionSignal` recognized as a height-0 source, so no `collections:` ceremony); the function arg must be **pure** — the linearity boundary, since a signal-dependent one is *bilinear* (a join), deliberately out of scope (its correct form is a `computed`). `scan` is the opaque-fold escape. **DBSP/Z-sets rejected**: best-in-class for *unordered* incremental computation, wrong domain for *ordered* terminal UI. **Windowing ≠ map**: fresco's windowed `bindCollection` is a *lazy* windowed map (render-domain), not `derive` (which eager-maps the whole collection).
+
+**OPEN — the IVM-equivalence proof:** mechanize `apply(view, op_delta(δ)) == op(apply(source, δ))` per `DeltaKind` for derive/keep/fold in `proofs/` (Lean, mathlib-free) — the shrunken, in-model successor to "proof A" (no stateful-fold model extension needed; the binding is a pure linear node). map = the linear rule; keep = + the rank invariant; fold = the group laws.
 
 ## Provenance
 
