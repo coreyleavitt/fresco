@@ -27,7 +27,7 @@ Companion docs:
 
 Beyond the operational invariants in CLAUDE.md (crash-safe termios restore, single chronos dispatcher, no stdout writes, ANSI-only, no VDOM in v0):
 
-- **Compile-time-first.** When a property can be enforced at compile time or at runtime, the substrate enforces it at compile time. Cap concept satisfaction, `tracked:` static dependency extraction, supervisor concept discharge — these are the consistent expression of the rule. New primitives are evaluated against it.
+- **Compile-time-first.** When a property can be enforced at compile time or at runtime, the substrate enforces it at compile time. Cap concept satisfaction, explicit-deps reactive binding (`computed name, [deps]: body` with heights composed and baked at compile time, walker-enforced no-undeclared-reads), supervisor concept discharge — these are the consistent expression of the rule. New primitives are evaluated against it.
 - **Research drives engineering.** Every substrate-level RFC ships theoretical contribution + engineering primitives + research artifact. Both audiences served from one source.
 - **fresco is terminal-exclusively.** Non-terminal rendering models belong in sibling packages (sinopia / hypothetical future fresco-web). Do not add web/voice/headless abstractions in fresco.
 
@@ -137,44 +137,46 @@ Pure infrastructure. T4's `vstack:` / `hstack:` DSL blocks compile down to these
 
 ### Tier 4: Reactive component system — *the user-facing API*
 
+**Note**: the substrate (signals/scopes/computeds/effects/collections/tasks/journal) lives in `coreyleavitt/intonaco` after the hard split (see `rfc-intonaco-fresco-split.md` and `intonaco/docs/rfc-c-shape-migration.md` for the binding-shape direction). fresco's T4 is the **terminal-frontend binding layer** that sits on top of the intonaco substrate.
+
 ```
 src/fresco/
 ├── reactive/
-│   ├── scope.nim           # reactive scopes, owner graph, cleanup chains
-│   ├── signal.nim          # Signal[T], Computation, signals: macro, := operator, createEffect/Computed
-│   ├── binding.nim         # bindRow / bindRows / region: macro
-│   ├── context.nim         # provide T: v / use T (DI + capability values)
-│   ├── speculative.nim     # optimistic-revert speculative scopes (signal.nim depends on this for revert hooks)
-│   ├── animation.nim       # Easing + tween + frame clock
-│   ├── collection.nim      # CollectionSignal[T] + Delta[T]
-│   ├── static_graph.nim    # `tracked:` typed macro — compile-time dep extraction
-│   └── capabilities.nim    # capability markers + `requires` macro
-├── task/
-│   ├── types.nim           # Mount, MountCollector, parallelCollector — pure data, no async (layer-0 split so low-level modules can reach the types without dragging in lifecycle machinery)
-│   ├── core.nim            # task primitive, spawn / spawnRetry / spawnCatch (re-exports types)
-│   ├── receive.nim         # selective receive runtime — pattern arms + after timeout
-│   ├── parallel.nim        # parallel: block — structured-concurrency group await
-│   ├── mount.nim           # mountWhen / mount(cond) — reactive conditional spawn
-│   ├── hotkey.nim          # scope-bound input filter
-│   └── supervisor.nim      # OTP-flavored supervisor (ssOneForOne / ssOneForAll / ssRestForOne strategies)
-├── journal/
-│   ├── events.nim          # Event variant + EventId / TaskId distinct types
-│   ├── log.nim             # in-memory log + projection (lastWritesByLabel / stateAt / stateAtTime)
-│   └── persist.nim         # on-disk JSONL + schema versioning
+│   └── binding.nim         # bindRow / bindRows / bindCollection — pending C-shape rewrite (fresco milestone #10)
+├── devtools/
+│   ├── panel.nim           # devtools panel: causal-chain / cap-flow / dep-graph views
+│   └── widgets.nim         # reusable panel widgets
+├── headless/
+│   ├── input.nim           # synthetic input for non-TTY runs
+│   └── runner.nim          # headless run loop (PTY-free)
+├── screen.nim              # Screen v2 — reactive surface, regions, set-row API
+├── events.nim, hotkey.nim, input.nim, receive.nim   # input + selective-receive at the fresco layer
+├── layout.nim              # vstack / hstack region composition
+├── render.nim              # painter — diff-based smart line updates
 └── fresco.nim              # public API entry: re-exports the T4 surface
 ```
 
-This is the only surface a caller imports. T1-T3 modules are reachable but unstable — their public APIs may change between v2.x releases as T4's needs evolve.
+The substrate equivalents (the imports from intonaco) are summarized for orientation:
 
-Notes on collapsed modules vs the original sketch:
-- `terminal/signals.nim` → folded into `terminal/termios.nim` (signal hooks share the snapshot stack with termios save/restore).
-- `screen.nim` + `region.nim` → merged: `Region` is a small type and lives next to `Screen` for one-file geometry handling.
-- `reactive/graph.nim`, `frame.nim`, `deltas.nim` → became `static_graph.nim`, `animation.nim`, `collection.nim` respectively, with clearer concrete-feature names.
-- `journal/time.nim` → bitemporal projection lives directly in `journal/log.nim`.
-- `context/provide.nim` → `reactive/context.nim`.
-- `macros/*` → each DSL macro is co-located with the runtime module it expands to (`receive` macro in `task/receive.nim`, `region` macro in `reactive/binding.nim`, `supervisor` macro in `task/supervisor.nim`, etc.). No separate macros directory.
-- `task/types.nim` → layer-0 split holding `Mount`, `MountCollector`, and `parallelCollector` — pure data, no async machinery. Exists so low-level modules can reach these types without dragging in `task/core.nim`'s lifecycle code. `core.nim` re-exports `types` so existing imports of `task/core` see the same surface.
-- `cls.nim` → **removed**. fresco previously carried a continuation-local storage substrate (`{.task.}` pragma + `taskAwait` helper + `TaskContext`) implementing CLS via macro-rewriting around chronos's `await`. v3 replaced this with chronos's native `contextVar` primitive — three threadvars (`currentScope`, `currentSpeculative`, `parallelCollector`) became `contextVar` declarations in their respective modules. The substrate, pragma-order rule, and ~150 lines of macro infrastructure all collapsed into ~3 lines per declaration.
+```
+intonaco/reactive/
+├── binding.nim             # `computed name, [deps]: body` / `effect [deps]: body` + walker (the C-shape static-tier API)
+├── dynamic.nim             # Dynamic[T] + `dynamic name: body` + dynamicComputed/dynamicEffect
+├── each.nim                # eachItem over CollectionSignal — per-item scope lifecycle
+├── signal.nim              # Signal[T] + signals: macro
+├── collection.nim          # CollectionSignal[T] + Delta[T] + collections: macro
+├── derive.nim / scan.nim   # collection algebra: derive/keep/fold/scan macros
+├── subscribable.nim        # the height-ordered glitch-free worklist scheduler (Lean-proven)
+├── height.nim              # `{.height.}` pragma carrier — heightOf/composeHeight/withHeight
+├── scope.nim               # newScope / withScope / dispose / onCleanup
+└── deltafloor.nim          # onDelta / floor procs for derive/keep/fold/scan/deltas/foldDeltas
+intonaco/task/
+├── core / receive / parallel / mount / hotkey / supervisor / mailbox
+intonaco/journal/
+└── events / log / persist / timewarp
+```
+
+fresco's `binding.nim` is the consumer surface that wraps `computed` / `effect` into terminal-row bindings; it's the principal artifact of the upcoming **fresco milestone #10 rewrite**.
 
 ---
 
