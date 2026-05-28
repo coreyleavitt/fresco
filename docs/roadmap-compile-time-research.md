@@ -22,15 +22,17 @@ The selection bar (applied honestly, after a first cut that didn't survive scrut
 
 ## The shared platform
 
-All five directions ride on **one walk**: the `tracked:` typed-macro walker that extracts the static dependency graph. The same descent yields, by different projections:
+All five directions ride on the **same compile-time analysis surface**: the typed AST of a `computed name, [deps]: body` / `effect [deps]: body` binding. The dependency edges are **declared syntactically in the bracket** (so the dep graph is not inferred but read directly); the body's typed AST is walked by `binding.nim`'s `noUndeclaredSignals` to enforce the C-shape soundness rule (no reactive read outside the brackets). The same surface, by different projections, supplies:
 
-- dependency edges (scheduling — already shipped)
-- topological heights and SCCs (consistency, productivity)
-- consumption multisets (substructural)
-- write-site enumeration (refinement)
-- recursion structure (productivity)
+- **dependency edges** (scheduling — heights composed via `composeHeight` over each dep's `{.height.}` pragma; baked onto the binding via `withHeight`; already shipped, milestone #3)
+- **topological heights and SCCs** (consistency, productivity — heights direct, SCC detection a single pass over the declared graph)
+- **consumption multisets** (substructural — count of reads / writes per signal across binding bodies)
+- **write-site enumeration** (refinement — every `signal.set` site is a write target; the journal's `ekSignalWrite` events are the runtime witness)
+- **recursion structure** (productivity — declared deps make recursion-through-bindings syntactic, not inferred)
 
-**Building five separate analysis passes would defeat the entire thesis.** Each direction extends the walker's labelling function; none introduces a parallel traversal.
+**Building five separate analysis passes would defeat the entire thesis.** Each direction extends the analysis over the same explicit-dep AST; none introduces a parallel traversal.
+
+**History note**: an earlier direction-1 design (the A-shape) attempted to derive the dependency graph by inference (the `tracked:` typed-macro walker + classifier + purity oracle). That approach was retired in favor of the explicit-deps shape; see `intonaco/docs/rfc-c-shape-migration.md` for the transition and `docs/rfc-consistency-model.md` for the current consistency model.
 
 ### The meta-thesis (the genuinely all-CS-novel contribution)
 
@@ -38,7 +40,7 @@ All five directions ride on **one walk**: the `tracked:` typed-macro walker that
 
 This replaces the abandoned "Reactive Coincidence Schema" framing, which was anchored to information-flow control — a direction we cut (see below).
 
-**Note (2026-05-23, consistency RFC round 5):** direction 1 schedules the **statically-resolvable fragment at compile time** (the differentiator) and falls back to a runtime scheduler for the dynamic tier (collections, conditional reads). Round 3 briefly cut the compile-time tier on a soundness bug in a *global-table* mechanism; round 5 restored it via a sound *compositional per-site* mechanism (pending engine re-vet of the Nim mechanics). So glitch-free scheduling is a member of the statically-decided family — for the resolvable fragment — exactly as the platform thesis claims.
+**Note (2026-05-28, post-C-shape migration):** direction 1 schedules **every binding's static fragment at compile time** (the differentiator). Heights compose from the bracketed deps; soundness is by construction (the dep set in the bracket *is* the read-set, so the over-approximation lemma's precondition is satisfied unconditionally); the dynamic tier (`Dynamic[T]`, `each` over collections, runtime-keyed reads) is the explicit, type-quarantined escape. Glitch-free scheduling is a member of the statically-decided family — for the static fragment — exactly as the platform thesis claims. The Lean proof (`intonaco/proofs/Consistency.lean`) machine-checks the scheduler theorems.
 
 ## The five directions
 
