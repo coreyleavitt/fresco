@@ -2,7 +2,7 @@
 
 **Status**: Stub (flagship direction 5 of 5)
 **Author**: Corey Leavitt
-**Companion to**: `docs/roadmap-compile-time-research.md`, `docs/rfc-consistency-model.md`
+**Companion to**: `docs/roadmap-compile-time-research.md`, `docs/rfc-consistency-model.md`, `intonaco/docs/rfc-modal-tiers.md` (modal framing — this direction adds the `▷` next-step-possibility modality slot; the guard operator IS the modality's introduction)
 
 ## The gap
 

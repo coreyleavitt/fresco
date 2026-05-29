@@ -2,7 +2,7 @@
 
 **Status**: Stub (flagship direction 2 of 5; follow-on to the consistency model)
 **Author**: Corey Leavitt
-**Companion to**: `docs/roadmap-compile-time-research.md`, `docs/rfc-consistency-model.md`
+**Companion to**: `docs/roadmap-compile-time-research.md`, `docs/rfc-consistency-model.md`, `intonaco/docs/rfc-modal-tiers.md` (modal framing — this direction adds the `⊠` transactional-necessity modality slot)
 
 ## The gap
 

@@ -40,6 +40,12 @@ All five directions ride on the **same compile-time analysis surface**: the type
 
 This replaces the abandoned "Reactive Coincidence Schema" framing, which was anchored to information-flow control — a direction we cut (see below).
 
+### The modal sub-thesis (2026-05-28)
+
+> **The platform's static/dynamic split is a modal type system.** `Signal[T] ≡ □T` (necessity; ahead-of-time-known); `Dynamic[T] ≡ ◇T` (possibility; resolved-at-execution). The walker IS the modality's introduction/elimination check. Each future research direction lands as an additional modality slot — transactions (`⊠`), refinement (`□{v | P(v)}`), substructural (`!ⁿ`), guarded (`▷`) — sharing the platform without duplication.
+
+Tracked in `intonaco/docs/rfc-modal-tiers.md` (R-modal, intonaco#89). Not a replacement for any direction; a shared vocabulary that clarifies each direction's contract.
+
 **Note (2026-05-28, post-C-shape migration):** direction 1 schedules **every binding's static fragment at compile time** (the differentiator). Heights compose from the bracketed deps; soundness is by construction (the dep set in the bracket *is* the read-set, so the over-approximation lemma's precondition is satisfied unconditionally); the dynamic tier (`Dynamic[T]`, `each` over collections, runtime-keyed reads) is the explicit, type-quarantined escape. Glitch-free scheduling is a member of the statically-decided family — for the static fragment — exactly as the platform thesis claims. The Lean proof (`intonaco/proofs/Consistency.lean`) machine-checks the scheduler theorems.
 
 ## The five directions

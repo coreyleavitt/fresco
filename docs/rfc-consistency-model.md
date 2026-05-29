@@ -2,7 +2,7 @@
 
 **Status**: Active — shipped and machine-checked. The C-shape direction is live (intonaco milestone #3, `intonaco/docs/rfc-c-shape-migration.md`); the runtime scheduler is unchanged and Lean-proven.
 **Author**: Corey Leavitt
-**Companion to**: `docs/roadmap-compile-time-research.md`, `docs/rfc-intonaco-fresco-split.md`, `intonaco/docs/rfc-c-shape-migration.md`
+**Companion to**: `docs/roadmap-compile-time-research.md`, `docs/rfc-intonaco-fresco-split.md`, `intonaco/docs/rfc-c-shape-migration.md`, `intonaco/docs/rfc-modal-tiers.md` (modal framing — the static/dynamic split this direction's scheduler relies on IS the necessity/possibility modality; `overApproxSound` is the `□`-introduction soundness instance)
 
 ## Thesis
 

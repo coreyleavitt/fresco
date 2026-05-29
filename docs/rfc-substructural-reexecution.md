@@ -2,7 +2,7 @@
 
 **Status**: Stub (flagship direction 3 of 5)
 **Author**: Corey Leavitt
-**Companion to**: `docs/roadmap-compile-time-research.md`
+**Companion to**: `docs/roadmap-compile-time-research.md`, `intonaco/docs/rfc-modal-tiers.md` (modal framing — this direction adds the `!ⁿ` n-bounded-linear modality slot; the re-execution open question becomes "per-execution or per-lifetime modal frame?")
 
 ## The gap
 

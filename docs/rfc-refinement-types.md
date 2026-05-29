@@ -2,7 +2,7 @@
 
 **Status**: Stub (flagship direction 4 of 5)
 **Author**: Corey Leavitt
-**Companion to**: `docs/roadmap-compile-time-research.md`
+**Companion to**: `docs/roadmap-compile-time-research.md`, `intonaco/docs/rfc-modal-tiers.md` (modal framing — this direction adds the `□{v | P(v)}` refined-necessity modality slot)
 
 ## The gap
 
