@@ -9,8 +9,8 @@
 import std/[strutils, unicode, unittest, times]
 import fresco/devtools/widgets
 import fresco/devtools/panel
-import intonaco/reactive/scope
-import intonaco/reactive/signal
+import intonaco/reactive/primitives/scope
+import intonaco/reactive/primitives/signal
 import intonaco/task/supervisor
 import intonaco/journal/events
 import intonaco/journal/log
@@ -148,7 +148,7 @@ suite "devtools panel: key routing":
     defer: globalJournal = nil
     let t = TaskId.fresh()
     discard createRoot:
-      let cur = signal(0, label = "cur")
+      let cur = signalC(0, label = "cur")
       bindForTimeWarp(cur)
       cur.set(1)
       cur.set(2)

@@ -1,16 +1,16 @@
 {.experimental: "callOperator".}
 
 import std/unittest
-import intonaco/reactive/scope
-import intonaco/reactive/signal
-import intonaco/reactive/runtime
-import intonaco/reactive/speculative
+import intonaco/reactive/primitives/scope
+import intonaco/reactive/primitives/signal
+import intonaco/reactive/primitives/runtime
+import intonaco/reactive/primitives/speculative
 
 suite "speculative":
 
   test "auto-rollback when block exits without commit":
-    let count = signal(0)
-    let title = signal("init")
+    let count = signalC(0)
+    let title = signalC("init")
     discard speculative:
       count := 5
       title := "mid"
@@ -18,14 +18,14 @@ suite "speculative":
     check title() == "init"
 
   test "commit makes writes stick":
-    let count = signal(0)
+    let count = signalC(0)
     discard speculative:
       count := 7
       commit()
     check count() == 7
 
   test "exception inside auto-rolls back and re-raises":
-    let count = signal(0)
+    let count = signalC(0)
     var caught = false
     try:
       discard speculative:
@@ -37,7 +37,7 @@ suite "speculative":
     check count() == 0
 
   test "reads inside the block see speculative values":
-    let count = signal(3)
+    let count = signalC(3)
     var seenInside = 0
     discard speculative:
       count := 10
@@ -46,7 +46,7 @@ suite "speculative":
     check count() == 3       # rolled back after exit
 
   test "multiple writes to same signal: rollback restores first prior":
-    let count = signal(1)
+    let count = signalC(1)
     discard speculative:
       count := 2
       count := 3
@@ -54,7 +54,7 @@ suite "speculative":
     check count() == 1       # all the way back to 1
 
   test "nested: inner commit, outer rollback → outer reverts inner's commit":
-    let x = signal(0)
+    let x = signalC(0)
     discard speculative:
       x := 5
       discard speculative:
@@ -65,7 +65,7 @@ suite "speculative":
     check x() == 0           # outer's revert reaches all the way
 
   test "nested: inner rollback alone":
-    let x = signal(0)
+    let x = signalC(0)
     discard speculative:
       x := 5
       discard speculative:
@@ -76,7 +76,7 @@ suite "speculative":
     check x() == 5
 
   test "rolled-back writes re-notify observers":
-    let count = signal(0)
+    let count = signalC(0)
     var seenVals: seq[int] = @[]
     discard createRoot:
       createEffect proc() = seenVals.add count()
@@ -92,8 +92,8 @@ suite "speculative":
     # observers → effects may signal.set. Previously the new reverts
     # pushed during rollback iteration were dropped (setLen(0) after
     # the for-loop). Now rollback drains until reverts is empty.
-    let a = signal(0)
-    let b = signal(0)
+    let a = signalC(0)
+    let b = signalC(0)
     discard createRoot:
       createEffect proc() =
         # When `a` changes, this effect mirrors it into `b`.
@@ -109,7 +109,7 @@ suite "speculative":
     # `rollback` (e.g. from a buggy revert closure) bypassed the
     # `currentSpeculative = prevSpec` restore. Now rollback runs inside
     # an inner finally; the outer finally unconditionally restores.
-    let touched = signal(0)
+    let touched = signalC(0)
     var caught = false
     try:
       discard speculative:
@@ -128,7 +128,7 @@ suite "speculative":
     # lived after the try/except CatchableError, so a Defect would
     # bypass it and leak `currentSpeculative` pointing at a dead
     # frame. After the fix the restore is in a `finally`.
-    let x = signal(0)
+    let x = signalC(0)
     var caught = false
     try:
       discard speculative:
@@ -150,7 +150,7 @@ suite "speculative":
     # of its own, outer.reverts was empty, so outer rollback was a
     # no-op and the inner-committed writes survived. Now an inner
     # commit promotes its reverts to the parent frame.
-    let x = signal(0)
+    let x = signalC(0)
     discard speculative:
       discard speculative:
         x := 7

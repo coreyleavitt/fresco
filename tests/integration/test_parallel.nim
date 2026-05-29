@@ -3,7 +3,7 @@
 
 import std/unittest
 import chronos
-import intonaco/reactive/scope
+import intonaco/reactive/primitives/scope
 import intonaco/task/core
 import intonaco/task/parallel
 import intonaco/journal/events

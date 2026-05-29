@@ -4,9 +4,9 @@
 
 import std/unittest
 import chronos
-import intonaco/reactive/scope
-import intonaco/reactive/signal
-import intonaco/reactive/runtime
+import intonaco/reactive/primitives/scope
+import intonaco/reactive/primitives/signal
+import intonaco/reactive/primitives/runtime
 import intonaco/task/core
 
 proc tick(): Future[void] {.async: (raises: [Exception]).} =
@@ -87,7 +87,7 @@ suite "task: spawn + Mount":
     proc body() {.async: (raises: [Exception]).} =
       var observed: seq[int] = @[]
       proc work() {.async: (raises: [Exception]).} =
-        let count = signal(0)
+        let count = signalC(0)
         createEffect proc() = observed.add count()
         count.set(1)
         count.set(2)
@@ -103,7 +103,7 @@ suite "task: spawn + Mount":
   test "effects from a disposed task no longer run":
     proc body() {.async: (raises: [Exception]).} =
       var runs = 0
-      let outer = signal(0)
+      let outer = signalC(0)
       proc work() {.async: (raises: [Exception]).} =
         createEffect proc() =
           discard outer()

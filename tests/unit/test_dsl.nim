@@ -4,9 +4,9 @@
 
 import std/unittest
 import fresco/screen
-import intonaco/reactive/scope
-import intonaco/reactive/signal
-import intonaco/reactive/runtime
+import intonaco/reactive/primitives/scope
+import intonaco/reactive/primitives/signal
+import intonaco/reactive/primitives/runtime
 import fresco/reactive/binding
 
 suite "DSL: state block":
@@ -34,7 +34,7 @@ suite "DSL: state block":
 suite "DSL: := operator":
 
   test ":= writes the signal and re-fires effects":
-    let count = signal(0)
+    let count = signalC(0)
     var seenVals: seq[int] = @[]
     discard createRoot:
       createEffect proc() = seenVals.add count()
@@ -44,7 +44,7 @@ suite "DSL: := operator":
     check seenVals == @[0, 1, 2, 3]
 
   test ":= short-circuits when value unchanged":
-    let count = signal(5)
+    let count = signalC(5)
     var runs = 0
     discard createRoot:
       createEffect proc() =
@@ -59,7 +59,7 @@ suite "DSL: := operator":
   test ":= works with custom types":
     type Item = object
       label: string
-    let item = signal(Item(label: "x"))
+    let item = signalC(Item(label: "x"))
     check item().label == "x"
     item := Item(label: "y")
     check item().label == "y"
@@ -69,8 +69,8 @@ suite "DSL: region block":
   test "row arms bind the listed rows":
     let s = newScreen(5, 20)
     let r = newRegion(s, 0, 0, 3, 20)
-    let title = signal("hello")
-    let count = signal(0)
+    let title = signalC("hello")
+    let count = signalC(0)
     discard createRoot:
       region(r):
         row 0, [title]:  title
@@ -85,7 +85,7 @@ suite "DSL: region block":
   test "rows arm binds a slice from a seq signal":
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 5, 20)
-    let items = signal(@["a", "b", "c"])
+    let items = signalC(@["a", "b", "c"])
     discard createRoot:
       region(r):
         row 0, []:          "header"
@@ -97,7 +97,7 @@ suite "DSL: region block":
   test "row index can be a computed expression":
     let s = newScreen(5, 20)
     let r = newRegion(s, 0, 0, 3, 20)
-    let footer = signal("end")
+    let footer = signalC("end")
     discard createRoot:
       region(r):
         row r.height - 1, [footer]: footer
@@ -108,8 +108,8 @@ suite "DSL: region block":
   test "^N from-end indexing":
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 5, 20)
-    let title = signal("top")
-    let status = signal("bot")
+    let title = signalC("top")
+    let status = signalC("bot")
     discard createRoot:
       region(r):
         row 0,  [title]:  title
@@ -120,7 +120,7 @@ suite "DSL: region block":
   test "rows A..^N slice with from-end end":
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 5, 20)
-    let items = signal(@["a", "b", "c", "d"])
+    let items = signalC(@["a", "b", "c", "d"])
     discard createRoot:
       region(r):
         row 0, []:           "header"

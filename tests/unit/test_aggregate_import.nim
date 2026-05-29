@@ -21,7 +21,7 @@ suite "aggregate import":
     check EventId is type
 
   test "core constructors exported":
-    discard signal(0)
+    discard signalC(0)
     discard newScreen(5, 10)
     discard charKey(Rune('x'))
     discard atomKey(kEnter)

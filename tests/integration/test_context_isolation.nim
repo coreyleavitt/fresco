@@ -18,10 +18,10 @@ import std/[tables, unittest]
 import chronos
 import intonaco/journal/events
 import intonaco/journal/log
-import intonaco/reactive/scope
-import intonaco/reactive/signal
-import intonaco/reactive/collection
-import intonaco/reactive/speculative
+import intonaco/reactive/primitives/scope
+import intonaco/reactive/primitives/signal
+import intonaco/reactive/primitives/collection
+import intonaco/reactive/primitives/speculative
 import intonaco/task/core
 import intonaco/task/parallel
 
@@ -40,14 +40,14 @@ suite "context isolation: currentScope across interleaved awaits":
     # The acceptance criterion from #37.
     proc body() {.async: (raises: [Exception]).} =
       proc taskA() {.async.} =
-        let x = signal(0, label = "x")
+        let x = signalC(0, label = "x")
         x.set(1)
         await sleepAsync(20.milliseconds)
-        let y = signal(0, label = "y")
+        let y = signalC(0, label = "y")
         y.set(2)
 
       proc taskB() {.async.} =
-        let z = signal(0, label = "z")
+        let z = signalC(0, label = "z")
         z.set(3)
 
       let mA = spawn taskA()
@@ -83,8 +83,8 @@ suite "context isolation: currentSpeculative across interleaved awaits":
     # is what makes B's currentSpeculative `nil` (it's outside any
     # speculative: block), independent of A's binding.
     proc body() {.async: (raises: [Exception]).} =
-      let a = signal(10)
-      let b = signal(20)
+      let a = signalC(10)
+      let b = signalC(20)
 
       proc taskA(): Future[void] {.async: (raises: [Exception]).} =
         discard speculative:
@@ -169,13 +169,13 @@ suite "context isolation: deeper interleaves":
     # last resumption."
     proc body() {.async: (raises: [Exception]).} =
       proc taskN(label: string) {.async.} =
-        let s1 = signal(0, label = label & "1")
+        let s1 = signalC(0, label = label & "1")
         s1.set(1)
         await sleepAsync(2.milliseconds)
-        let s2 = signal(0, label = label & "2")
+        let s2 = signalC(0, label = label & "2")
         s2.set(2)
         await sleepAsync(2.milliseconds)
-        let s3 = signal(0, label = label & "3")
+        let s3 = signalC(0, label = label & "3")
         s3.set(3)
 
       let mA = spawn taskN("A")

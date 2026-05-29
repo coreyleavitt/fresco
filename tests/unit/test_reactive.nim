@@ -1,9 +1,9 @@
 {.experimental: "callOperator".}
 
 import std/unittest
-import intonaco/reactive/scope
-import intonaco/reactive/signal
-import intonaco/reactive/runtime
+import intonaco/reactive/primitives/scope
+import intonaco/reactive/primitives/signal
+import intonaco/reactive/primitives/runtime
 
 suite "scope":
 
@@ -84,17 +84,17 @@ suite "scope":
 suite "signal":
 
   test "read and write the current value":
-    let s = signal(0)
+    let s = signalC(0)
     check s.get() == 0
     s.set(5)
     check s.get() == 5
 
   test "call-syntax reads the value":
-    let s = signal("hello")
+    let s = signalC("hello")
     check s() == "hello"
 
   test "setting to the same value short-circuits (no re-runs)":
-    let s = signal(7)
+    let s = signalC(7)
     var runs = 0
     discard createRoot:
       createEffect proc() =
@@ -109,7 +109,7 @@ suite "signal":
 suite "createEffect":
 
   test "runs once on registration; re-runs when a tracked signal changes":
-    let s = signal(0)
+    let s = signalC(0)
     var observed: seq[int] = @[]
     discard createRoot:
       createEffect proc() =
@@ -119,8 +119,8 @@ suite "createEffect":
     check observed == @[0, 1, 2, 3]
 
   test "does not re-run for untracked signal changes":
-    let tracked = signal(0)
-    let untracked = signal(0)
+    let tracked = signalC(0)
+    let untracked = signalC(0)
     var runs = 0
     discard createRoot:
       createEffect proc() =
@@ -132,8 +132,8 @@ suite "createEffect":
     check runs == 2
 
   test "tracks multiple signals; any change re-runs":
-    let a = signal(1)
-    let b = signal(2)
+    let a = signalC(1)
+    let b = signalC(2)
     var sums: seq[int] = @[]
     discard createRoot:
       createEffect proc() =
@@ -143,7 +143,7 @@ suite "createEffect":
     check sums == @[3, 12, 30]
 
   test "scope dispose stops the effect":
-    let s = signal(0)
+    let s = signalC(0)
     var runs = 0
     let root = createRoot:
       createEffect proc() =
@@ -157,9 +157,9 @@ suite "createEffect":
     check runs == 2
 
   test "dynamic dependencies: a signal no longer read stops triggering":
-    let cond = signal(true)
-    let a = signal("a")
-    let b = signal("b")
+    let cond = signalC(true)
+    let a = signalC("a")
+    let b = signalC("b")
     var seenVals: seq[string] = @[]
     discard createRoot:
       createEffect proc() =
@@ -189,7 +189,7 @@ suite "createEffect: shared-signal reentrancy":
     # Reproduces at N=3; would have stayed hidden at N=2 because
     # seq.del's swap-delete happens to round-trip correctly for two.
     var out1, out2, out3: string
-    let sig = signal("a")
+    let sig = signalC("a")
     discard createRoot:
       createEffect proc() = out1 = "1:" & sig()
       createEffect proc() = out2 = "2:" & sig()
@@ -206,7 +206,7 @@ suite "createEffect: shared-signal reentrancy":
     # Contract: structural mutations to the observer set during a
     # notify cycle are visible on subsequent cycles, never the
     # current one. Encoded in StableIterSeq.iterRO.
-    var sig = signal(0)
+    var sig = signalC(0)
     var initialRuns = 0
     var newObserverRuns = 0
     discard createRoot:
@@ -227,7 +227,7 @@ suite "createEffect: shared-signal reentrancy":
     check newObserverRuns == 1    # only the initial-creation run
 
   test "observer that disposes itself during run doesn't break siblings":
-    let sig = signal(0)
+    let sig = signalC(0)
     var aRuns, bRuns, cRuns = 0
     var aScope: Scope
     let root = createRoot:
@@ -257,7 +257,7 @@ suite "createEffect: shared-signal reentrancy":
 suite "createComputed":
 
   test "derives from source signal and stays in sync":
-    let count = signal(2)
+    let count = signalC(2)
     var doubled: Signal[int]
     discard createRoot:
       doubled = createComputed proc(): int = count() * 2
@@ -266,7 +266,7 @@ suite "createComputed":
     check doubled.get() == 20
 
   test "computed itself is observable by other effects":
-    let count = signal(1)
+    let count = signalC(1)
     var seenVals: seq[int] = @[]
     discard createRoot:
       let plus10 = createComputed proc(): int = count() + 10
@@ -276,7 +276,7 @@ suite "createComputed":
     check seenVals == @[11, 15]
 
   test "computed disposes with its scope":
-    let count = signal(0)
+    let count = signalC(0)
     var computed: Signal[int]
     let root = createRoot:
       computed = createComputed proc(): int = count() * 3

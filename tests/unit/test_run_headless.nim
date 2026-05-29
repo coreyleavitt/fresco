@@ -10,8 +10,8 @@ import std/unittest
 import chronos
 import fresco/events
 import fresco/input
-import intonaco/reactive/scope
-import intonaco/reactive/signal
+import intonaco/reactive/primitives/scope
+import intonaco/reactive/primitives/signal
 import fresco/reactive/binding
 import fresco/render/layout
 import fresco/headless/input as headless_input
@@ -24,7 +24,7 @@ suite "runHeadless: end-to-end test harness":
       let root = newScope()
       defer: dispose(root)
       withScope(root):
-        let count = signal(0)
+        let count = signalC(0)
         let region = newRegion(layout, 0, 0, 2, 20)
         bindRow region, 0, [count]: "count: " & $count
         bindRow region, 1, []: "ready"

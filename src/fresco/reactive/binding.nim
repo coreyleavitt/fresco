@@ -17,12 +17,12 @@
 import std/macros
 import ../screen
 import ../render/target
-import intonaco/reactive/signal
-import intonaco/reactive/collection
-import intonaco/reactive/deltafloor   # onDelta — bindCollection's windowed view is
+import intonaco/reactive/primitives/signal
+import intonaco/reactive/primitives/collection
+import intonaco/reactive/primitives/deltafloor   # onDelta — bindCollection's windowed view is
                                       # legitimately dynamic, so it reaches the floor
                                       # explicitly (the greppable classifier-bypass)
-import intonaco/reactive/binding      # the C-shape `effect` macro (explicit deps)
+import intonaco/reactive/dsl/binding      # the C-shape `effect` macro (explicit deps)
 
 export target
 export binding   # `computed`/`effect` macros + `Subscribable` converter

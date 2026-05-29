@@ -4,8 +4,8 @@ import std/unittest
 import chronos
 import intonaco/journal/events
 import intonaco/journal/log
-import intonaco/reactive/scope
-import intonaco/reactive/signal
+import intonaco/reactive/primitives/scope
+import intonaco/reactive/primitives/signal
 import intonaco/task/core
 
 
@@ -72,7 +72,7 @@ suite "journal: task lifecycle":
     proc body() {.async: (raises: [Exception]).} =
       proc work() {.async.} =
         await sleepAsync(5.milliseconds)
-        let n = signal(0, label = "n")
+        let n = signalC(0, label = "n")
         n.set(42)
       let m = spawn work()
       await m.wait()
@@ -92,7 +92,7 @@ suite "journal: task lifecycle":
     proc body() {.async: (raises: [Exception]).} =
       proc work() {.async.} =
         await sleepAsync(5.milliseconds)
-        let n = signal(0, label = "preserved")
+        let n = signalC(0, label = "preserved")
         n.set(99)
       let m = spawn work()
       await m.wait()

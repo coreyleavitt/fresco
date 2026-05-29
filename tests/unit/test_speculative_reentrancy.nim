@@ -6,17 +6,17 @@
 ## including conditional reads and write-during-rollback cascades.
 
 import std/unittest
-import intonaco/reactive/scope
-import intonaco/reactive/signal
-import intonaco/reactive/runtime
-import intonaco/reactive/speculative
-import intonaco/reactive/subscribable
+import intonaco/reactive/primitives/scope
+import intonaco/reactive/primitives/signal
+import intonaco/reactive/primitives/runtime
+import intonaco/reactive/primitives/speculative
+import intonaco/reactive/primitives/subscribable
 
 suite "speculative reentrancy: source/observer wiring after rollback":
 
   test "effect reads A and B; rollback restores values + keeps both sources":
-    let a = signal(0)
-    let b = signal(20)
+    let a = signalC(0)
+    let b = signalC(20)
     var lastA, lastB: int
     var compRef: Computation
     discard createRoot:
@@ -59,8 +59,8 @@ suite "speculative reentrancy: source/observer wiring after rollback":
     # Effect reads B only when A > 0. Speculative crosses the
     # conditional boundary in both directions; rollback restores A.
     # Final E.sources must reflect the final A value's branch.
-    let a = signal(1)        # initially > 0 → effect should read B
-    let b = signal(100)
+    let a = signalC(1)        # initially > 0 → effect should read B
+    let b = signalC(100)
     var reads = 0
     discard createRoot:
       createEffect proc() =
@@ -95,8 +95,8 @@ suite "speculative reentrancy: source/observer wiring after rollback":
     # onto the same speculative frame. The rollback's `while
     # scope.reverts.len > 0` drains them all, producing a
     # consistent final state.
-    let src = signal(10)
-    let derived = signal(0)
+    let src = signalC(10)
+    let derived = signalC(0)
     discard createRoot:
       createEffect proc() =
         derived.set(src() * 2)

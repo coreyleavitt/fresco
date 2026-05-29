@@ -66,13 +66,13 @@ import fresco/layout
 export layout
 
 # T4 — reactive
-import intonaco/reactive/scope
-import intonaco/reactive/signal
+import intonaco/reactive/primitives/scope
+import intonaco/reactive/primitives/signal
 import fresco/reactive/binding
-import intonaco/reactive/context
-import intonaco/reactive/speculative
-import intonaco/reactive/animation
-import intonaco/reactive/collection
+import intonaco/reactive/primitives/context
+import intonaco/reactive/primitives/speculative
+import intonaco/reactive/dsl/animation
+import intonaco/reactive/primitives/collection
 import intonaco/reactive/capabilities
 export scope, signal, binding, context, speculative, animation, collection,
        capabilities

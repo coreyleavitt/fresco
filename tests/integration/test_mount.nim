@@ -4,8 +4,8 @@
 
 import std/unittest
 import chronos
-import intonaco/reactive/scope
-import intonaco/reactive/signal
+import intonaco/reactive/primitives/scope
+import intonaco/reactive/primitives/signal
 import intonaco/task/core
 import intonaco/task/mount
 
@@ -23,7 +23,7 @@ suite "mountWhen":
           await sleepAsync(1000.milliseconds)
         finally:
           childActive = false
-      let show = signal(false)
+      let show = signalC(false)
       let root = createRoot:
         mountWhen(show):
           spawn child()
@@ -47,7 +47,7 @@ suite "mountWhen":
           await sleepAsync(1000.milliseconds)
         except CancelledError:
           raise
-      let show = signal(false)
+      let show = signalC(false)
       let root = createRoot:
         mountWhen(show):
           spawn child()
@@ -67,7 +67,7 @@ suite "mountWhen":
         except CancelledError:
           cleanedUp = true
           raise
-      let show = signal(true)
+      let show = signalC(true)
       let root = createRoot:
         mountWhen(show):
           spawn child()
@@ -83,7 +83,7 @@ suite "mountWhen":
       proc child() {.async: (raises: [Exception]).} =
         ran = true
         await sleepAsync(5.milliseconds)
-      let show = signal(false)   # always false
+      let show = signalC(false)   # always false
       let root = createRoot:
         mountWhen(show):
           spawn child()
@@ -104,7 +104,7 @@ suite "mountWhen":
         try:
           await sleepAsync(500.milliseconds)
         except CancelledError: raise
-      let show = signal(false)
+      let show = signalC(false)
       let root = createRoot:
         mountWhen(show):
           spawn child()
@@ -126,7 +126,7 @@ suite "mountWhen":
           await sleepAsync(500.milliseconds)
         finally:
           active = false
-      let show = signal(false)
+      let show = signalC(false)
       let root = createRoot:
         mount(show):
           spawn child()

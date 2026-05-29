@@ -2,11 +2,11 @@
 
 import std/[unittest, strutils]
 import fresco/screen
-import intonaco/reactive/scope
-import intonaco/reactive/signal
+import intonaco/reactive/primitives/scope
+import intonaco/reactive/primitives/signal
 import fresco/reactive/binding
-import intonaco/reactive/collection
-import intonaco/reactive/speculative
+import intonaco/reactive/primitives/collection
+import intonaco/reactive/primitives/speculative
 
 suite "bindRow":
 
@@ -22,7 +22,7 @@ suite "bindRow":
   test "writing the signal updates the row":
     let s = newScreen(5, 20)
     let r = newRegion(s, 0, 0, 3, 20)
-    let title = signal("a")
+    let title = signalC("a")
     discard createRoot:
       bindRow r, 0, [title]: title
     title.set("b")
@@ -33,8 +33,8 @@ suite "bindRow":
   test "computed expression tracks multiple signals":
     let s = newScreen(5, 20)
     let r = newRegion(s, 0, 0, 3, 20)
-    let count = signal(0)
-    let total = signal(10)
+    let count = signalC(0)
+    let total = signalC(10)
     discard createRoot:
       bindRow r, 1, [count, total]: $count & "/" & $total
     check r.target[1] == "0/10"
@@ -46,7 +46,7 @@ suite "bindRow":
   test "scope dispose stops the binding":
     let s = newScreen(5, 20)
     let r = newRegion(s, 0, 0, 3, 20)
-    let label = signal("alpha")
+    let label = signalC("alpha")
     let root = createRoot:
       bindRow r, 0, [label]: label
     check r.target[0] == "alpha"
@@ -63,7 +63,7 @@ suite "bindRow":
     let r1 = newRegion(s, 0, 0, 1, 20)
     let r2 = newRegion(s, 1, 0, 1, 20)
     let r3 = newRegion(s, 2, 0, 1, 20)
-    let sig = signal("a")
+    let sig = signalC("a")
     discard createRoot:
       bindRow r1, 0, [sig]: "r1:" & sig
       bindRow r2, 0, [sig]: "r2:" & sig
@@ -78,8 +78,8 @@ suite "bindRow":
   test "multiple bindRow on same region run independently":
     let s = newScreen(5, 20)
     let r = newRegion(s, 0, 0, 3, 20)
-    let a = signal("A")
-    let b = signal("B")
+    let a = signalC("A")
+    let b = signalC("B")
     discard createRoot:
       bindRow r, 0, [a]: a
       bindRow r, 1, [b]: b
@@ -92,7 +92,7 @@ suite "bindRow":
   test "out-of-range row index is silently dropped":
     let s = newScreen(5, 20)
     let r = newRegion(s, 0, 0, 2, 20)
-    let v = signal("x")
+    let v = signalC("x")
     discard createRoot:
       bindRow r, 5, [v]: v       # 5 > height(2) — no-op
     check r.target.len == 0
@@ -102,7 +102,7 @@ suite "bindRows":
   test "lays a seq[string] across the slice; updates on signal change":
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 5, 20)
-    let items = signal(@["one", "two", "three"])
+    let items = signalC(@["one", "two", "three"])
     discard createRoot:
       bindRows r, 0 .. 4, [items]: items
     check r.target == @["one", "two", "three", "", ""]
@@ -112,7 +112,7 @@ suite "bindRows":
   test "trailing slice entries blank when seq is shorter":
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 5, 20)
-    let items = signal(@["only-one"])
+    let items = signalC(@["only-one"])
     discard createRoot:
       bindRows r, 1 .. 3, [items]: items
     # Rows 1..3 set; row 0 and 4 untouched
@@ -126,7 +126,7 @@ suite "bindCollection":
   test "initial layout: rows populated from items[0]; formatter called once per item":
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 5, 20)
-    let c = collection(@[1, 2, 3])
+    let c = collectionC(@[1, 2, 3])
     var fmtCalls = 0
     proc fmt(x: int): string =
       inc fmtCalls
@@ -143,7 +143,7 @@ suite "bindCollection":
     # every item per change.
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 5, 20)
-    let c = collection(@[1, 2, 3])
+    let c = collectionC(@[1, 2, 3])
     var fmtCalls = 0
     proc fmt(x: int): string =
       inc fmtCalls
@@ -158,7 +158,7 @@ suite "bindCollection":
   test "pop: clears the freed row; zero new formatter calls":
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 5, 20)
-    let c = collection(@[10, 20, 30])
+    let c = collectionC(@[10, 20, 30])
     var fmtCalls = 0
     proc fmt(x: int): string =
       inc fmtCalls
@@ -173,7 +173,7 @@ suite "bindCollection":
   test "setAt: one row updated; one formatter call":
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 5, 20)
-    let c = collection(@[1, 2, 3])
+    let c = collectionC(@[1, 2, 3])
     var fmtCalls = 0
     proc fmt(x: int): string =
       inc fmtCalls
@@ -188,7 +188,7 @@ suite "bindCollection":
   test "insert in middle: trailing rows shift; one new formatter call":
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 5, 20)
-    let c = collection(@[1, 2, 3])
+    let c = collectionC(@[1, 2, 3])
     var fmtCalls = 0
     proc fmt(x: int): string =
       inc fmtCalls
@@ -203,7 +203,7 @@ suite "bindCollection":
   test "remove in middle: trailing rows shift; zero formatter calls":
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 5, 20)
-    let c = collection(@[1, 2, 3, 4])
+    let c = collectionC(@[1, 2, 3, 4])
     var fmtCalls = 0
     proc fmt(x: int): string =
       inc fmtCalls
@@ -218,7 +218,7 @@ suite "bindCollection":
   test "clear blanks every row in slice":
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 5, 20)
-    let c = collection(@[1, 2, 3])
+    let c = collectionC(@[1, 2, 3])
     discard createRoot:
       bindCollection r, 0..<5, c, proc(x: int): string = $x
     c.clear()
@@ -227,7 +227,7 @@ suite "bindCollection":
   test "set (replace): re-lays slice; formatter called per new item":
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 5, 20)
-    let c = collection(@[1, 2, 3])
+    let c = collectionC(@[1, 2, 3])
     var fmtCalls = 0
     proc fmt(x: int): string =
       inc fmtCalls
@@ -242,7 +242,7 @@ suite "bindCollection":
   test "items exceed window: only first slice.len render":
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 3, 20)
-    let c = collection(@[1, 2, 3, 4, 5])
+    let c = collectionC(@[1, 2, 3, 4, 5])
     var fmtCalls = 0
     proc fmt(x: int): string =
       inc fmtCalls
@@ -256,7 +256,7 @@ suite "bindCollection":
   test "update beyond window: no setRow, no formatter call":
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 3, 20)
-    let c = collection(@[1, 2, 3, 4, 5])
+    let c = collectionC(@[1, 2, 3, 4, 5])
     var fmtCalls = 0
     proc fmt(x: int): string =
       inc fmtCalls
@@ -272,7 +272,7 @@ suite "bindCollection":
   test "dkRollback after speculative scope re-lays correctly":
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 5, 20)
-    let c = collection(@[1, 2, 3])
+    let c = collectionC(@[1, 2, 3])
     discard createRoot:
       bindCollection r, 0..<5, c, proc(x: int): string = $x
       discard speculative:
@@ -289,7 +289,7 @@ suite "bindCollection":
     # (differential), not bindRows (full re-eval).
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 5, 20)
-    let c = collection(@[1, 2, 3])
+    let c = collectionC(@[1, 2, 3])
     discard createRoot:
       region(r):
         rows 0..4, []: c
@@ -302,7 +302,7 @@ suite "bindCollection":
     # through bindRows with the declared `items` dep.
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 5, 20)
-    let items = signal(@["a", "b"])
+    let items = signalC(@["a", "b"])
     discard createRoot:
       region(r):
         rows 0..4, [items]: items
@@ -313,7 +313,7 @@ suite "bindCollection":
   test "scope death deregisters handler":
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 3, 20)
-    let c = collection(@[1, 2])
+    let c = collectionC(@[1, 2])
     let root = createRoot:
       bindCollection r, 0..<3, c, proc(x: int): string = $x
     check r.target == @["1", "2", ""]
@@ -329,7 +329,7 @@ suite "bindCollection: wmFromEnd (tail-window, #41)":
     # wmFromEnd shows [4,5,6] — the last 3.
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 3, 20)
-    let c = collection(@[1, 2, 3, 4, 5, 6])
+    let c = collectionC(@[1, 2, 3, 4, 5, 6])
     proc fmt(x: int): string = $x
     discard createRoot:
       bindCollection(r, 0..<3, c, fmt, mode = wmFromEnd)
@@ -338,7 +338,7 @@ suite "bindCollection: wmFromEnd (tail-window, #41)":
   test "wmFromEnd before fill: rows populate top-down from row 0":
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 5, 20)
-    let c = collection(@[10, 20])
+    let c = collectionC(@[10, 20])
     discard createRoot:
       bindCollection(r, 0..<5, c, proc(x: int): string = $x, mode = wmFromEnd)
     check r.target == @["10", "20", "", "", ""]
@@ -346,7 +346,7 @@ suite "bindCollection: wmFromEnd (tail-window, #41)":
   test "push when filled shifts window forward by one":
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 3, 20)
-    let c = collection(@[1, 2, 3])
+    let c = collectionC(@[1, 2, 3])
     discard createRoot:
       bindCollection(r, 0..<3, c, proc(x: int): string = $x, mode = wmFromEnd)
     check r.target == @["1", "2", "3"]
@@ -358,7 +358,7 @@ suite "bindCollection: wmFromEnd (tail-window, #41)":
   test "push before fill: appears at next row, no shift":
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 5, 20)
-    let c = collection(@[1, 2])
+    let c = collectionC(@[1, 2])
     discard createRoot:
       bindCollection(r, 0..<5, c, proc(x: int): string = $x, mode = wmFromEnd)
     c.push(3)
@@ -374,7 +374,7 @@ suite "bindCollection: wmFromEnd (tail-window, #41)":
   test "pop on overfilled collection reveals previously-off-screen item":
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 3, 20)
-    let c = collection(@[1, 2, 3, 4, 5])
+    let c = collectionC(@[1, 2, 3, 4, 5])
     discard createRoot:
       bindCollection(r, 0..<3, c, proc(x: int): string = $x, mode = wmFromEnd)
     check r.target == @["3", "4", "5"]
@@ -385,7 +385,7 @@ suite "bindCollection: wmFromEnd (tail-window, #41)":
   test "dkClear empties the window":
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 3, 20)
-    let c = collection(@[1, 2, 3, 4, 5])
+    let c = collectionC(@[1, 2, 3, 4, 5])
     discard createRoot:
       bindCollection(r, 0..<3, c, proc(x: int): string = $x, mode = wmFromEnd)
     c.clear()
@@ -394,7 +394,7 @@ suite "bindCollection: wmFromEnd (tail-window, #41)":
   test "wmFromStart (default) regression: behavior unchanged":
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 3, 20)
-    let c = collection(@[1, 2, 3, 4, 5, 6])
+    let c = collectionC(@[1, 2, 3, 4, 5, 6])
     discard createRoot:
       bindCollection(r, 0..<3, c, proc(x: int): string = $x)   # no mode arg
     check r.target == @["1", "2", "3"]    # from-start: first 3
@@ -409,7 +409,7 @@ suite "bindCollection: wmFromEnd (tail-window, #41)":
     #     (plus DECSTBM set/reset which use 'r' suffix, not 'H')
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 5, 20)
-    let c = collection(@[1, 2, 3, 4, 5])  # exactly fills winLen=5
+    let c = collectionC(@[1, 2, 3, 4, 5])  # exactly fills winLen=5
     discard createRoot:
       bindCollection(r, 0..<5, c, proc(x: int): string = $x, mode = wmFromEnd)
     discard s.flush()    # drain initial-lay emissions

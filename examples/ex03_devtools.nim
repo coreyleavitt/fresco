@@ -24,7 +24,7 @@ import chronos
 import fresco
 import fresco/terminal/termios
 import fresco/devtools/panel
-import intonaco/reactive/signal
+import intonaco/reactive/primitives/signal
 
 proc demoWorker(id: int) {.async.} =
   signals:

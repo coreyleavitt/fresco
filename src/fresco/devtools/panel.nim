@@ -20,10 +20,10 @@ import ../input as inputs
 import intonaco/journal/events
 import intonaco/journal/log
 import intonaco/journal/timewarp
-import intonaco/reactive/scope
-import intonaco/reactive/signal
+import intonaco/reactive/primitives/scope
+import intonaco/reactive/primitives/signal
 import ../reactive/binding
-import intonaco/reactive/collection
+import intonaco/reactive/primitives/collection
 import intonaco/task/supervisor
 import ../screen
 import ../render/sink
@@ -47,7 +47,7 @@ proc newPanelState*(j: Journal): PanelState =
   ## Construct a fresh panel state for the given journal. `scrubber`
   ## starts in inactive (live) mode at the journal's head.
   result = PanelState(
-    scrubber: signal(ScrubberState(
+    scrubber: signalC(ScrubberState(
       cursor: max(0, j.events.len - 1),
       total: j.events.len,
       active: false)),
@@ -115,8 +115,8 @@ proc runDevtoolsPanel*[S: Sink](j: Journal, supervisors: seq[Supervisor],
     let root = newScope()
     try:
       withScope(root):
-        let topo   = signal(snapshotTopology(supervisors))
-        let events = collection[Event](@[])
+        let topo   = signalC(snapshotTopology(supervisors))
+        let events = collectionC[Event](@[])
         for e in j.events: events.push(e)
         let state = newPanelState(j)
 

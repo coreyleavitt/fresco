@@ -7,7 +7,7 @@ import fresco/events
 import intonaco/journal/events as jev
 import intonaco/journal/log
 import fresco/input as fresco_input
-import intonaco/reactive/scope
+import intonaco/reactive/primitives/scope
 import intonaco/task/core
 import intonaco/task/supervisor
 import fresco/hotkey

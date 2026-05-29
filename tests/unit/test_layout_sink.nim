@@ -9,8 +9,8 @@
 ## without any reference to Screen.
 
 import std/unittest
-import intonaco/reactive/scope
-import intonaco/reactive/signal
+import intonaco/reactive/primitives/scope
+import intonaco/reactive/primitives/signal
 import fresco/reactive/binding
 import fresco/render/layout
 import fresco/render/sink
@@ -24,7 +24,7 @@ suite "Layout + MemorySink: headless rendering substrate":
     let region = newRegion(layout, 0, 0, 3, 40)
     let sink = newMemorySink()
     withScope(root):
-      let title = signal("hello")
+      let title = signalC("hello")
       bindRow region, 0, [title]: title
       bindRow region, 1, []: "world"
       sink.commit(layout)
@@ -65,7 +65,7 @@ suite "Layout + MemorySink: headless rendering substrate":
     let bottomR = newRegion(layout, 2, 0, 1, 20)
     let sink = newMemorySink()
     withScope(root):
-      let status = signal("ready")
+      let status = signalC("ready")
       bindRow topR, 0, []:    "header"
       bindRow middleR, 0, [status]: status
       bindRow bottomR, 0, []: "footer"

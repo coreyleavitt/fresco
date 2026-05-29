@@ -6,8 +6,8 @@ import std/unittest
 import chronos
 import intonaco/journal/events
 import intonaco/journal/log
-import intonaco/reactive/scope
-import intonaco/reactive/signal
+import intonaco/reactive/primitives/scope
+import intonaco/reactive/primitives/signal
 import intonaco/task/core
 
 suite "journal: signal writes":
@@ -19,7 +19,7 @@ suite "journal: signal writes":
     resetJournal()
 
   test "signal.set writes a StateWrite event with label and repr":
-    let count = signal(0, label = "count")
+    let count = signalC(0, label = "count")
     count.set(5)
     let writes = globalJournal.byKind(ekSignalWrite)
     check writes.len == 1
@@ -40,7 +40,7 @@ suite "journal: signal writes":
     check "titlex" in labels
 
   test "equal-write short-circuits do not journal":
-    let x = signal(42, label = "x")
+    let x = signalC(42, label = "x")
     x.set(42)   # no change → no event
     x.set(7)    # change → 1 event
     x.set(7)    # no change → no event
@@ -49,7 +49,7 @@ suite "journal: signal writes":
   test "writes inside a spawned task get the task's taskId":
     proc body() {.async: (raises: [Exception]).} =
       proc work() {.async.} =
-        let n = signal(0, label = "n")
+        let n = signalC(0, label = "n")
         n.set(1)
         n.set(2)
       let m = spawn work()
@@ -63,7 +63,7 @@ suite "journal: signal writes":
   test "successive writes from the same task chain causally":
     proc body() {.async: (raises: [Exception]).} =
       proc work() {.async.} =
-        let n = signal(0, label = "n")
+        let n = signalC(0, label = "n")
         n.set(1)
         n.set(2)
         n.set(3)

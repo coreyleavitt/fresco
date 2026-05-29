@@ -4,10 +4,10 @@
 
 import std/[unittest, math]
 import chronos
-import intonaco/reactive/scope
-import intonaco/reactive/signal
-import intonaco/reactive/runtime
-import intonaco/reactive/animation
+import intonaco/reactive/primitives/scope
+import intonaco/reactive/primitives/signal
+import intonaco/reactive/primitives/runtime
+import intonaco/reactive/dsl/animation
 
 suite "easing curves":
 
@@ -35,7 +35,7 @@ suite "tween":
 
   test "tween progresses signal toward target and completes":
     proc body() {.async: (raises: [Exception]).} =
-      let s = signal(0.0)
+      let s = signalC(0.0)
       discard tween(s, 1.0, 100.milliseconds, esLinear)
       await sleepAsync(160.milliseconds)
       check abs(s() - 1.0) < 1e-6
@@ -43,7 +43,7 @@ suite "tween":
 
   test "second tween on same signal replaces the first":
     proc body() {.async: (raises: [Exception]).} =
-      let s = signal(0.0)
+      let s = signalC(0.0)
       discard tween(s, 100.0, 500.milliseconds, esLinear)
       await sleepAsync(30.milliseconds)
       # restart with new target
@@ -54,7 +54,7 @@ suite "tween":
 
   test "tween fires intermediate values through observers":
     proc body() {.async: (raises: [Exception]).} =
-      let s = signal(0.0)
+      let s = signalC(0.0)
       var samples: seq[float] = @[]
       discard createRoot:
         createEffect proc() = samples.add s()
@@ -74,7 +74,7 @@ suite "tween":
     # scope had disposed. Now `tween` registers an onCleanup that
     # marks the animation cancelled.
     proc body() {.async: (raises: [Exception]).} =
-      let s = signal(0.0)
+      let s = signalC(0.0)
       let root = createRoot:
         discard tween(s, 100.0, 500.milliseconds, esLinear)
       # Let a couple of frames tick so the tween starts moving.
@@ -95,7 +95,7 @@ suite "tween":
     proc body() {.async: (raises: [Exception]).} =
       startFrameClock(60)
       startFrameClock(30)   # should be ignored
-      let s = signal(0.0)
+      let s = signalC(0.0)
       discard tween(s, 1.0, 80.milliseconds, esLinear)
       await sleepAsync(120.milliseconds)
       check abs(s() - 1.0) < 1e-6
@@ -108,7 +108,7 @@ suite "spring":
 
   test "spring eventually settles to target":
     proc body() {.async: (raises: [Exception]).} =
-      let s = signal(0.0)
+      let s = signalC(0.0)
       discard spring(s, 1.0)
       # 500ms is the expected settle time for default k=170, c=26
       # (near-critical). Give a generous margin.
@@ -118,8 +118,8 @@ suite "spring":
 
   test "higher stiffness settles faster":
     proc body() {.async: (raises: [Exception]).} =
-      let stiff = signal(0.0)
-      let soft = signal(0.0)
+      let stiff = signalC(0.0)
+      let soft = signalC(0.0)
       discard spring(stiff, 1.0, stiffness = 400.0, damping = 40.0)
       discard spring(soft,  1.0, stiffness = 50.0,  damping = 14.0)
       await sleepAsync(200.milliseconds)
@@ -133,7 +133,7 @@ suite "spring":
   test "underdamped spring overshoots target before settling":
     # ζ = c / (2·√(k·m)) ≈ 0.3 — clearly underdamped.
     proc body() {.async: (raises: [Exception]).} =
-      let s = signal(0.0)
+      let s = signalC(0.0)
       var maxSeen = 0.0
       discard createRoot:
         createEffect proc() =
@@ -151,7 +151,7 @@ suite "spring":
     # ζ ≥ 1 — at or beyond critical damping. Pick parameters that are
     # comfortably overdamped to avoid floating-point edge cases.
     proc body() {.async: (raises: [Exception]).} =
-      let s = signal(0.0)
+      let s = signalC(0.0)
       var maxSeen = 0.0
       discard createRoot:
         createEffect proc() =
@@ -173,7 +173,7 @@ suite "spring":
     # the spring settles within a couple of frames; the test isn't
     # about settle time, just about post-settle silence.
     proc body() {.async: (raises: [Exception]).} =
-      let s = signal(0.0)
+      let s = signalC(0.0)
       var writeCount = 0
       discard createRoot:
         createEffect proc() =
@@ -192,7 +192,7 @@ suite "spring":
 
   test "scope dispose mid-spring cancels":
     proc body() {.async: (raises: [Exception]).} =
-      let s = signal(0.0)
+      let s = signalC(0.0)
       let root = createRoot:
         discard spring(s, 100.0)
       await sleepAsync(80.milliseconds)
@@ -207,7 +207,7 @@ suite "spring":
 
   test "cancel mid-spring halts motion":
     proc body() {.async: (raises: [Exception]).} =
-      let s = signal(0.0)
+      let s = signalC(0.0)
       let a = spring(s, 100.0)
       await sleepAsync(50.milliseconds)
       let midpoint = s()
@@ -223,7 +223,7 @@ suite "spring":
     # velocity=0. The signal must not overshoot the new target via
     # leftover momentum from the prior spring.
     proc body() {.async: (raises: [Exception]).} =
-      let s = signal(0.0)
+      let s = signalC(0.0)
       discard spring(s, 100.0, stiffness = 400.0, damping = 20.0)
       await sleepAsync(80.milliseconds)
       let beforeRetarget = s()
@@ -248,7 +248,7 @@ suite "spring":
 
   test "tween then spring on same signal: tween cancels cleanly":
     proc body() {.async: (raises: [Exception]).} =
-      let s = signal(0.0)
+      let s = signalC(0.0)
       discard tween(s, 100.0, 500.milliseconds, esLinear)
       await sleepAsync(80.milliseconds)
       let midTween = s()
@@ -261,8 +261,8 @@ suite "spring":
 
   test "two springs on different signals tick independently":
     proc body() {.async: (raises: [Exception]).} =
-      let s1 = signal(0.0)
-      let s2 = signal(0.0)
+      let s1 = signalC(0.0)
+      let s2 = signalC(0.0)
       discard spring(s1, 1.0)
       discard spring(s2, 5.0)
       await sleepAsync(800.milliseconds)
@@ -275,8 +275,8 @@ suite "spring":
     # should still be observably non-settled when the loose one has
     # finished.
     proc body() {.async: (raises: [Exception]).} =
-      let loose = signal(0.0)
-      let tight = signal(0.0)
+      let loose = signalC(0.0)
+      let tight = signalC(0.0)
       discard spring(loose, 1.0, epsilonVel = 0.5, epsilonPos = 0.5)
       discard spring(tight, 1.0, epsilonVel = 0.0001, epsilonPos = 0.0001)
       await sleepAsync(60.milliseconds)
@@ -299,7 +299,7 @@ suite "spring":
     proc body() {.async: (raises: [Exception]).} =
       stopFrameClock()
       startFrameClock(4)
-      let s = signal(0.0)
+      let s = signalC(0.0)
       discard spring(s, 1.0)
       await sleepAsync(1500.milliseconds)
       check abs(s() - 1.0) < 0.1
@@ -312,7 +312,7 @@ suite "spring: multi-DoF":
 
   test "2-tuple spring animates each component toward its target":
     proc body() {.async: (raises: [Exception]).} =
-      let s = signal((0.0, 0.0))
+      let s = signalC((0.0, 0.0))
       discard spring(s, (1.0, 5.0))
       await sleepAsync(800.milliseconds)
       let v = s()
@@ -326,7 +326,7 @@ suite "spring: multi-DoF":
     # freeze on frame 1 with component 1 still near zero. The
     # correctness condition is "all components within tolerance".
     proc body() {.async: (raises: [Exception]).} =
-      let s = signal((0.0, 0.0))
+      let s = signalC((0.0, 0.0))
       discard spring(s, (0.005, 100.0),
                      epsilonPos = 0.01, epsilonVel = 0.05)
       await sleepAsync(80.milliseconds)
@@ -339,7 +339,7 @@ suite "spring: multi-DoF":
 
   test "multi-DoF retarget resets all velocities (fresh-start)":
     proc body() {.async: (raises: [Exception]).} =
-      let s = signal((0.0, 0.0))
+      let s = signalC((0.0, 0.0))
       discard spring(s, (100.0, 100.0),
                      stiffness = 400.0, damping = 20.0)
       await sleepAsync(80.milliseconds)
@@ -365,7 +365,7 @@ suite "spring: multi-DoF":
     type Point2D = object
       x, y: float
     proc body() {.async: (raises: [Exception]).} =
-      let p = signal(Point2D(x: 0.0, y: 0.0))
+      let p = signalC(Point2D(x: 0.0, y: 0.0))
       discard spring(p, Point2D(x: 10.0, y: -5.0))
       await sleepAsync(800.milliseconds)
       let v = p()
@@ -380,7 +380,7 @@ suite "spring: multi-DoF":
     type BadType = object
       x: float
       label: string
-    let p = signal(BadType(x: 0.0, label: "hi"))
+    let p = signalC(BadType(x: 0.0, label: "hi"))
     check not compiles(spring(p, BadType(x: 1.0, label: "ok")))
 
   test "stopFrameClock resets frameInterval so subsequent fps takes effect":
@@ -388,7 +388,7 @@ suite "spring: multi-DoF":
     # startFrameClock(fps = X) used to silently keep the previous
     # interval because the lazy-init guard saw a non-default Duration.
     proc body() {.async: (raises: [Exception]).} =
-      let s1 = signal(0.0)
+      let s1 = signalC(0.0)
       discard tween(s1, 1.0, 100.milliseconds, esLinear)
       await sleepAsync(150.milliseconds)
       check abs(s1() - 1.0) < 1e-6
@@ -396,7 +396,7 @@ suite "spring: multi-DoF":
       # If frameInterval weren't reset, the next tween would still
       # tick at the old rate. We can't easily measure the rate but
       # we can verify a fresh tween still completes correctly.
-      let s2 = signal(0.0)
+      let s2 = signalC(0.0)
       discard tween(s2, 1.0, 100.milliseconds, esLinear)
       await sleepAsync(150.milliseconds)
       check abs(s2() - 1.0) < 1e-6

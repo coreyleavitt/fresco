@@ -8,7 +8,7 @@ import fresco/events
 import fresco/receive
 import intonaco/task/mailbox
 
-import intonaco/reactive/scope
+import intonaco/reactive/primitives/scope
 import intonaco/journal/log
 
 proc posix_openpt(flags: cint): cint {.importc, header: "<stdlib.h>".}
