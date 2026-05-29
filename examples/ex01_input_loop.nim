@@ -2,7 +2,7 @@
 ##
 ## Visual check: every key you press should print the right semantic
 ## name. Arrow keys → kArrowUp/Down/etc., function keys → kF1..kF12,
-## Ctrl combos → kCtrl with the letter, `/` → kChar '/'.
+## Ctrl combos → "Ctrl-<r>" via the modifier set, `/` → kChar '/'.
 
 import std/unicode
 import chronos
@@ -10,11 +10,9 @@ import fresco/input as fi
 import fresco/events
 
 proc describe(ev: KeyEvent): string =
-  case ev.kind
-  of kChar: "kChar " & $ev.rune
-  of kCtrl: "kCtrl-" & $ev.ch
-  of kAlt:  "kAlt-"  & $ev.ch
-  else:     $ev.kind
+  # The modifier-set model (#67): `Ctrl-c` is `(kChar 'c', {modCtrl})`,
+  # not a separate `kCtrl` kind. summary() handles the prefix.
+  ev.summary
 
 proc main() {.async: (raises: [CancelledError, Exception]).} =
   let stream = newInputStream(cint(0))
@@ -24,6 +22,7 @@ proc main() {.async: (raises: [CancelledError, Exception]).} =
   while true:
     let ev = await stream.nextKey()
     stderr.writeLine describe(ev)
-    if ev.kind == kCtrl and ev.ch == 'c': break
+    if ev.kind == kChar and ev.rune == Rune('c') and modCtrl in ev.modifiers:
+      break
 
 waitFor main()

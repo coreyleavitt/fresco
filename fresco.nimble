@@ -96,7 +96,10 @@ task test, "run all tests":
 task examples, "compile-check every examples/*.nim":
   let examples = @[
     "examples/ex01_input_loop.nim",
-    "examples/ex02_devtools.nim",
+    "examples/ex02_counter.nim",
+    "examples/ex03_devtools.nim",
+    "examples/ex04_animation.nim",
+    "examples/ex05_stopwatch.nim",
   ]
   for e in examples:
     exec "nim check --hints:off --warnings:off --path:src " & e

@@ -25,12 +25,12 @@ Classical refinement-type settings reason about comparatively static bindings. R
 - `Bounded[T, lo..hi]` — a refinement (`{v | lo <= v <= hi}`); every `set` must provably land in range.
 - `Monotonic[T]` — a *relation between successive values* (`{v' | v' >= v}`), which is richer than a unary refinement and is where the reactive setting earns its novelty: the macro must prove the relation holds between the prior signal value and every write.
 
-The static engine finds every write site through the `tracked:` walk and discharges the predicate (constant writes: trivially; computed writes: via the body's available facts). Where the predicate can't be discharged statically, three-tier diagnosis (compile error → static-assert with hint → runtime guard) mirrors the consistency model's diagnostic discipline.
+The static engine finds every write site through the C-shape explicit-deps walker and discharges the predicate (constant writes: trivially; computed writes: via the body's available facts). Where the predicate can't be discharged statically, three-tier diagnosis (compile error → static-assert with hint → runtime guard) mirrors the consistency model's diagnostic discipline.
 
 ## Nim leverage
 
 - **`static[T]`** for compile-time bounds (`Bounded[float, 0.0..1.0]`).
-- **Typed macros** to enumerate write sites from the `tracked:` walk and emit per-site discharge obligations.
+- **Typed macros** to enumerate write sites from the C-shape walker and emit per-site discharge obligations.
 - **`distinct T`** + `borrow` for the refined signal type without runtime overhead.
 - **Concepts** for the relation kind (unary refinement vs successive-value relation).
 - Possible **term-rewriting macros** to fold provable-in-range writes to unchecked sets.

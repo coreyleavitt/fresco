@@ -1,8 +1,8 @@
 ## Reactive counter — the smallest end-to-end fresco program.
 ##
-## Pass: a single line in the top-left of the terminal shows
-## "count: N". Each `+`/`-` press updates it. `q` or `Ctrl-C` exits
-## with the terminal restored. Demonstrates the full stack:
+## A single line in the top-left of the terminal shows "count: N".
+## Each `+`/`-` press updates it. `q` or `Ctrl-C` exits with the terminal
+## restored. Demonstrates the full stack under the C-shape discipline:
 ##
 ##   raw input → KeyEvent → `receive` arm → Signal write → reactive
 ##   binding fires → Region target buffer mutated → paint emits ANSI
@@ -29,8 +29,8 @@ proc app(stream: InputStream, screen: Screen)
 
       let panel = newRegion(screen, 0, 0, 2, screen.width)
       region(panel):
-        row 0: "fresco counter — press + / -, q or Ctrl-C to quit"
-        row 1: "count: " & $count()
+        row 0, []:        "fresco counter — press + / -, q or Ctrl-C to quit"
+        row 1, [count]:   "count: " & $count
 
       # Auto-paint task: notices dirty regions every ~33ms and commits
       # through the sink. No manual paint(screen) calls in the event
@@ -41,8 +41,8 @@ proc app(stream: InputStream, screen: Screen)
       while true:
         receive:
           on stream as ev:
-            Char('+'): count := count() + 1
-            Char('-'): count := count() - 1
+            Char('+'): count := count.peek() + 1
+            Char('-'): count := count.peek() - 1
             Char('q'): return
             Ctrl('c'): return
             _: discard
