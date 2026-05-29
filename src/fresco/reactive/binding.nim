@@ -22,26 +22,35 @@ import intonaco/reactive/collection
 import intonaco/reactive/deltafloor   # onDelta — bindCollection's windowed view is
                                       # legitimately dynamic, so it reaches the floor
                                       # explicitly (the greppable classifier-bypass)
-import intonaco/reactive/construct
+import intonaco/reactive/binding      # the C-shape `effect` macro (explicit deps)
 
 export target
+export binding   # `computed`/`effect` macros + `Subscribable` converter
+                 # are part of fresco's binding-layer surface from a
+                 # consumer's POV (the call site of bindRow / bindRows
+                 # writes `[deps]` brackets that go through these macros).
 
-template bindRow*(target: RenderTarget, idx: int, body: untyped) =
-  ## Re-evaluate `body` (a string-yielding expression) on every tracked
-  ## signal change; write the result into row `idx` of `target`. Routes through
-  ## the `effect:` macro, so it's classified at the call site: directly-named
-  ## (baked) signal reads schedule statically; anything unresolvable falls to the
-  ## sound runtime floor (a warning; an error under `-d:intonacoStrict`).
-  effect:
+template bindRow*(target: untyped, idx: int, deps: untyped, body: untyped) =
+  ## Re-evaluate `body` (a string-yielding expression) when any signal in
+  ## `deps` changes; write the result into row `idx` of `target`. Thin sugar
+  ## over `effect [deps]: target.setRow(idx, body)`; static height baked
+  ## transitively through `effect`. The `noUndeclaredSignals` walker fires
+  ## inside `body` — a reactive read not in `deps` is a compile error.
+  ##
+  ##   bindRow r, 0, [title]: title
+  ##   bindRow r, 1, [count, total]: $count & "/" & $total
+  effect deps:
     target.setRow(idx, body)
 
-template bindRows*(target: RenderTarget, slice: HSlice[int, int],
-                   body: untyped) =
-  ## Re-evaluate `body` (a `seq[string]`-yielding expression) on every
-  ## tracked signal change; lay the result into the rows covered by
+template bindRows*(target: untyped, slice: HSlice[int, int],
+                   deps: untyped, body: untyped) =
+  ## Re-evaluate `body` (a `seq[string]`-yielding expression) when any
+  ## signal in `deps` changes; lay the result into the rows covered by
   ## `slice`. Rows in the slice that don't have a corresponding entry
   ## in the seq are blanked.
-  effect:
+  ##
+  ##   bindRows r, 0..^2, [items]: items.map(formatItem)
+  effect deps:
     let lines = body
     let lo = slice.a
     let hi = slice.b
@@ -62,30 +71,12 @@ type WindowMode* = enum
   wmFromStart  ## visible window starts at items[0] (default; legacy behavior)
   wmFromEnd    ## visible window is the tail — last `winLen` items
 
-proc bindCollection*[Target: RenderTarget; T](
+proc bindCollectionImpl[Target: RenderTarget; T](
     target: Target, slice: HSlice[int, int],
     c: CollectionSignal[T],
     fmt: proc(x: T): string {.closure.},
-    mode: WindowMode = wmFromStart) =
+    mode: WindowMode) =
   mixin setRow, scrollUp
-  ## Lay `c` across `slice` of `region`; on each delta, apply the
-  ## minimal row update.
-  ##
-  ## **mode = wmFromStart** (default): row `slice.a + i` displays
-  ## `fmt(items[i])` for `i < min(items.len, slice.len)`; rows
-  ## beyond `items.len` are blank.
-  ##
-  ## **mode = wmFromEnd**: the visible window is the *tail* of the
-  ## collection. When `items.len >= winLen`, row `slice.a + i`
-  ## displays `fmt(items[items.len - winLen + i])`. When the
-  ## collection isn't yet filled, the window degrades to wmFromStart
-  ## (items appear top-down from row 0). A push when filled shifts
-  ## every visible row's content forward by one; the render layer
-  ## may optimize this via scroll-region primitives (see #41).
-  ##
-  ## Formatter calls are O(1) per delta (new item only) for the
-  ## differential ops in wmFromStart; O(winLen) for dkReplace /
-  ## dkRollback / push-when-filled-in-wmFromEnd.
   let lo = slice.a
   let hi = slice.b
   if hi < lo: return
@@ -197,11 +188,40 @@ proc bindCollection*[Target: RenderTarget; T](
           fmtVisible(items)
         layAll()
 
+proc bindCollection*[Target: RenderTarget; T](
+    target: Target, slice: HSlice[int, int],
+    c: CollectionSignal[T],
+    fmt: proc(x: T): string {.closure.},
+    mode: WindowMode = wmFromStart) {.gcsafe.} =
+  ## Lay `c` across `slice` of `target`; on each delta, apply the
+  ## minimal row update.
+  ##
+  ## **mode = wmFromStart** (default): row `slice.a + i` displays
+  ## `fmt(items[i])` for `i < min(items.len, slice.len)`; rows beyond
+  ## `items.len` are blank.
+  ##
+  ## **mode = wmFromEnd**: the visible window is the *tail* of the
+  ## collection. Before fill the window degrades to wmFromStart. Once
+  ## filled, a push shifts every visible row's content forward by one;
+  ## the render layer may optimize via scroll-region primitives (#41).
+  ##
+  ## Formatter calls are O(1) per delta in wmFromStart for differential
+  ## ops; O(winLen) for dkReplace / dkRollback / push-when-filled-in-
+  ## wmFromEnd.
+  ##
+  ## `fmt` is a closure (indirect call) — not statically gcsafe-provable.
+  ## The single-chronos-dispatcher invariant (fresco/CLAUDE.md) makes the
+  ## cast sound: bindCollection runs on the dispatcher, and the onDelta
+  ## callback is dispatcher-thread-local. The implementation lives in
+  ## `bindCollectionImpl`; this proc is the public gcsafe shim.
+  {.cast(gcsafe).}:
+    bindCollectionImpl(target, slice, c, fmt, mode)
+
 template bindCollection*[Target: RenderTarget; T](
     target: Target, slice: HSlice[int, int],
     c: CollectionSignal[T]) =
   ## Convenience overload using `$T` as the formatter.
-  bindCollection(target, slice, c, proc(x: T): string = $x)
+  bindCollection(target, slice, c, proc(x: T): string {.gcsafe.} = $x)
 
 proc resolveBackIndex(rIdent, expr: NimNode): NimNode =
   ## Rewrite `^N` (from-end index) to `rIdent.height - N`. Leaves
@@ -243,18 +263,24 @@ macro region*(r: untyped, body: untyped): untyped =
   ## DSL block: gather row / rows bindings against a Region.
   ##
   ##   region(panel):
-  ##     row 0:        bold("title")
-  ##     rows 1..^2:   items()
-  ##     row ^1:       fmt"count: {count()}"
+  ##     row 0, [title]:        bold(title)
+  ##     rows 1..^2, [items]:   items
+  ##     row ^1, [count]:       $count
+  ##     rows 0..^1, []:        someCollection
   ##
-  ## Each arm compiles to bindRow / bindRows; reactivity is owned by
-  ## the current scope. `^N` resolves to `r.height - N`, evaluated
-  ## each render so it adapts to dynamic resize.
+  ## Each arm compiles to bindRow / bindRows / bindCollection;
+  ## reactivity is owned by the current scope. `^N` resolves to
+  ## `r.height - N`, evaluated each render so it adapts to dynamic
+  ## resize. The `[deps]` bracket is required on every arm — explicit
+  ## declared deps, walker-checked in the body (matches C-shape
+  ## substrate discipline). For a `rows` arm whose body is a
+  ## `CollectionSignal`, the bracket is conventionally empty (the
+  ## collection IS the dep; bindCollection ignores the bracket).
   expectKind(body, nnkStmtList)
   result = newStmtList()
   for arm in body:
     if arm.kind notin {nnkCall, nnkCommand}:
-      error("region: expected `row N:` or `rows A..B:` arm; got " &
+      error("region: expected `row N, [deps]:` or `rows A..B, [deps]:` arm; got " &
             arm.repr, arm)
     let head = arm[0]
     let armBody = arm[^1]
@@ -262,26 +288,35 @@ macro region*(r: untyped, body: untyped): untyped =
     # may wrap `row` / `rows` as a symbol when this macro is expanded
     # inside another template. Match on the name, not the AST kind.
     if head.eqIdent("row"):
-      if arm.len != 3:
-        error("region: `row N: body` expects one index argument", arm)
+      if arm.len != 4:
+        error("region: `row N, [deps]: body` expects index + deps bracket", arm)
+      if arm[2].kind != nnkBracket:
+        error("region: `row` arm needs a `[deps]` bracket — got `" &
+              arm[2].repr & "`", arm[2])
       let idx = resolveBackIndex(r, arm[1])
+      let deps = arm[2]
       result.add quote do:
-        bindRow(`r`, `idx`, `armBody`)
+        bindRow(`r`, `idx`, `deps`, `armBody`)
     elif head.eqIdent("rows"):
-      if arm.len != 3:
-        error("region: `rows A..B: body` expects one slice argument", arm)
+      if arm.len != 4:
+        error("region: `rows A..B, [deps]: body` expects slice + deps bracket", arm)
       if arm[1].kind != nnkInfix:
         error("region: `rows` arm needs an HSlice (`A..B`, `A..<B`, " &
               "`A..^B`) — got `" & arm[1].repr & "`", arm[1])
+      if arm[2].kind != nnkBracket:
+        error("region: `rows` arm needs a `[deps]` bracket — got `" &
+              arm[2].repr & "`", arm[2])
       let slice = resolveSliceEnds(r, arm[1])
+      let deps = arm[2]
       # Dispatch: if the body is a CollectionSignal, route to the
       # differential `bindCollection`; otherwise the seq[string]-yielding
       # `bindRows`. Detection is via `when compiles(...)` — Nim resolves
-      # the right overload at the call site.
+      # the right overload at the call site. bindCollection ignores
+      # `deps` (its reactivity comes from the collection's delta stream).
       result.add quote do:
         when compiles(bindCollection(`r`, `slice`, `armBody`)):
           bindCollection(`r`, `slice`, `armBody`)
         else:
-          bindRows(`r`, `slice`, `armBody`)
+          bindRows(`r`, `slice`, `deps`, `armBody`)
     else:
       error("region: unknown arm `" & head.repr & "` (expected `row`/`rows`)", head)

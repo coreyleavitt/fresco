@@ -59,7 +59,7 @@ suite "RenderTarget: bindings work against a non-Region implementation":
     let target = newInMemoryRenderTarget(3, 40)
     withScope(root):
       let title = signal("hello")
-      bindRow target, 0: title()
+      bindRow target, 0, [title]: title
       check target.rows[0] == "hello"
       title.set("world")
       check target.rows[0] == "world"
@@ -70,7 +70,7 @@ suite "RenderTarget: bindings work against a non-Region implementation":
     let target = newInMemoryRenderTarget(5, 40)
     withScope(root):
       let items = signal(@["a", "b", "c"])
-      bindRows target, 0 .. 2: items()
+      bindRows target, 0 .. 2, [items]: items
       check target.rows[0] == "a"
       check target.rows[1] == "b"
       check target.rows[2] == "c"

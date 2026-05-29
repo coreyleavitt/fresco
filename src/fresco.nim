@@ -73,10 +73,9 @@ import intonaco/reactive/context
 import intonaco/reactive/speculative
 import intonaco/reactive/animation
 import intonaco/reactive/collection
-import intonaco/reactive/static_graph
 import intonaco/reactive/capabilities
 export scope, signal, binding, context, speculative, animation, collection,
-       static_graph, capabilities
+       capabilities
 
 # T4 — task
 import intonaco/task/core

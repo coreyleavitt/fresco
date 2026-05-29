@@ -123,7 +123,7 @@ Vertical chain with arrows showing causation direction. Each row: event kind + I
 
 ### 3. Static graph + runtime trace, overlaid
 
-**What it is.** The static dependency graph (from `tracked:`) is known at compile time. The runtime journal shows which graph edges fired and when. Render the graph; color/thicken edges by recent firing frequency.
+**What it is.** The static dependency graph (from the C-shape explicit-deps walker) is known at compile time. The runtime journal shows which graph edges fired and when. Render the graph; color/thicken edges by recent firing frequency.
 
 You can see your reactive program's structure AND its dynamic behavior in one view. No other library has this because no other library has compile-time graph extraction.
 
@@ -163,7 +163,7 @@ ASCII-art graph laid out by some auto-layout. Static structure shown as thin lin
 - `f` filter to one task's subgraph
 - `h` highlight a specific signal's transitive closure
 
-**Implementation notes.** Static graph from `tracked:` extracted at compile time (already exists). Runtime firing counts come from a side-table the journal maintains. Graph layout is the hard part — terminal layout of an arbitrary directed graph is genuinely tricky; punt to a simple force-directed layout that's good-enough for typical apps (~100 nodes).
+**Implementation notes.** Static graph from the C-shape walker extracted at compile time (already exists in intonaco's `noUndeclaredSignals` infrastructure). Runtime firing counts come from a side-table the journal maintains. Graph layout is the hard part — terminal layout of an arbitrary directed graph is genuinely tricky; punt to a simple force-directed layout that's good-enough for typical apps (~100 nodes).
 
 ### 4. Cap-flow visualization
 
@@ -496,7 +496,7 @@ The user gets full Nim power for the parts that need it (regex, library calls, c
 
 ### Restricted DSL is consistent with fresco's voice
 
-fresco already ships restricted DSLs throughout: `receive:`, `region:`, `bindRow`, `bindRows`, `bindCollection`, `tracked:`, `supervisor:`, `cap`, `provides`, `child`, etc. Each is a small language that compiles to Nim. The predicate DSL fits the project's style — a small purpose-built language solving a specific shape of problem, with full-Nim escape via registration.
+fresco already ships restricted DSLs throughout: `receive:`, `region:`, `bindRow`, `bindRows`, `bindCollection`, `computed`/`effect`, `supervisor:`, `cap`, `provides`, `child`, etc. Each is a small language that compiles to Nim. The predicate DSL fits the project's style — a small purpose-built language solving a specific shape of problem, with full-Nim escape via registration.
 
 ### Implementation footprint
 

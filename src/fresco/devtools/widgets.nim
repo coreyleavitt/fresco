@@ -99,38 +99,44 @@ type
     saRewind   ## cursor moved; panel should call `rewindTo(j, eventAtCursor)`
     saResume   ## escape pressed; panel should call `resumeLive(j)`
 
-proc scrubStep*(s: var ScrubberState, ev: KeyEvent): ScrubAction =
-  ## Apply one key event to the scrubber state. Returns the action
-  ## the panel should perform: rewind (re-project signals to the
-  ## new cursor), resume (return to live), or none.
+proc scrubStep*(s: ScrubberState, ev: KeyEvent):
+                tuple[next: ScrubberState, action: ScrubAction] =
+  ## Apply one key event to the scrubber state. Pure function: returns
+  ## the new state and the action the panel should perform (rewind /
+  ## resume / none) — does NOT mutate `s`. This shape makes the scrubber
+  ## fit cleanly into a `Signal[ScrubberState]` — the caller computes
+  ## `(next, action) = scrubStep(state.peek(), ev)` and then
+  ## `state.set(next)`.
   ##
   ## Engagement: from inactive state, the first arrow key engages
   ## scrub mode AND moves. Escape disengages.
   ##
   ## Boundary clamping: cursor is held in `[0, total-1]`. If the
   ## journal is empty (total == 0), every key is a no-op.
-  if s.total <= 0: return saNone
+  if s.total <= 0:
+    return (s, saNone)
+  var n = s
   case ev.kind
   of kArrowLeft:
-    if not s.active:
-      s.active = true
-      s.cursor = max(0, s.total - 1)
-    if s.cursor > 0: dec s.cursor
-    saRewind
+    if not n.active:
+      n.active = true
+      n.cursor = max(0, n.total - 1)
+    if n.cursor > 0: dec n.cursor
+    (n, saRewind)
   of kArrowRight:
-    if not s.active:
-      s.active = true
-      s.cursor = max(0, s.total - 1)
-    if s.cursor < s.total - 1: inc s.cursor
-    saRewind
+    if not n.active:
+      n.active = true
+      n.cursor = max(0, n.total - 1)
+    if n.cursor < n.total - 1: inc n.cursor
+    (n, saRewind)
   of kEscape:
-    if s.active:
-      s.active = false
-      saResume
+    if n.active:
+      n.active = false
+      (n, saResume)
     else:
-      saNone
+      (n, saNone)
   else:
-    saNone
+    (n, saNone)
 
 proc renderScrubber*(cursor, total, width: int): string =
   ## Single-line progress-bar rendering of scrubber state. `width`

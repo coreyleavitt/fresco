@@ -25,7 +25,7 @@ suite "mountWhen":
           childActive = false
       let show = signal(false)
       let root = createRoot:
-        mountWhen(show()):
+        mountWhen(show):
           spawn child()
       await tick()
       check not childActive
@@ -49,7 +49,7 @@ suite "mountWhen":
           raise
       let show = signal(false)
       let root = createRoot:
-        mountWhen(show()):
+        mountWhen(show):
           spawn child()
       show.set(true);  await tick(); await tick()
       show.set(false); await tick(); await tick()
@@ -69,7 +69,7 @@ suite "mountWhen":
           raise
       let show = signal(true)
       let root = createRoot:
-        mountWhen(show()):
+        mountWhen(show):
           spawn child()
       await tick(); await tick()
       dispose(root)
@@ -85,7 +85,7 @@ suite "mountWhen":
         await sleepAsync(5.milliseconds)
       let show = signal(false)   # always false
       let root = createRoot:
-        mountWhen(show()):
+        mountWhen(show):
           spawn child()
       await tick(); await tick()
       check not ran
@@ -106,7 +106,7 @@ suite "mountWhen":
         except CancelledError: raise
       let show = signal(false)
       let root = createRoot:
-        mountWhen(show()):
+        mountWhen(show):
           spawn child()
       # Toggle without yielding to dispatcher between flips.
       show := true; show := false
@@ -128,7 +128,7 @@ suite "mountWhen":
           active = false
       let show = signal(false)
       let root = createRoot:
-        mount(show()):
+        mount(show):
           spawn child()
       show := true
       await tick(); await tick()

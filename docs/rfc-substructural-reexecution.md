@@ -27,7 +27,7 @@ The honest risk, flagged at lock time: **re-execution may dissolve linearity rat
 ## Nim leverage
 
 - **Concepts** for cap shape and cardinality constraints (`Grants*`-style structural typing already in intonaco).
-- **Typed macros** to track consumption sites across the `tracked:` walk — the same walk that produces dependency edges produces consumption multisets.
+- **Typed macros** to track consumption sites across the C-shape walker — the same walk that produces dependency edges produces consumption multisets.
 - **ORC/ARC deterministic destruction** as a natural enforcement hook: a linear cap's destructor firing is the consumption witness.
 - **`static[T]`** for `Bounded[N]` with compile-time N; runtime-N is a stretch goal needing a hybrid check.
 
@@ -51,7 +51,7 @@ let url = createComputed:
 ## Relationship to other directions
 
 - **Consistency model (1)** and **transactions (2)**: a transaction's commit/abort is a natural consumption boundary; scope-bounded linearity may be definable in terms of transaction scopes.
-- **Shared walker platform**: consumption multiset is the same `tracked:` walk, projected.
+- **Shared walker platform**: consumption multiset is the same C-shape walker, projected.
 
 ## Research artifact
 

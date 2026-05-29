@@ -50,13 +50,11 @@ task test, "run all tests":
     "tests/unit/test_journal.nim",
     "tests/unit/test_speculative.nim",
     "tests/unit/test_speculative_reentrancy.nim",
-    "tests/unit/test_tracked.nim",
     "tests/unit/test_mailbox.nim",
     "tests/unit/test_receive_multi.nim",
     "tests/unit/test_bitemporal.nim",
     "tests/unit/test_journal_snapshots.nim",
     "tests/unit/test_collection.nim",
-    "tests/unit/test_static_graph.nim",
     "tests/unit/test_capabilities.nim",
     "tests/unit/test_concurrency.nim",
     "tests/unit/test_capconcept.nim",
@@ -88,6 +86,7 @@ task test, "run all tests":
     "tests/integration/test_timewarp.nim",
     "tests/integration/test_devtools_panel.nim",
     "tests/integration/test_devtools_panel_memorysink.nim",
+    "tests/integration/test_ex05_stopwatch.nim",
     "tests/integration/test_context_isolation.nim",
     "tests/integration/test_topology.nim",
   ]
@@ -97,13 +96,25 @@ task test, "run all tests":
 task examples, "compile-check every examples/*.nim":
   let examples = @[
     "examples/ex01_input_loop.nim",
-    "examples/ex02_devtools.nim",
+    "examples/ex02_counter.nim",
+    "examples/ex03_devtools.nim",
+    "examples/ex04_animation.nim",
+    "examples/ex05_stopwatch.nim",
   ]
   for e in examples:
     exec "nim check --hints:off --warnings:off --path:src " & e
 
-task strictcheck, "proof-of-discipline: row bindings over baked signals build under -d:intonacoStrict":
-  # A strict misclassification (a binding wrongly falling to the runtime floor)
-  # is a hard compile error, so this can't live in the runtime `test` loop.
-  exec "nim check -d:intonacoStrict --hints:off --warnings:off --path:src " &
-    "tests/strict_binding_probe.nim"
+task strictcheck, "proof-of-discipline: full binding surface + a real example compile under -d:intonacoStrict":
+  # F-M3: a strict misclassification (a binding wrongly falling to the runtime
+  # floor) is a hard compile error, so this can't live in the runtime `test`
+  # loop. Two artifacts:
+  #   * `tests/strict_binding_probe.nim` — focused probe over every binding
+  #     shape (bindRow / bindRows / bindCollection / region / computed /
+  #     effect / mountWhen) over `signals:`-baked + `collections:`-baked
+  #     sources.
+  #   * `examples/ex05_stopwatch.nim` — a real composing app exercising
+  #     multiple signals + computed + collection + mountWhen + region DSL
+  #     + input loop. Proves the C-shape discipline scales to a real
+  #     consumer, not just the focused probe.
+  for p in ["tests/strict_binding_probe.nim", "examples/ex05_stopwatch.nim"]:
+    exec "nim check -d:intonacoStrict --hints:off --warnings:off --path:src " & p

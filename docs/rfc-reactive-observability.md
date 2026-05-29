@@ -125,7 +125,7 @@ defer: armed.disarm()
 
 **Composition style.** Pipeline operators (`|>`) over `seq[Event]` and friends. We're not introducing a new operator; Nim already has `|>` via templates in `std/sugar` or we use method-call chains. Either way: regular Nim, type-checked, IDE-completable.
 
-**No DSL macro.** Considered and rejected. fresco's existing DSL macros (`receive:`, `region:`, `bindRows`, `supervisor:`, `tracked:`) earn their keep with semantic punch — race-then-cancel cleanup, bounds-checked region writes, capability discharge, dependency tracking. A query DSL would be pure syntactic sugar over `filterIt`/`mapIt`. Plain Nim wins on tooling (autocomplete, jump-to-def, stack traces point at the actual filtering step), type safety (typos are compile errors), and zero macro-debugging tax.
+**No DSL macro.** Considered and rejected. fresco's existing DSL macros (`receive:`, `region:`, `bindRows`, `supervisor:`, `computed`/`effect`) earn their keep with semantic punch — race-then-cancel cleanup, bounds-checked region writes, capability discharge, dependency tracking. A query DSL would be pure syntactic sugar over `filterIt`/`mapIt`. Plain Nim wins on tooling (autocomplete, jump-to-def, stack traces point at the actual filtering step), type safety (typos are compile errors), and zero macro-debugging tax.
 
 The one place a DSL could justify itself is *predicate-armed triggers*, where ergonomics matter:
 

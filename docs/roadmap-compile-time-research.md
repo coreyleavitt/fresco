@@ -78,7 +78,7 @@ This replaces the abandoned "Reactive Coincidence Schema" framing, which was anc
 
 ```
         ┌───────────────────────────────────────────┐
-        │   Shared platform: the tracked: walker      │
+        │   Shared platform: the explicit-deps AST    │
         │   (heights · SCCs · consumption · writes)   │
         └───────────────────────┬─────────────────────┘
                                 │

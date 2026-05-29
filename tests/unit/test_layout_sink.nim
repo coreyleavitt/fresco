@@ -25,8 +25,8 @@ suite "Layout + MemorySink: headless rendering substrate":
     let sink = newMemorySink()
     withScope(root):
       let title = signal("hello")
-      bindRow region, 0: title()
-      bindRow region, 1: "world"
+      bindRow region, 0, [title]: title
+      bindRow region, 1, []: "world"
       sink.commit(layout)
       check sink.rows[0] == "hello"
       check sink.rows[1] == "world"
@@ -66,9 +66,9 @@ suite "Layout + MemorySink: headless rendering substrate":
     let sink = newMemorySink()
     withScope(root):
       let status = signal("ready")
-      bindRow topR, 0:    "header"
-      bindRow middleR, 0: status()
-      bindRow bottomR, 0: "footer"
+      bindRow topR, 0, []:    "header"
+      bindRow middleR, 0, [status]: status
+      bindRow bottomR, 0, []: "footer"
       sink.commit(layout)
       check sink.rows[0] == "header"
       check sink.rows[1] == "ready"

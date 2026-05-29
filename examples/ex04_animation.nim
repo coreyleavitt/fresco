@@ -44,14 +44,14 @@ proc app(stream: InputStream, screen: Screen)
 
       let panel = newRegion(screen, 0, 0, 8, screen.width)
       region(panel):
-        row 0: "fresco animation demo — 0-9 = set target, q / Ctrl-C = quit"
-        row 1: "target:  " & formatFloat(target(), ffDecimal, 3)
-        row 2: ""
-        row 3: "tween    [linear, 600ms] " & bar(tweenVal())
-        row 4: "spring   [k=170, c=26]   " & bar(springVal())
-        row 5: "bouncy   [k=200, c=8]    " & bar(bouncyVal())
-        row 6: ""
-        row 7: "watch the bouncy spring overshoot and settle"
+        row 0, []:           "fresco animation demo — 0-9 = set target, q / Ctrl-C = quit"
+        row 1, [target]:     "target:  " & formatFloat(target, ffDecimal, 3)
+        row 2, []:           ""
+        row 3, [tweenVal]:   "tween    [linear, 600ms] " & bar(tweenVal)
+        row 4, [springVal]:  "spring   [k=170, c=26]   " & bar(springVal)
+        row 5, [bouncyVal]:  "bouncy   [k=200, c=8]    " & bar(bouncyVal)
+        row 6, []:           ""
+        row 7, []:           "watch the bouncy spring overshoot and settle"
 
       # Auto-paint: animation frames mark regions dirty as the tween/
       # spring updates each signal; runAutoPaint commits them at ~30fps.

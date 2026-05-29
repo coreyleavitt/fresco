@@ -45,7 +45,7 @@ Two non-negotiable theses that follow:
 
 ### Thesis 1: Compile-time-first
 
-When the same property can be enforced either at compile time or at runtime, the substrate enforces it at compile time. The cap concept system (compile-time concept satisfaction rather than runtime cap checks), the `tracked:` macro (compile-time dependency extraction rather than runtime tracing), the supervisor concept discharge, the `{.needs.}`/`{.inferCaps.}` pragmas — these are not optional flourishes. They are the consistent expression of an underlying design rule. Future RFCs evaluate proposed primitives against this rule: *could this be compile-time?*
+When the same property can be enforced either at compile time or at runtime, the substrate enforces it at compile time. The cap concept system (compile-time concept satisfaction rather than runtime cap checks), the C-shape `computed`/`effect` macros with explicit `[deps]` brackets + the `noUndeclaredSignals` walker (compile-time dependency declaration rather than runtime tracing), the supervisor concept discharge, the `{.needs.}`/`{.inferCaps.}` pragmas — these are not optional flourishes. They are the consistent expression of an underlying design rule. Future RFCs evaluate proposed primitives against this rule: *could this be compile-time?*
 
 This is what differentiates intonaco from signals.nim (runtime fine-grained reactivity), Sigils (runtime signal/slot dispatch), and the broader runtime-tracking norm in reactive libraries. Compile-time work costs more LoC, longer compile times, more macro complexity — and pays back in correctness, performance, and verifiable safety properties that runtime systems fundamentally cannot achieve.
 
@@ -69,7 +69,7 @@ The split between `intonaco` (substrate) and `fresco` (terminal frontend) is dra
 
 ### intonaco contains — the *pure reactive substrate*, zero rendering opinions
 
-- `reactive/` — signals, computations, scopes (with `currentScope` chronos contextVar), context (provide/use), capabilities (cap T + concept discharge + `currentSup`), speculative scope, animation math (pure tween/easing — no rendering), collection signals with delta observers, static dependency extraction (`tracked:` macro)
+- `reactive/` — signals, computations, scopes (with `currentScope` chronos contextVar), context (provide/use), capabilities (cap T + concept discharge + `currentSup`), speculative scope, animation math (pure tween/easing — no rendering), collection signals with delta observers, C-shape `computed`/`effect` binding macros with explicit `[deps]` brackets + the `noUndeclaredSignals` sem-time walker
 - `task/` — Mount, spawn primitives, parallel collectors, multi-source receive, mailbox, supervisor (lcPermanent/lcTransient/lcTemporary, ssOneForOne/ssOneForAll/ssRestForOne, error policies, onRestart handlers, adopted task groups)
 - `journal/` — events, append-only log, JSONL persistence, rewindTo/resumeLive, snapshots, causal-chain ancestors
 - The capability concept substrate: `cap T` macro, `{.needs.}` pragma, `{.inferCaps.}` pragma, `supervisor:` macro (the unified one from #72), `currentSup()` accessor
@@ -249,7 +249,7 @@ Entirely fresco-side, with caveats:
 
 ### Compile-time research roadmap (`docs/roadmap-compile-time-research.md`, to be written next)
 
-Entirely intonaco-side. The five research directions (consistency model / glitch-freedom [lead], reactive transactions, substructural types under re-execution, refinement types, guarded productivity) all live in intonaco, riding on the shared `tracked:` walker platform. The roadmap document is written for the post-split structure. (The roadmap was rebuilt 2026-05-23; the earlier IFC / effect-rows / ABI directions were killed and UI-completeness moved to fresco — see the roadmap's "Rejected / superseded directions".)
+Entirely intonaco-side. The five research directions (consistency model / glitch-freedom [lead], reactive transactions, substructural types under re-execution, refinement types, guarded productivity) all live in intonaco, riding on the shared explicit-deps AST platform. The roadmap document is written for the post-split structure. (The roadmap was rebuilt 2026-05-23; the earlier IFC / effect-rows / ABI directions were killed and UI-completeness moved to fresco — see the roadmap's "Rejected / superseded directions".)
 
 UI completeness proofs are a slight exception — they touch both packages (the substrate verifies the proofs; the terminal renderer demonstrates them). The headline research RFC will treat them as intonaco substrate work with fresco-side validation.
 
