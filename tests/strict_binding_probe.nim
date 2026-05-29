@@ -20,6 +20,6 @@ signals:
   count = 0
   title = "hello"
 
-bindRow(screen, 0, title())                     # direct baked read -> static
-bindRow(screen, 1, "count: " & $count())        # baked read in an expression
-bindRows(screen, 2 .. 4, @["a", "b", "c"])       # constant -> static
+bindRow(screen, 0, [title], title)                      # direct baked read -> static
+bindRow(screen, 1, [count], "count: " & $count)         # baked read in an expression
+bindRows(screen, 2 .. 4, [], @["a", "b", "c"])          # constant -> static

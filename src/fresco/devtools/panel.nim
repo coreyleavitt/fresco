@@ -121,11 +121,15 @@ proc runDevtoolsPanel*[S: Sink](j: Journal, supervisors: seq[Supervisor],
         let scrubR  = newRegion(screen, 2 * thirds,   0,
                                 max(1, h - 2 * thirds), screen.width)
 
-        bindRows treeR, 0 ..< treeR.height: renderTaskTree(topo.get())
+        bindRows treeR, 0 ..< treeR.height, [topo]: renderTaskTree(topo)
         bindCollection(streamR, 0 ..< streamR.height, events,
                        proc(e: Event): string = renderEvent(e),
                        mode = wmFromEnd)
-        bindRow scrubR, 0:
+        # NOTE: F-M2 makes the scrubber state reactive (cursor/total become
+        # signals). For F-M1 the binding is structurally a no-op — empty
+        # deps, body reads the non-reactive ref. The scrubber UI is stale
+        # after each keystroke; see F-M2 (#106) for the proper fix.
+        bindRow scrubR, 0, []:
           renderScrubber(state.scrubber.cursor, state.scrubber.total,
                          max(4, scrubR.width - 16))
         paint(screen)

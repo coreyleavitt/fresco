@@ -26,8 +26,8 @@ suite "runHeadless: end-to-end test harness":
       withScope(root):
         let count = signal(0)
         let region = newRegion(layout, 0, 0, 2, 20)
-        bindRow region, 0: "count: " & $count()
-        bindRow region, 1: "ready"
+        bindRow region, 0, [count]: "count: " & $count
+        bindRow region, 1, []: "ready"
         while true:
           let key = await stream.nextKey()
           if key.kind == kChar:

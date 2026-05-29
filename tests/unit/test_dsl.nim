@@ -73,8 +73,8 @@ suite "DSL: region block":
     let count = signal(0)
     discard createRoot:
       region(r):
-        row 0: title()
-        row 1: $count()
+        row 0, [title]:  title
+        row 1, [count]:  $count
     check r.target[0] == "hello"
     check r.target[1] == "0"
     title := "world"
@@ -88,8 +88,8 @@ suite "DSL: region block":
     let items = signal(@["a", "b", "c"])
     discard createRoot:
       region(r):
-        row 0: "header"
-        rows 1..3: items()
+        row 0, []:          "header"
+        rows 1..3, [items]: items
     check r.target == @["header", "a", "b", "c"]
     items := @["x", "y"]
     check r.target == @["header", "x", "y", ""]
@@ -100,7 +100,7 @@ suite "DSL: region block":
     let footer = signal("end")
     discard createRoot:
       region(r):
-        row r.height - 1: footer()
+        row r.height - 1, [footer]: footer
     check r.target[2] == "end"
     footer := "stop"
     check r.target[2] == "stop"
@@ -112,8 +112,8 @@ suite "DSL: region block":
     let status = signal("bot")
     discard createRoot:
       region(r):
-        row 0: title()
-        row ^1: status()             # last row of region (index 4)
+        row 0,  [title]:  title
+        row ^1, [status]: status     # last row of region (index 4)
     check r.target[0] == "top"
     check r.target[4] == "bot"
 
@@ -123,8 +123,8 @@ suite "DSL: region block":
     let items = signal(@["a", "b", "c", "d"])
     discard createRoot:
       region(r):
-        row 0: "header"
-        rows 1..^1: items()          # rows 1..4
+        row 0, []:           "header"
+        rows 1..^1, [items]: items   # rows 1..4
         # nothing at the bottom
     check r.target == @["header", "a", "b", "c", "d"]
     items := @["x"]

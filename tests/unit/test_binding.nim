@@ -13,9 +13,10 @@ suite "bindRow":
   test "initial value is written to the row":
     let s = newScreen(5, 20)
     let r = newRegion(s, 0, 0, 3, 20)
-    let title = signal("hello")
+    signals:
+      title = "hello"
     discard createRoot:
-      bindRow r, 0: title()
+      bindRow r, 0, [title]: title
     check r.target[0] == "hello"
 
   test "writing the signal updates the row":
@@ -23,7 +24,7 @@ suite "bindRow":
     let r = newRegion(s, 0, 0, 3, 20)
     let title = signal("a")
     discard createRoot:
-      bindRow r, 0: title()
+      bindRow r, 0, [title]: title
     title.set("b")
     check r.target[0] == "b"
     title.set("c")
@@ -35,7 +36,7 @@ suite "bindRow":
     let count = signal(0)
     let total = signal(10)
     discard createRoot:
-      bindRow r, 1: $count() & "/" & $total()
+      bindRow r, 1, [count, total]: $count & "/" & $total
     check r.target[1] == "0/10"
     count.set(3)
     check r.target[1] == "3/10"
@@ -47,7 +48,7 @@ suite "bindRow":
     let r = newRegion(s, 0, 0, 3, 20)
     let label = signal("alpha")
     let root = createRoot:
-      bindRow r, 0: label()
+      bindRow r, 0, [label]: label
     check r.target[0] == "alpha"
     dispose(root)
     label.set("beta")
@@ -64,9 +65,9 @@ suite "bindRow":
     let r3 = newRegion(s, 2, 0, 1, 20)
     let sig = signal("a")
     discard createRoot:
-      bindRow r1, 0: "r1:" & sig()
-      bindRow r2, 0: "r2:" & sig()
-      bindRow r3, 0: "r3:" & sig()
+      bindRow r1, 0, [sig]: "r1:" & sig
+      bindRow r2, 0, [sig]: "r2:" & sig
+      bindRow r3, 0, [sig]: "r3:" & sig
     discard s.flush()                   # drain initial paint
     sig.set("b")
     let after = s.flush()
@@ -80,8 +81,8 @@ suite "bindRow":
     let a = signal("A")
     let b = signal("B")
     discard createRoot:
-      bindRow r, 0: a()
-      bindRow r, 1: b()
+      bindRow r, 0, [a]: a
+      bindRow r, 1, [b]: b
     check r.target[0] == "A" and r.target[1] == "B"
     a.set("AA")
     check r.target == @["AA", "B"]
@@ -93,7 +94,7 @@ suite "bindRow":
     let r = newRegion(s, 0, 0, 2, 20)
     let v = signal("x")
     discard createRoot:
-      bindRow r, 5: v()       # 5 > height(2) — no-op
+      bindRow r, 5, [v]: v       # 5 > height(2) — no-op
     check r.target.len == 0
 
 suite "bindRows":
@@ -103,7 +104,7 @@ suite "bindRows":
     let r = newRegion(s, 0, 0, 5, 20)
     let items = signal(@["one", "two", "three"])
     discard createRoot:
-      bindRows r, 0 .. 4: items()
+      bindRows r, 0 .. 4, [items]: items
     check r.target == @["one", "two", "three", "", ""]
     items.set(@["a", "b"])
     check r.target == @["a", "b", "", "", ""]
@@ -113,7 +114,7 @@ suite "bindRows":
     let r = newRegion(s, 0, 0, 5, 20)
     let items = signal(@["only-one"])
     discard createRoot:
-      bindRows r, 1 .. 3: items()
+      bindRows r, 1 .. 3, [items]: items
     # Rows 1..3 set; row 0 and 4 untouched
     check r.target.len >= 4
     check r.target[1] == "only-one"
@@ -284,27 +285,27 @@ suite "bindCollection":
     check r.target == @["1", "2", "3", "", ""]
 
   test "region DSL routes CollectionSignal body to bindCollection":
-    # `rows A..B: collection` should dispatch to bindCollection
+    # `rows A..B, []: collection` should dispatch to bindCollection
     # (differential), not bindRows (full re-eval).
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 5, 20)
     let c = collection(@[1, 2, 3])
     discard createRoot:
       region(r):
-        rows 0..4: c
+        rows 0..4, []: c
     check r.target == @["1", "2", "3", "", ""]
     c.push(4)
     check r.target == @["1", "2", "3", "4", ""]
 
   test "region DSL routes Signal[seq[string]] body to bindRows":
-    # Backwards-compat: the body is a string-yielding expression,
-    # not a CollectionSignal. Should go through bindRows.
+    # Body is a string-yielding seq backed by a Signal — should go
+    # through bindRows with the declared `items` dep.
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 5, 20)
     let items = signal(@["a", "b"])
     discard createRoot:
       region(r):
-        rows 0..4: items()
+        rows 0..4, [items]: items
     check r.target == @["a", "b", "", "", ""]
     items.set(@["x"])
     check r.target == @["x", "", "", "", ""]
