@@ -7,9 +7,7 @@ import fresco/events
 import intonaco/journal/events as jev
 import intonaco/journal/log
 import fresco/input as fresco_input
-import intonaco/reactive/primitives/scope
-import intonaco/task/core
-import intonaco/task/supervisor
+import intonaco/reactive
 import fresco/hotkey
 
 proc posix_openpt(flags: cint): cint {.importc, header: "<stdlib.h>".}

@@ -2,7 +2,7 @@
 
 import std/unittest
 import chronos
-import intonaco/task/core
+import intonaco/reactive
 
 proc tick(): Future[void] {.async: (raises: [CancelledError]).} =
   await sleepAsync(0.milliseconds)

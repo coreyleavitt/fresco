@@ -7,7 +7,7 @@
 
 import std/unittest
 import chronos
-import intonaco/task/mailbox
+import intonaco/reactive
 
 suite "Mailbox: push + nextEvent":
 

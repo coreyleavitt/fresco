@@ -4,10 +4,7 @@
 
 import std/[unittest, math]
 import chronos
-import intonaco/reactive/primitives/scope
-import intonaco/reactive/primitives/signal
-import intonaco/reactive/primitives/runtime
-import intonaco/reactive/dsl/animation
+include intonaco/reactive_internal
 
 suite "easing curves":
 

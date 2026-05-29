@@ -9,7 +9,7 @@ import std/[posix, termios, unicode]
 import chronos
 import fresco/input as fresco_input
 import fresco/events
-import intonaco/task/mailbox
+import intonaco/reactive
 import fresco/receive
 
 proc posix_openpt(flags: cint): cint {.importc, header: "<stdlib.h>".}

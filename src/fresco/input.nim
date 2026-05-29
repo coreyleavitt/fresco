@@ -14,7 +14,7 @@ import std/posix
 import chronos
 import ./terminal/termios
 import ./events
-import intonaco/reactive/primitives/scope
+import intonaco/reactive
 
 import intonaco/journal/events as jev
 import intonaco/journal/log

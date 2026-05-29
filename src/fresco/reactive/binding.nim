@@ -17,12 +17,9 @@
 import std/macros
 import ../screen
 import ../render/target
-import intonaco/reactive/primitives/signal
-import intonaco/reactive/primitives/collection
-import intonaco/reactive/primitives/deltafloor   # onDelta — bindCollection's windowed view is
+import intonaco/reactive
                                       # legitimately dynamic, so it reaches the floor
                                       # explicitly (the greppable classifier-bypass)
-import intonaco/reactive/dsl/binding      # the C-shape `effect` macro (explicit deps)
 
 export target
 export binding   # `computed`/`effect` macros + `Subscribable` converter
@@ -113,8 +110,9 @@ proc bindCollectionImpl[Target: RenderTarget; T](
   fmtVisible(c.get())
   layAll()
 
-  # Subscribe to deltas — scope-bound via onDelta's internal onCleanup.
-  c.onDelta proc(d: Delta[T]) =
+  # Subscribe to deltas via the public eachDelta primitive (M-ε.4) —
+  # scope-bound via the underlying onDelta's cleanup machinery.
+  eachDelta c, d:
     case mode
     of wmFromStart:
       case d.kind

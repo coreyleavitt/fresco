@@ -12,7 +12,7 @@
 ## behavior, only string output.
 
 import std/strutils
-import intonaco/task/supervisor
+import intonaco/reactive
 import intonaco/journal/events
 import intonaco/journal/log
 import ../events as input

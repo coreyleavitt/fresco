@@ -4,9 +4,7 @@
 
 import std/unittest
 import fresco/screen
-import intonaco/reactive/primitives/scope
-import intonaco/reactive/primitives/signal
-import intonaco/reactive/primitives/runtime
+import intonaco/reactive
 import fresco/reactive/binding
 
 suite "DSL: state block":
@@ -26,7 +24,7 @@ suite "DSL: state block":
       b = 2
     var sums: seq[int] = @[]
     discard createRoot:
-      createEffect proc() = sums.add a() + b()
+      effect [a, b]: sums.add a + b
     a := 10
     b := 20
     check sums == @[3, 12, 30]
@@ -37,7 +35,7 @@ suite "DSL: := operator":
     let count = signalC(0)
     var seenVals: seq[int] = @[]
     discard createRoot:
-      createEffect proc() = seenVals.add count()
+      effect [count]: seenVals.add count
     count := 1
     count := 2
     count := 3
@@ -47,8 +45,8 @@ suite "DSL: := operator":
     let count = signalC(5)
     var runs = 0
     discard createRoot:
-      createEffect proc() =
-        discard count()
+      effect [count]:
+        discard count
         inc runs
     check runs == 1
     count := 5            # no change

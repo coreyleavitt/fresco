@@ -12,7 +12,7 @@
 ## the retired `registerCap`).
 
 import std/unittest
-import intonaco/task/supervisor
+import intonaco/reactive
 import xmodule_tasks_a
 import xmodule_tasks_b
 

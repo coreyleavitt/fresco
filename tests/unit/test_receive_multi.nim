@@ -7,7 +7,7 @@
 
 import std/unittest
 import chronos
-import intonaco/task/mailbox
+import intonaco/reactive
 import fresco/receive
 
 suite "receive: multi-source dispatch":

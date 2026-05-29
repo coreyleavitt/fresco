@@ -11,12 +11,7 @@
 ## (real composition, lifecycle, input loop).
 
 import std/[unicode]
-import intonaco/reactive/primitives/signal
-import intonaco/reactive/primitives/scope
-import intonaco/reactive/dsl/binding         # `computed`, `effect`
-import intonaco/reactive/primitives/collection      # `collections:`, `CollectionSignal`
-import intonaco/task/mount               # `mountWhen`
-import intonaco/task/core                # `Mount` / `spawn`
+import intonaco/reactive
 import chronos                            # so `spawn`'s child future type resolves
 import fresco/reactive/binding as fresco_binding
 

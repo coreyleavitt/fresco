@@ -12,7 +12,7 @@ import fresco/screen
 import fresco/devtools/panel
 import intonaco/journal/events
 import intonaco/journal/log
-import intonaco/task/supervisor
+import intonaco/reactive
 import fresco/render/sink/memory
 
 suite "devtools panel: headless via MemoryScreen":

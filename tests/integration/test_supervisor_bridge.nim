@@ -8,8 +8,7 @@
 import std/unittest
 import chronos
 import intonaco/reactive/capabilities
-import intonaco/task/core
-import intonaco/task/supervisor
+import intonaco/reactive
 import ../unit/xmodule_concept_caps
 
 suite "supervisor bridge: tracer — declared children actually run":

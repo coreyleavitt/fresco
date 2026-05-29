@@ -1,6 +1,5 @@
 import std/unittest
-import intonaco/reactive/primitives/scope
-import intonaco/reactive/primitives/context
+import intonaco/reactive
 
 type
   ModelClient = ref object

@@ -5,7 +5,7 @@ import std/[posix, termios]
 import chronos
 import fresco/events
 import fresco/input as fresco_input
-import intonaco/reactive/primitives/scope
+import intonaco/reactive
 import fresco/hotkey
 
 proc posix_openpt(flags: cint): cint {.importc, header: "<stdlib.h>".}

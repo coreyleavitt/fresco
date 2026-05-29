@@ -19,12 +19,9 @@ import ../events as input
 import ../input as inputs
 import intonaco/journal/events
 import intonaco/journal/log
-import intonaco/journal/timewarp
-import intonaco/reactive/primitives/scope
-import intonaco/reactive/primitives/signal
+# timewarp lives inside intonaco/reactive as substrate-author code
+import intonaco/reactive
 import ../reactive/binding
-import intonaco/reactive/primitives/collection
-import intonaco/task/supervisor
 import ../screen
 import ../render/sink
 

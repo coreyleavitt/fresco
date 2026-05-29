@@ -10,8 +10,7 @@ import std/unittest
 import chronos
 import fresco/events
 import fresco/input
-import intonaco/reactive/primitives/scope
-import intonaco/reactive/primitives/signal
+import intonaco/reactive
 import fresco/reactive/binding
 import fresco/render/layout
 import fresco/headless/input as headless_input

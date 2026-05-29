@@ -9,9 +9,7 @@
 import std/[unittest, posix]
 import chronos
 import fresco/screen
-import intonaco/reactive/primitives/signal
-import intonaco/reactive/primitives/runtime
-import intonaco/reactive/primitives/scope
+import intonaco/reactive
 
 var SIGWINCH {.importc, header: "<signal.h>".}: cint
 
@@ -26,8 +24,9 @@ suite "Screen v2: reactive size signal":
     let root = newScope()
     var observed: seq[(int, int)]
     withScope(root):
-      createEffect:
-        observed.add(s.size())
+      let sizeSig = s.size
+      effect [sizeSig]:
+        observed.add(sizeSig)
     check observed == @[(24, 80)]
     setSize(s, 30, 100)
     check observed == @[(24, 80), (30, 100)]
@@ -71,8 +70,9 @@ suite "Screen v2: reactive size signal":
       let root = newScope()
       defer: dispose(root)
       withScope(root):
-        createEffect:
-          observed.add(s.size())
+        let sizeSig = s.size
+        effect [sizeSig]:
+          observed.add(sizeSig)
       check observed == @[(10, 20)]
 
       let watcher = watchResizes(s)
@@ -131,8 +131,9 @@ suite "Screen v2: sink-polymorphic Screen[S]":
     let root = newScope()
     defer: dispose(root)
     withScope(root):
-      createEffect:
-        observed.add(s.size())
+      let sizeSig = s.size
+      effect [sizeSig]:
+        observed.add(sizeSig)
     setSize(s, 7, 20)
     check r.height == 2          # 7 - 5 = 2
     check r.target.len == 2       # truncated

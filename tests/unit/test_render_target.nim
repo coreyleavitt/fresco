@@ -10,9 +10,7 @@
 ## (not Region).
 
 import std/unittest
-import intonaco/reactive/primitives/scope
-import intonaco/reactive/primitives/signal
-import intonaco/reactive/primitives/collection
+import intonaco/reactive
 import fresco/reactive/binding
 
 # --- InMemoryRenderTarget: a non-Region implementation of the concept --

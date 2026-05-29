@@ -9,12 +9,10 @@
 import std/[strutils, unicode, unittest, times]
 import fresco/devtools/widgets
 import fresco/devtools/panel
-import intonaco/reactive/primitives/scope
-import intonaco/reactive/primitives/signal
-import intonaco/task/supervisor
+import intonaco/reactive
 import intonaco/journal/events
 import intonaco/journal/log
-import intonaco/journal/timewarp
+# timewarp lives inside intonaco/reactive as substrate-author code
 import fresco/events as input
 
 suite "devtools widgets: task tree":

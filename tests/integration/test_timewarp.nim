@@ -5,10 +5,8 @@ import chronos
 import intonaco/journal/events
 import intonaco/journal/log
 import intonaco/journal/persist
-import intonaco/journal/timewarp
-import intonaco/reactive/primitives/scope
-import intonaco/reactive/primitives/signal
-import intonaco/reactive/primitives/runtime
+# timewarp lives inside intonaco/reactive as substrate-author code
+include intonaco/reactive_internal
 
 suite "timewarp: rewindTo + resumeLive":
 

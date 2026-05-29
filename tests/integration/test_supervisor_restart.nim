@@ -7,11 +7,7 @@ import std/[unittest, tables, strutils]
 import chronos
 import intonaco/journal/events
 import intonaco/journal/log
-import intonaco/reactive/primitives/scope
-import intonaco/reactive/primitives/signal
-import intonaco/reactive/primitives/restoration
-import intonaco/task/core
-import intonaco/task/supervisor
+import intonaco/reactive
 
 # Module-level types + restore overload for the #46 test. Has to live
 # at module scope (not inside the test body) — Nim's `mixin` symbol

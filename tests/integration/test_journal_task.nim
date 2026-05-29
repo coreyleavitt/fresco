@@ -4,9 +4,7 @@ import std/unittest
 import chronos
 import intonaco/journal/events
 import intonaco/journal/log
-import intonaco/reactive/primitives/scope
-import intonaco/reactive/primitives/signal
-import intonaco/task/core
+import intonaco/reactive
 
 
 proc tick(): Future[void] {.async: (raises: [CancelledError]).} =

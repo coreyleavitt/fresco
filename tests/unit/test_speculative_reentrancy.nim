@@ -6,11 +6,7 @@
 ## including conditional reads and write-during-rollback cascades.
 
 import std/unittest
-import intonaco/reactive/primitives/scope
-import intonaco/reactive/primitives/signal
-import intonaco/reactive/primitives/runtime
-import intonaco/reactive/primitives/speculative
-import intonaco/reactive/primitives/subscribable
+include intonaco/reactive_internal
 
 suite "speculative reentrancy: source/observer wiring after rollback":
 

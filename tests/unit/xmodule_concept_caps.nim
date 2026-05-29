@@ -4,7 +4,7 @@
 ## discharges this task — proves user caps cross module boundaries
 ## without registerCap / bitmap encoding.
 
-import intonaco/task/supervisor
+import intonaco/reactive
 
 cap CrossModCap
 

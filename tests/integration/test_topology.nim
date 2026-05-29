@@ -2,8 +2,7 @@
 
 import std/unittest
 import chronos
-import intonaco/task/core
-import intonaco/task/supervisor
+import intonaco/reactive
 
 suite "supervisor topology":
 

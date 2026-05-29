@@ -4,10 +4,7 @@
 
 import std/unittest
 import chronos
-import intonaco/reactive/primitives/scope
-import intonaco/reactive/primitives/signal
-import intonaco/reactive/primitives/runtime
-import intonaco/task/core
+include intonaco/reactive_internal
 
 proc tick(): Future[void] {.async: (raises: [Exception]).} =
   ## Yield to the dispatcher one tick.

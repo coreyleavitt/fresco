@@ -8,7 +8,7 @@
 ## without leaking encoding details.
 
 import std/unittest
-import intonaco/task/supervisor
+import intonaco/reactive
 import xmodule_concept_caps
 
 # User caps for the `cap T` suite below. Must be declared at top level

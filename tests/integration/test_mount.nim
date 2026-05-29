@@ -4,10 +4,7 @@
 
 import std/unittest
 import chronos
-import intonaco/reactive/primitives/scope
-import intonaco/reactive/primitives/signal
-import intonaco/task/core
-import intonaco/task/mount
+import intonaco/reactive
 
 proc tick(): Future[void] {.async: (raises: [CancelledError]).} =
   await sleepAsync(0.milliseconds)

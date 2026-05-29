@@ -8,9 +8,7 @@
 import std/[unittest, strutils]
 import chronos
 import results
-import intonaco/task/core
-import intonaco/task/group
-import intonaco/task/supervisor
+import intonaco/reactive
 
 suite "task group: standalone primitive":
 

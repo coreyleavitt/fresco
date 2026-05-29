@@ -2,8 +2,7 @@
 
 import std/[unittest, strutils]
 import chronos
-import intonaco/task/core
-import intonaco/task/supervisor
+import intonaco/reactive
 import intonaco/journal/events
 import intonaco/journal/log
 

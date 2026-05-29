@@ -12,7 +12,7 @@ import fresco/devtools/panel
 import fresco/devtools/widgets
 import intonaco/journal/events
 import intonaco/journal/log
-import intonaco/task/supervisor
+import intonaco/reactive
 import fresco/screen
 
 proc posix_openpt(flags: cint): cint {.importc, header: "<stdlib.h>".}

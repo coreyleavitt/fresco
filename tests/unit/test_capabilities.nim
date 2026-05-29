@@ -1,6 +1,5 @@
 import std/unittest
-import intonaco/reactive/primitives/scope
-import intonaco/reactive/primitives/context
+import intonaco/reactive
 import intonaco/reactive/capabilities
 
 suite "capabilities":

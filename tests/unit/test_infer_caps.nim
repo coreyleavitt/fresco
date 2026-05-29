@@ -9,7 +9,7 @@
 ## `{.needs.}` for those cases.
 
 import std/[macros, os, osproc, tables, unittest]
-import intonaco/task/supervisor
+import intonaco/reactive
 
 # Stub for `connect`: the chronos one is overloaded with many arg
 # shapes; the inference walker only cares about the rightmost ident

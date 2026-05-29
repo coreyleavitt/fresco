@@ -1,10 +1,7 @@
 {.experimental: "callOperator".}
 
 import std/unittest
-import intonaco/reactive/primitives/scope
-import intonaco/reactive/primitives/signal
-import intonaco/reactive/primitives/runtime
-import intonaco/reactive/primitives/speculative
+include intonaco/reactive_internal
 
 suite "speculative":
 
