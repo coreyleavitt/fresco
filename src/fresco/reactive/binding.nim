@@ -25,6 +25,10 @@ import intonaco/reactive/deltafloor   # onDelta — bindCollection's windowed vi
 import intonaco/reactive/binding      # the C-shape `effect` macro (explicit deps)
 
 export target
+export binding   # `computed`/`effect` macros + `Subscribable` converter
+                 # are part of fresco's binding-layer surface from a
+                 # consumer's POV (the call site of bindRow / bindRows
+                 # writes `[deps]` brackets that go through these macros).
 
 template bindRow*(target: untyped, idx: int, deps: untyped, body: untyped) =
   ## Re-evaluate `body` (a string-yielding expression) when any signal in
@@ -67,30 +71,12 @@ type WindowMode* = enum
   wmFromStart  ## visible window starts at items[0] (default; legacy behavior)
   wmFromEnd    ## visible window is the tail — last `winLen` items
 
-proc bindCollection*[Target: RenderTarget; T](
+proc bindCollectionImpl[Target: RenderTarget; T](
     target: Target, slice: HSlice[int, int],
     c: CollectionSignal[T],
     fmt: proc(x: T): string {.closure.},
-    mode: WindowMode = wmFromStart) =
+    mode: WindowMode) =
   mixin setRow, scrollUp
-  ## Lay `c` across `slice` of `region`; on each delta, apply the
-  ## minimal row update.
-  ##
-  ## **mode = wmFromStart** (default): row `slice.a + i` displays
-  ## `fmt(items[i])` for `i < min(items.len, slice.len)`; rows
-  ## beyond `items.len` are blank.
-  ##
-  ## **mode = wmFromEnd**: the visible window is the *tail* of the
-  ## collection. When `items.len >= winLen`, row `slice.a + i`
-  ## displays `fmt(items[items.len - winLen + i])`. When the
-  ## collection isn't yet filled, the window degrades to wmFromStart
-  ## (items appear top-down from row 0). A push when filled shifts
-  ## every visible row's content forward by one; the render layer
-  ## may optimize this via scroll-region primitives (see #41).
-  ##
-  ## Formatter calls are O(1) per delta (new item only) for the
-  ## differential ops in wmFromStart; O(winLen) for dkReplace /
-  ## dkRollback / push-when-filled-in-wmFromEnd.
   let lo = slice.a
   let hi = slice.b
   if hi < lo: return
@@ -202,11 +188,40 @@ proc bindCollection*[Target: RenderTarget; T](
           fmtVisible(items)
         layAll()
 
+proc bindCollection*[Target: RenderTarget; T](
+    target: Target, slice: HSlice[int, int],
+    c: CollectionSignal[T],
+    fmt: proc(x: T): string {.closure.},
+    mode: WindowMode = wmFromStart) {.gcsafe.} =
+  ## Lay `c` across `slice` of `target`; on each delta, apply the
+  ## minimal row update.
+  ##
+  ## **mode = wmFromStart** (default): row `slice.a + i` displays
+  ## `fmt(items[i])` for `i < min(items.len, slice.len)`; rows beyond
+  ## `items.len` are blank.
+  ##
+  ## **mode = wmFromEnd**: the visible window is the *tail* of the
+  ## collection. Before fill the window degrades to wmFromStart. Once
+  ## filled, a push shifts every visible row's content forward by one;
+  ## the render layer may optimize via scroll-region primitives (#41).
+  ##
+  ## Formatter calls are O(1) per delta in wmFromStart for differential
+  ## ops; O(winLen) for dkReplace / dkRollback / push-when-filled-in-
+  ## wmFromEnd.
+  ##
+  ## `fmt` is a closure (indirect call) — not statically gcsafe-provable.
+  ## The single-chronos-dispatcher invariant (fresco/CLAUDE.md) makes the
+  ## cast sound: bindCollection runs on the dispatcher, and the onDelta
+  ## callback is dispatcher-thread-local. The implementation lives in
+  ## `bindCollectionImpl`; this proc is the public gcsafe shim.
+  {.cast(gcsafe).}:
+    bindCollectionImpl(target, slice, c, fmt, mode)
+
 template bindCollection*[Target: RenderTarget; T](
     target: Target, slice: HSlice[int, int],
     c: CollectionSignal[T]) =
   ## Convenience overload using `$T` as the formatter.
-  bindCollection(target, slice, c, proc(x: T): string = $x)
+  bindCollection(target, slice, c, proc(x: T): string {.gcsafe.} = $x)
 
 proc resolveBackIndex(rIdent, expr: NimNode): NimNode =
   ## Rewrite `^N` (from-end index) to `rIdent.height - N`. Leaves
