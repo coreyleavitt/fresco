@@ -31,12 +31,25 @@ docker_run() {
     # reliably. This is a host-environment workaround; if the bridge
     # network stabilizes (or a different host is used) this flag can
     # be dropped.
+    # Mount the host milpa CAS at the same absolute path the host uses.
+    # milpa places per-dep content under $HOME/.cache/milpa/cas/... and
+    # `_deps/*` are symlinks that bake that host absolute path in, so
+    # the container has to see the same path for the symlinks to
+    # resolve. Read-only — toolchain ops never mutate the cache.
+    # Mount the workspace at its host absolute path AND the host milpa
+    # CAS at its host absolute path. milpa writes `_deps/*` as relative
+    # symlinks (`../../../.cache/milpa/cas/...`) that resolve to
+    # $HOME/.cache/milpa on the host; the container has to see both
+    # paths at the same locations for the symlinks to resolve.
+    MILPA_CACHE="${HOME}/.cache/milpa"
+    mkdir -p "${MILPA_CACHE}"
     docker run --rm --network host \
         --user "${HOST_UID}:${HOST_GID}" \
-        --volume "${PROJECT_DIR}:/workspace" \
+        --volume "${PROJECT_DIR}:${PROJECT_DIR}" \
         --volume "${DOCKER_HOME}:/dockerhome" \
+        --volume "${MILPA_CACHE}:${MILPA_CACHE}:ro" \
         --env HOME=/dockerhome \
-        --workdir /workspace \
+        --workdir "${PROJECT_DIR}" \
         "${IMAGE}" "$@"
 }
 
