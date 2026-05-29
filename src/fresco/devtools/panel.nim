@@ -32,7 +32,13 @@ type
   PanelState* = ref object
     ## Mutable state owned by the panel task. Held as a ref so the
     ## handler and the rendering effects share a single instance.
-    scrubber*: ScrubberState
+    ##
+    ## `scrubber` is a Signal so widget bindings that depend on it
+    ## (the scrubber row in `runDevtoolsPanel`) re-render on each
+    ## ←/→/Escape. Pre-F-M2 it was a plain field — bindings observed
+    ## stale values because the input loop mutated in place under a
+    ## binding with no declared dep.
+    scrubber*: Signal[ScrubberState]
     selectedEvent*: EventId
       ## Event currently displayed in the causal-chain inspector.
       ## NoEvent when nothing is selected.
@@ -41,36 +47,36 @@ proc newPanelState*(j: Journal): PanelState =
   ## Construct a fresh panel state for the given journal. `scrubber`
   ## starts in inactive (live) mode at the journal's head.
   result = PanelState(
-    scrubber: ScrubberState(
+    scrubber: signal(ScrubberState(
       cursor: max(0, j.events.len - 1),
       total: j.events.len,
-      active: false),
+      active: false)),
     selectedEvent: NoEvent)
 
 proc handleKey*(state: PanelState, ev: KeyEvent, j: Journal): bool =
   ## Apply one key event to the panel state. Returns true if the
-  ## panel should keep running, false to exit (handled by the
-  ## panel's main loop, which on false will tear down the alt-screen
-  ## and return).
+  ## panel should keep running, false to exit.
   ##
   ## Side effects on the journal (rewindTo / resumeLive) happen here
   ## so the caller doesn't have to coordinate between scrubber state
-  ## and journal projection. This keeps the integration layer free
-  ## of any "did scrubber change → call rewindTo" plumbing.
+  ## and journal projection.
   case ev.kind
   of kChar:
     if $ev.rune == "q": return false
     return true
   of kArrowLeft, kArrowRight, kEscape:
-    # Always refresh `total` before stepping so the scrubber knows
-    # the current journal length (new events may have arrived since
-    # the panel last refreshed).
-    state.scrubber.total = j.events.len
-    case scrubStep(state.scrubber, ev)
+    # Refresh `total` against the current journal before stepping (new
+    # events may have arrived since the panel last refreshed). Pure
+    # read-modify-write into the signal so the bindRow observer fires
+    # exactly once for the keystroke.
+    var cur = state.scrubber.peek()
+    cur.total = j.events.len
+    let (next, action) = scrubStep(cur, ev)
+    state.scrubber.set(next)
+    case action
     of saRewind:
-      if state.scrubber.cursor >= 0 and
-         state.scrubber.cursor < j.events.len:
-        rewindTo(j, j.events[state.scrubber.cursor].id)
+      if next.cursor >= 0 and next.cursor < j.events.len:
+        rewindTo(j, j.events[next.cursor].id)
     of saResume:
       resumeLive(j)
     of saNone:
@@ -78,9 +84,9 @@ proc handleKey*(state: PanelState, ev: KeyEvent, j: Journal): bool =
     return true
   of kEnter:
     # Select the event at the scrubber cursor for causal inspection.
-    if state.scrubber.cursor >= 0 and
-       state.scrubber.cursor < j.events.len:
-      state.selectedEvent = j.events[state.scrubber.cursor].id
+    let cur = state.scrubber.peek()
+    if cur.cursor >= 0 and cur.cursor < j.events.len:
+      state.selectedEvent = j.events[cur.cursor].id
     return true
   else:
     return true
@@ -125,12 +131,13 @@ proc runDevtoolsPanel*[S: Sink](j: Journal, supervisors: seq[Supervisor],
         bindCollection(streamR, 0 ..< streamR.height, events,
                        proc(e: Event): string = renderEvent(e),
                        mode = wmFromEnd)
-        # NOTE: F-M2 makes the scrubber state reactive (cursor/total become
-        # signals). For F-M1 the binding is structurally a no-op — empty
-        # deps, body reads the non-reactive ref. The scrubber UI is stale
-        # after each keystroke; see F-M2 (#106) for the proper fix.
-        bindRow scrubR, 0, []:
-          renderScrubber(state.scrubber.cursor, state.scrubber.total,
+        # F-M2: scrubber is a Signal[ScrubberState]; bindRow declares it
+        # as a dep, so each ←/→/Escape re-renders the row with the new
+        # cursor/total. Alias to a local because the deps bracket needs
+        # a plain ident (the binding macro shadows by name).
+        let scrubber = state.scrubber
+        bindRow scrubR, 0, [scrubber]:
+          renderScrubber(scrubber.cursor, scrubber.total,
                          max(4, scrubR.width - 16))
         paint(screen)
 

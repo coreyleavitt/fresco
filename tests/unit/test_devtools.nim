@@ -96,36 +96,36 @@ suite "devtools widgets: scrubber":
     check "[" in line and "]" in line
 
   test "scrubStep on ArrowRight advances cursor and emits saRewind":
-    var s = ScrubberState(cursor: 5, total: 10, active: true)
-    let action = scrubStep(s, atomKey(kArrowRight))
-    check s.cursor == 6
+    let s = ScrubberState(cursor: 5, total: 10, active: true)
+    let (next, action) = scrubStep(s, atomKey(kArrowRight))
+    check next.cursor == 6
     check action == saRewind
 
   test "scrubStep on ArrowLeft retreats cursor":
-    var s = ScrubberState(cursor: 5, total: 10, active: true)
-    let action = scrubStep(s, atomKey(kArrowLeft))
-    check s.cursor == 4
+    let s = ScrubberState(cursor: 5, total: 10, active: true)
+    let (next, action) = scrubStep(s, atomKey(kArrowLeft))
+    check next.cursor == 4
     check action == saRewind
 
   test "scrubStep clamps at boundaries":
-    var s = ScrubberState(cursor: 0, total: 10, active: true)
-    discard scrubStep(s, atomKey(kArrowLeft))
-    check s.cursor == 0                    # clamped at 0
-    var s2 = ScrubberState(cursor: 9, total: 10, active: true)
-    discard scrubStep(s2, atomKey(kArrowRight))
-    check s2.cursor == 9                   # clamped at total-1
+    let s = ScrubberState(cursor: 0, total: 10, active: true)
+    let (next1, _) = scrubStep(s, atomKey(kArrowLeft))
+    check next1.cursor == 0                # clamped at 0
+    let s2 = ScrubberState(cursor: 9, total: 10, active: true)
+    let (next2, _) = scrubStep(s2, atomKey(kArrowRight))
+    check next2.cursor == 9                # clamped at total-1
 
   test "scrubStep on Escape resumes live and emits saResume":
-    var s = ScrubberState(cursor: 3, total: 10, active: true)
-    let action = scrubStep(s, atomKey(kEscape))
+    let s = ScrubberState(cursor: 3, total: 10, active: true)
+    let (next, action) = scrubStep(s, atomKey(kEscape))
     check action == saResume
-    check not s.active
+    check not next.active
 
   test "scrubStep first ArrowRight from live engages scrub mode":
-    var s = ScrubberState(cursor: 9, total: 10, active: false)
-    let action = scrubStep(s, atomKey(kArrowLeft))
-    check s.active
-    check s.cursor == 8
+    let s = ScrubberState(cursor: 9, total: 10, active: false)
+    let (next, action) = scrubStep(s, atomKey(kArrowLeft))
+    check next.active
+    check next.cursor == 8
     check action == saRewind
 
 suite "devtools panel: key routing":
@@ -154,9 +154,13 @@ suite "devtools panel: key routing":
       cur.set(2)
       cur.set(3)
       var state = newPanelState(j)
-      state.scrubber.total = j.events.len
+      # Seed total from journal (handleKey refreshes from j on each call,
+      # but tests start by setting it explicitly to assert intent).
+      var seeded = state.scrubber.peek()
+      seeded.total = j.events.len
+      state.scrubber.set(seeded)
       check handleKey(state, atomKey(kArrowLeft), j)
-      check state.scrubber.active
+      check state.scrubber.peek().active
       # After at least one rewindTo: isRewinding should be true.
       check isRewinding()
       # Reset for clean teardown.
@@ -168,8 +172,7 @@ suite "devtools panel: key routing":
     for i in 0 ..< 5:
       discard j.logSignalWrite(t, NoEvent, "x", $i)
     var state = newPanelState(j)
-    state.scrubber.active = true
-    state.scrubber.cursor = 2
+    state.scrubber.set(ScrubberState(cursor: 2, total: 5, active: true))
     check handleKey(state, atomKey(kEscape), j)
-    check not state.scrubber.active
+    check not state.scrubber.peek().active
     check not isRewinding()
