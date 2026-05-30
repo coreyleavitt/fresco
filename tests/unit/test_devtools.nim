@@ -146,7 +146,7 @@ suite "devtools panel: key routing":
     defer: globalJournal = nil
     let t = TaskId.fresh()
     discard createRoot:
-      let cur = signalC(0, label = "cur")
+      let cur {.height: 0.} = signalC(0, label = "cur")
       bindForTimeWarp(cur)
       cur.set(1)
       cur.set(2)

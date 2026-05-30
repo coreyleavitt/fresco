@@ -32,7 +32,7 @@ suite "DSL: state block":
 suite "DSL: := operator":
 
   test ":= writes the signal and re-fires effects":
-    let count = signalC(0)
+    let count {.height: 0.} = signalC(0)
     var seenVals: seq[int] = @[]
     discard createRoot:
       effect [count]: seenVals.add count
@@ -42,7 +42,7 @@ suite "DSL: := operator":
     check seenVals == @[0, 1, 2, 3]
 
   test ":= short-circuits when value unchanged":
-    let count = signalC(5)
+    let count {.height: 0.} = signalC(5)
     var runs = 0
     discard createRoot:
       effect [count]:
@@ -57,7 +57,7 @@ suite "DSL: := operator":
   test ":= works with custom types":
     type Item = object
       label: string
-    let item = signalC(Item(label: "x"))
+    let item {.height: 0.} = signalC(Item(label: "x"))
     check item().label == "x"
     item := Item(label: "y")
     check item().label == "y"
@@ -67,8 +67,8 @@ suite "DSL: region block":
   test "row arms bind the listed rows":
     let s = newScreen(5, 20)
     let r = newRegion(s, 0, 0, 3, 20)
-    let title = signalC("hello")
-    let count = signalC(0)
+    let title {.height: 0.} = signalC("hello")
+    let count {.height: 0.} = signalC(0)
     discard createRoot:
       region(r):
         row 0, [title]:  title
@@ -83,7 +83,7 @@ suite "DSL: region block":
   test "rows arm binds a slice from a seq signal":
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 5, 20)
-    let items = signalC(@["a", "b", "c"])
+    let items {.height: 0.} = signalC(@["a", "b", "c"])
     discard createRoot:
       region(r):
         row 0, []:          "header"
@@ -95,7 +95,7 @@ suite "DSL: region block":
   test "row index can be a computed expression":
     let s = newScreen(5, 20)
     let r = newRegion(s, 0, 0, 3, 20)
-    let footer = signalC("end")
+    let footer {.height: 0.} = signalC("end")
     discard createRoot:
       region(r):
         row r.height - 1, [footer]: footer
@@ -106,8 +106,8 @@ suite "DSL: region block":
   test "^N from-end indexing":
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 5, 20)
-    let title = signalC("top")
-    let status = signalC("bot")
+    let title {.height: 0.} = signalC("top")
+    let status {.height: 0.} = signalC("bot")
     discard createRoot:
       region(r):
         row 0,  [title]:  title
@@ -118,7 +118,7 @@ suite "DSL: region block":
   test "rows A..^N slice with from-end end":
     let s = newScreen(10, 20)
     let r = newRegion(s, 0, 0, 5, 20)
-    let items = signalC(@["a", "b", "c", "d"])
+    let items {.height: 0.} = signalC(@["a", "b", "c", "d"])
     discard createRoot:
       region(r):
         row 0, []:           "header"

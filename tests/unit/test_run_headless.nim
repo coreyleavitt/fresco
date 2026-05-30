@@ -23,7 +23,7 @@ suite "runHeadless: end-to-end test harness":
       let root = newScope()
       defer: dispose(root)
       withScope(root):
-        let count = signalC(0)
+        let count {.height: 0.} = signalC(0)
         let region = newRegion(layout, 0, 0, 2, 20)
         bindRow region, 0, [count]: "count: " & $count
         bindRow region, 1, []: "ready"

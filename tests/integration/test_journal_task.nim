@@ -70,7 +70,7 @@ suite "journal: task lifecycle":
     proc body() {.async: (raises: [Exception]).} =
       proc work() {.async.} =
         await sleepAsync(5.milliseconds)
-        let n = signalC(0, label = "n")
+        let n {.height: 0.} = signalC(0, label = "n")
         n.set(42)
       let m = spawn work()
       await m.wait()
@@ -90,7 +90,7 @@ suite "journal: task lifecycle":
     proc body() {.async: (raises: [Exception]).} =
       proc work() {.async.} =
         await sleepAsync(5.milliseconds)
-        let n = signalC(0, label = "preserved")
+        let n {.height: 0.} = signalC(0, label = "preserved")
         n.set(99)
       let m = spawn work()
       await m.wait()

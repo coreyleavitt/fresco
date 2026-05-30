@@ -8,12 +8,12 @@ import intonaco/journal/log
 suite "CollectionSignal":
 
   test "empty initial state":
-    let c = collectionC[int]()
+    let c {.height: 0.} = collectionC[int]()
     check c.len == 0
     check c.get() == newSeq[int]()
 
   test "push appends and emits dkInsert":
-    let c = collectionC[string]()
+    let c {.height: 0.} = collectionC[string]()
     var deltas: seq[Delta[string]] = @[]
     discard createRoot:
       onDelta(c, proc(d: Delta[string]) = deltas.add d)
@@ -27,7 +27,7 @@ suite "CollectionSignal":
       check d.insertIdx == i
 
   test "pop removes last and emits dkRemove":
-    let c = collectionC(@["a", "b", "c"])
+    let c {.height: 0.} = collectionC(@["a", "b", "c"])
     var deltas: seq[Delta[string]] = @[]
     discard createRoot:
       onDelta(c, proc(d: Delta[string]) = deltas.add d)
@@ -39,17 +39,17 @@ suite "CollectionSignal":
     check deltas[0].removeIdx == 2
 
   test "insert at index shifts later items":
-    let c = collectionC(@["a", "c"])
+    let c {.height: 0.} = collectionC(@["a", "c"])
     c.insert(1, "b")
     check c.get() == @["a", "b", "c"]
 
   test "remove at index":
-    let c = collectionC(@["a", "b", "c"])
+    let c {.height: 0.} = collectionC(@["a", "b", "c"])
     c.remove(1)
     check c.get() == @["a", "c"]
 
   test "setAt updates one item and emits dkUpdate":
-    let c = collectionC(@[1, 2, 3])
+    let c {.height: 0.} = collectionC(@[1, 2, 3])
     var deltas: seq[Delta[int]] = @[]
     discard createRoot:
       onDelta(c, proc(d: Delta[int]) = deltas.add d)
@@ -60,7 +60,7 @@ suite "CollectionSignal":
     check deltas[0].updateVal == 99
 
   test "clear empties and emits dkClear":
-    let c = collectionC(@[1, 2, 3])
+    let c {.height: 0.} = collectionC(@[1, 2, 3])
     var deltas: seq[Delta[int]] = @[]
     discard createRoot:
       onDelta(c, proc(d: Delta[int]) = deltas.add d)
@@ -69,7 +69,7 @@ suite "CollectionSignal":
     check deltas[0].kind == dkClear
 
   test "set replaces wholesale and emits dkReplace":
-    let c = collectionC(@[1, 2, 3])
+    let c {.height: 0.} = collectionC(@[1, 2, 3])
     var deltas: seq[Delta[int]] = @[]
     discard createRoot:
       onDelta(c, proc(d: Delta[int]) = deltas.add d)
@@ -79,7 +79,7 @@ suite "CollectionSignal":
     check deltas[0].replaceVal == @[10, 20]
 
   test "onDelta handlers unregister on scope dispose":
-    let c = collectionC[int]()
+    let c {.height: 0.} = collectionC[int]()
     var deltas: seq[Delta[int]] = @[]
     let root = createRoot:
       onDelta(c, proc(d: Delta[int]) = deltas.add d)
@@ -90,7 +90,7 @@ suite "CollectionSignal":
     check deltas.len == 1   # handler unregistered
 
   test "multiple handlers all receive deltas":
-    let c = collectionC[int]()
+    let c {.height: 0.} = collectionC[int]()
     var sumA = 0
     var sumB = 0
     discard createRoot:
@@ -108,7 +108,7 @@ suite "CollectionSignal":
     # site. `fanout` uses the same snapshot-then-iterate-while-
     # callbacks-may-mutate pattern that needed fixing for
     # Signal.observers — N=3 ensures we exercise the same regime.
-    let c = collectionC[int]()
+    let c {.height: 0.} = collectionC[int]()
     var seenA, seenB, seenC = 0
     discard createRoot:
       onDelta(c, proc(d: Delta[int]) =
@@ -127,7 +127,7 @@ suite "CollectionSignal":
     # runs immediately, calling `captured.deltaObservers.del idx`
     # — this mutates the live deltaObservers list while `fanout`
     # is iterating. The remaining handlers must still fire.
-    let c = collectionC[int]()
+    let c {.height: 0.} = collectionC[int]()
     var aFired, cFired = 0
     var bScope: Scope
     let root = createRoot:
@@ -149,7 +149,7 @@ suite "CollectionSignal":
     # Regression: CollectionSignal previously wasn't Subscribable and
     # never called notify(), so `createEffect` / `bindRows` reading
     # the items never re-ran on push/pop/etc.
-    let c = collectionC(@["a"])
+    let c {.height: 0.} = collectionC(@["a"])
     var runs = 0
     var lastLen = 0
     discard createRoot:
@@ -169,7 +169,7 @@ suite "CollectionSignal":
     check lastLen == 2
 
   test "plain observers fire on every delta kind":
-    let c = collectionC(@[1, 2, 3])
+    let c {.height: 0.} = collectionC(@[1, 2, 3])
     var runs = 0
     discard createRoot:
       createEffect proc() =
@@ -189,7 +189,7 @@ suite "CollectionSignal: speculative scope":
     # Regression for round-7 H5: previously CollectionSignal mutations
     # inside `speculative:` would silently stick on rollback, violating
     # DESIGN.md R11. Now they snapshot prior state and record a revert.
-    let c = collectionC(@[1, 2, 3])
+    let c {.height: 0.} = collectionC(@[1, 2, 3])
     discard speculative:
       c.push(4)
       c.push(5)
@@ -197,7 +197,7 @@ suite "CollectionSignal: speculative scope":
     check c.get() == @[1, 2, 3]   # rolled back on block exit
 
   test "mutations stick when commit is called":
-    let c = collectionC(@[1, 2, 3])
+    let c {.height: 0.} = collectionC(@[1, 2, 3])
     discard speculative:
       c.push(4)
       c.setAt(0, 99)
@@ -205,21 +205,21 @@ suite "CollectionSignal: speculative scope":
     check c.get() == @[99, 2, 3, 4]
 
   test "clear inside speculative is reversed by a dkReplace inverse":
-    let c = collectionC(@["a", "b", "c"])
+    let c {.height: 0.} = collectionC(@["a", "b", "c"])
     discard speculative:
       c.clear()
       check c.len == 0
     check c.get() == @["a", "b", "c"]
 
   test "set (wholesale replace) rolls back":
-    let c = collectionC(@[1, 2, 3])
+    let c {.height: 0.} = collectionC(@[1, 2, 3])
     discard speculative:
       c.set(@[10, 20, 30])
       check c.get() == @[10, 20, 30]
     check c.get() == @[1, 2, 3]
 
   test "M mutations + rollback fire ONE batched dkRollback with M inverses":
-    let c = collectionC(@[10, 20, 30])
+    let c {.height: 0.} = collectionC(@[10, 20, 30])
     var deltas: seq[Delta[int]] = @[]
     discard createRoot:
       onDelta(c, proc(d: Delta[int]) = deltas.add d)
@@ -241,7 +241,7 @@ suite "CollectionSignal: speculative scope":
     check c.get() == @[10, 20, 30]
 
   test "pop inside speculative + rollback restores the popped value":
-    let c = collectionC(@["a", "b", "c"])
+    let c {.height: 0.} = collectionC(@["a", "b", "c"])
     discard speculative:
       let v = c.pop()
       check v == "c"
@@ -249,7 +249,7 @@ suite "CollectionSignal: speculative scope":
     check c.get() == @["a", "b", "c"]
 
   test "setAt rollback restores prior value via dkUpdate inverse, not dkReplace":
-    let c = collectionC(@[1, 2, 3])
+    let c {.height: 0.} = collectionC(@[1, 2, 3])
     var deltas: seq[Delta[int]] = @[]
     discard createRoot:
       onDelta(c, proc(d: Delta[int]) = deltas.add d)
@@ -263,7 +263,7 @@ suite "CollectionSignal: speculative scope":
     check c.get() == @[1, 2, 3]
 
   test "nested: inner commit promotes inverses, outer rollback drains both":
-    let c = collectionC(@[0])
+    let c {.height: 0.} = collectionC(@[0])
     var batches: seq[Delta[int]] = @[]
     discard createRoot:
       onDelta(c, proc(d: Delta[int]) =
@@ -282,7 +282,7 @@ suite "CollectionSignal: speculative scope":
     check c.get() == @[0]
 
   test "nested: inner rollback fires its own batch; outer mutations intact":
-    let c = collectionC(@[0])
+    let c {.height: 0.} = collectionC(@[0])
     var batches: seq[Delta[int]] = @[]
     discard createRoot:
       onDelta(c, proc(d: Delta[int]) =
@@ -301,8 +301,8 @@ suite "CollectionSignal: speculative scope":
     check c.get() == @[0, 1, 4]
 
   test "multiple collections in same scope each emit their own dkRollback":
-    let a = collectionC[int]()
-    let b = collectionC[int]()
+    let a {.height: 0.} = collectionC[int]()
+    let b {.height: 0.} = collectionC[int]()
     var aBatches, bBatches: seq[Delta[int]] = @[]
     discard createRoot:
       onDelta(a, proc(d: Delta[int]) =
@@ -322,7 +322,7 @@ suite "CollectionSignal: speculative scope":
 suite "CollectionSignal: edge cases":
 
   test "clear() on empty is a silent no-op (no delta, no observer fire)":
-    let c = collectionC[int]()
+    let c {.height: 0.} = collectionC[int]()
     var observerRuns = 0
     discard createRoot:
       createEffect proc() =
@@ -346,7 +346,7 @@ suite "CollectionSignal: edge cases":
     # hook would pop the *new* (mid-hook) entry, leaving the original
     # entry stuck on the head — a memory leak and a state-machine bug
     # waiting for the next scope's rollback.
-    let c = collectionC[int]()
+    let c {.height: 0.} = collectionC[int]()
     var sawReentrantInsert = false
     var firedOnce = false
     onDelta(c, proc(d: Delta[int]) =
@@ -375,22 +375,22 @@ suite "CollectionSignal: edge cases":
     check c.get() == @[999]             # both pushes rolled back cleanly
 
   test "pop on empty asserts":
-    let c = collectionC[int]()
+    let c {.height: 0.} = collectionC[int]()
     expect AssertionDefect:
       discard c.pop()
 
   test "insert at out-of-bounds asserts":
-    let c = collectionC(@[1, 2, 3])
+    let c {.height: 0.} = collectionC(@[1, 2, 3])
     expect AssertionDefect:
       c.insert(99, 4)    # idx > len
 
   test "remove on out-of-bounds asserts":
-    let c = collectionC(@[1, 2])
+    let c {.height: 0.} = collectionC(@[1, 2])
     expect AssertionDefect:
       c.remove(5)
 
   test "setAt on out-of-bounds asserts":
-    let c = collectionC(@[1])
+    let c {.height: 0.} = collectionC(@[1])
     expect AssertionDefect:
       c.setAt(2, 99)
 
@@ -404,7 +404,7 @@ suite "CollectionSignal: journal integration":
     resetJournal()
 
   test "labeled push emits ekCollectionDelta with insert op":
-    let c = collectionC[int](@[], label = "items")
+    let c {.height: 0.} = collectionC[int](@[], label = "items")
     c.push(42)
     let evs = globalJournal.byKind(ekCollectionDelta)
     check evs.len == 1
@@ -414,7 +414,7 @@ suite "CollectionSignal: journal integration":
     check evs[0].collectionRepr == "42"
 
   test "remove / update / clear / replace each emit the right op":
-    let c = collectionC(@[1, 2, 3], label = "nums")
+    let c {.height: 0.} = collectionC(@[1, 2, 3], label = "nums")
     c.remove(0)
     c.setAt(0, 99)
     c.clear()
@@ -430,13 +430,13 @@ suite "CollectionSignal: journal integration":
     check evs[3].collectionRepr == "2"     # replace records the new length
 
   test "unlabeled collections skip journaling":
-    let c = collectionC[int]()   # no label
+    let c {.height: 0.} = collectionC[int]()   # no label
     c.push(1)
     c.push(2)
     check globalJournal.byKind(ekCollectionDelta).len == 0
 
   test "rollback writes exactly ONE ekCollectionRollback per affected collection":
-    let c = collectionC[int](@[], label = "items")
+    let c {.height: 0.} = collectionC[int](@[], label = "items")
     discard speculative:
       c.push(1)
       c.push(2)
@@ -451,8 +451,8 @@ suite "CollectionSignal: journal integration":
     check rollbacks[0].rollbackOpsRepr.contains("r:")
 
   test "two labeled collections in one rollback → two rollback events":
-    let a = collectionC[int](@[], label = "a")
-    let b = collectionC[int](@[], label = "b")
+    let a {.height: 0.} = collectionC[int](@[], label = "a")
+    let b {.height: 0.} = collectionC[int](@[], label = "b")
     discard speculative:
       a.push(1)
       b.push(2)
@@ -469,14 +469,14 @@ suite "CollectionSignal: journal integration":
     check byLabel.b == 2
 
   test "unlabeled collection rollback skips journal":
-    let c = collectionC[int]()   # no label
+    let c {.height: 0.} = collectionC[int]()   # no label
     discard speculative:
       c.push(1)
       c.push(2)
     check globalJournal.byKind(ekCollectionRollback).len == 0
 
   test "commit does NOT write a rollback event":
-    let c = collectionC[int](@[], label = "x")
+    let c {.height: 0.} = collectionC[int](@[], label = "x")
     discard speculative:
       c.push(1)
       commit()

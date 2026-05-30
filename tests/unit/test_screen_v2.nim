@@ -24,7 +24,7 @@ suite "Screen v2: reactive size signal":
     let root = newScope()
     var observed: seq[(int, int)]
     withScope(root):
-      let sizeSig = s.size
+      let sizeSig {.height: 0.} = s.size
       effect [sizeSig]:
         observed.add(sizeSig)
     check observed == @[(24, 80)]
@@ -70,7 +70,7 @@ suite "Screen v2: reactive size signal":
       let root = newScope()
       defer: dispose(root)
       withScope(root):
-        let sizeSig = s.size
+        let sizeSig {.height: 0.} = s.size
         effect [sizeSig]:
           observed.add(sizeSig)
       check observed == @[(10, 20)]
@@ -131,7 +131,7 @@ suite "Screen v2: sink-polymorphic Screen[S]":
     let root = newScope()
     defer: dispose(root)
     withScope(root):
-      let sizeSig = s.size
+      let sizeSig {.height: 0.} = s.size
       effect [sizeSig]:
         observed.add(sizeSig)
     setSize(s, 7, 20)

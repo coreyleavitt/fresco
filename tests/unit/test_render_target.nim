@@ -56,7 +56,7 @@ suite "RenderTarget: bindings work against a non-Region implementation":
     let root = newScope()
     let target = newInMemoryRenderTarget(3, 40)
     withScope(root):
-      let title = signalC("hello")
+      let title {.height: 0.} = signalC("hello")
       bindRow target, 0, [title]: title
       check target.rows[0] == "hello"
       title.set("world")
@@ -67,7 +67,7 @@ suite "RenderTarget: bindings work against a non-Region implementation":
     let root = newScope()
     let target = newInMemoryRenderTarget(5, 40)
     withScope(root):
-      let items = signalC(@["a", "b", "c"])
+      let items {.height: 0.} = signalC(@["a", "b", "c"])
       bindRows target, 0 .. 2, [items]: items
       check target.rows[0] == "a"
       check target.rows[1] == "b"
@@ -82,7 +82,7 @@ suite "RenderTarget: bindings work against a non-Region implementation":
     let root = newScope()
     let target = newInMemoryRenderTarget(4, 40)
     withScope(root):
-      let items = collectionC[string]()
+      let items {.height: 0.} = collectionC[string]()
       bindCollection(target, 0 .. 3, items, proc(s: string): string = s)
       # initial lay: empty
       check target.rows[0] == ""
@@ -101,7 +101,7 @@ suite "RenderTarget: bindings work against a non-Region implementation":
     let root = newScope()
     let target = newInMemoryRenderTarget(3, 40)
     withScope(root):
-      let items = collectionC[string]()
+      let items {.height: 0.} = collectionC[string]()
       bindCollection(target, 0 .. 2, items,
                      proc(s: string): string = s,
                      mode = wmFromEnd)
@@ -125,7 +125,7 @@ suite "RenderTarget: bindings work against a non-Region implementation":
     let target = ScrollableTarget(
       rows: newSeq[string](3), height: 3, width: 40, scrollCount: 0)
     withScope(root):
-      let items = collectionC[string]()
+      let items {.height: 0.} = collectionC[string]()
       bindCollection(target, 0 .. 2, items,
                      proc(s: string): string = s,
                      mode = wmFromEnd)

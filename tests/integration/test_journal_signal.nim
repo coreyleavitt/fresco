@@ -17,7 +17,7 @@ suite "journal: signal writes":
     resetJournal()
 
   test "signal.set writes a StateWrite event with label and repr":
-    let count = signalC(0, label = "count")
+    let count {.height: 0.} = signalC(0, label = "count")
     count.set(5)
     let writes = globalJournal.byKind(ekSignalWrite)
     check writes.len == 1
@@ -38,7 +38,7 @@ suite "journal: signal writes":
     check "titlex" in labels
 
   test "equal-write short-circuits do not journal":
-    let x = signalC(42, label = "x")
+    let x {.height: 0.} = signalC(42, label = "x")
     x.set(42)   # no change → no event
     x.set(7)    # change → 1 event
     x.set(7)    # no change → no event
@@ -47,7 +47,7 @@ suite "journal: signal writes":
   test "writes inside a spawned task get the task's taskId":
     proc body() {.async: (raises: [Exception]).} =
       proc work() {.async.} =
-        let n = signalC(0, label = "n")
+        let n {.height: 0.} = signalC(0, label = "n")
         n.set(1)
         n.set(2)
       let m = spawn work()
@@ -61,7 +61,7 @@ suite "journal: signal writes":
   test "successive writes from the same task chain causally":
     proc body() {.async: (raises: [Exception]).} =
       proc work() {.async.} =
-        let n = signalC(0, label = "n")
+        let n {.height: 0.} = signalC(0, label = "n")
         n.set(1)
         n.set(2)
         n.set(3)

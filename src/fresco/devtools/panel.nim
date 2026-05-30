@@ -112,8 +112,8 @@ proc runDevtoolsPanel*[S: Sink](j: Journal, supervisors: seq[Supervisor],
     let root = newScope()
     try:
       withScope(root):
-        let topo   = signalC(snapshotTopology(supervisors))
-        let events = collectionC[Event](@[])
+        let topo {.height: 0.} = signalC(snapshotTopology(supervisors))
+        let events {.height: 0.} = collectionC[Event](@[])
         for e in j.events: events.push(e)
         let state = newPanelState(j)
 
@@ -132,7 +132,7 @@ proc runDevtoolsPanel*[S: Sink](j: Journal, supervisors: seq[Supervisor],
         # as a dep, so each ←/→/Escape re-renders the row with the new
         # cursor/total. Alias to a local because the deps bracket needs
         # a plain ident (the binding macro shadows by name).
-        let scrubber = state.scrubber
+        let scrubber {.height: 0.} = state.scrubber
         bindRow scrubR, 0, [scrubber]:
           renderScrubber(scrubber.cursor, scrubber.total,
                          max(4, scrubR.width - 16))

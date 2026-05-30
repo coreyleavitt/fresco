@@ -20,7 +20,7 @@ suite "mountWhen":
           await sleepAsync(1000.milliseconds)
         finally:
           childActive = false
-      let show = signalC(false)
+      let show {.height: 0.} = signalC(false)
       let root = createRoot:
         mountWhen(show):
           spawn child()
@@ -44,7 +44,7 @@ suite "mountWhen":
           await sleepAsync(1000.milliseconds)
         except CancelledError:
           raise
-      let show = signalC(false)
+      let show {.height: 0.} = signalC(false)
       let root = createRoot:
         mountWhen(show):
           spawn child()
@@ -64,7 +64,7 @@ suite "mountWhen":
         except CancelledError:
           cleanedUp = true
           raise
-      let show = signalC(true)
+      let show {.height: 0.} = signalC(true)
       let root = createRoot:
         mountWhen(show):
           spawn child()
@@ -80,7 +80,7 @@ suite "mountWhen":
       proc child() {.async: (raises: [Exception]).} =
         ran = true
         await sleepAsync(5.milliseconds)
-      let show = signalC(false)   # always false
+      let show {.height: 0.} = signalC(false)   # always false
       let root = createRoot:
         mountWhen(show):
           spawn child()
@@ -101,7 +101,7 @@ suite "mountWhen":
         try:
           await sleepAsync(500.milliseconds)
         except CancelledError: raise
-      let show = signalC(false)
+      let show {.height: 0.} = signalC(false)
       let root = createRoot:
         mountWhen(show):
           spawn child()
@@ -123,7 +123,7 @@ suite "mountWhen":
           await sleepAsync(500.milliseconds)
         finally:
           active = false
-      let show = signalC(false)
+      let show {.height: 0.} = signalC(false)
       let root = createRoot:
         mount(show):
           spawn child()

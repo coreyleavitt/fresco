@@ -11,8 +11,8 @@ include intonaco/reactive_internal
 suite "speculative reentrancy: source/observer wiring after rollback":
 
   test "effect reads A and B; rollback restores values + keeps both sources":
-    let a = signalC(0)
-    let b = signalC(20)
+    let a {.height: 0.} = signalC(0)
+    let b {.height: 0.} = signalC(20)
     var lastA, lastB: int
     var compRef: Computation
     discard createRoot:
@@ -55,8 +55,8 @@ suite "speculative reentrancy: source/observer wiring after rollback":
     # Effect reads B only when A > 0. Speculative crosses the
     # conditional boundary in both directions; rollback restores A.
     # Final E.sources must reflect the final A value's branch.
-    let a = signalC(1)        # initially > 0 → effect should read B
-    let b = signalC(100)
+    let a {.height: 0.} = signalC(1)        # initially > 0 → effect should read B
+    let b {.height: 0.} = signalC(100)
     var reads = 0
     discard createRoot:
       createEffect proc() =
@@ -91,8 +91,8 @@ suite "speculative reentrancy: source/observer wiring after rollback":
     # onto the same speculative frame. The rollback's `while
     # scope.reverts.len > 0` drains them all, producing a
     # consistent final state.
-    let src = signalC(10)
-    let derived = signalC(0)
+    let src {.height: 0.} = signalC(10)
+    let derived {.height: 0.} = signalC(0)
     discard createRoot:
       createEffect proc() =
         derived.set(src() * 2)

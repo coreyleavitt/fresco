@@ -35,14 +35,14 @@ suite "context isolation: currentScope across interleaved awaits":
     # The acceptance criterion from #37.
     proc body() {.async: (raises: [Exception]).} =
       proc taskA() {.async.} =
-        let x = signalC(0, label = "x")
+        let x {.height: 0.} = signalC(0, label = "x")
         x.set(1)
         await sleepAsync(20.milliseconds)
-        let y = signalC(0, label = "y")
+        let y {.height: 0.} = signalC(0, label = "y")
         y.set(2)
 
       proc taskB() {.async.} =
-        let z = signalC(0, label = "z")
+        let z {.height: 0.} = signalC(0, label = "z")
         z.set(3)
 
       let mA = spawn taskA()
@@ -78,8 +78,8 @@ suite "context isolation: currentSpeculative across interleaved awaits":
     # is what makes B's currentSpeculative `nil` (it's outside any
     # speculative: block), independent of A's binding.
     proc body() {.async: (raises: [Exception]).} =
-      let a = signalC(10)
-      let b = signalC(20)
+      let a {.height: 0.} = signalC(10)
+      let b {.height: 0.} = signalC(20)
 
       proc taskA(): Future[void] {.async: (raises: [Exception]).} =
         discard speculative:

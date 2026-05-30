@@ -82,17 +82,17 @@ suite "scope":
 suite "signal":
 
   test "read and write the current value":
-    let s = signalC(0)
+    let s {.height: 0.} = signalC(0)
     check s.get() == 0
     s.set(5)
     check s.get() == 5
 
   test "call-syntax reads the value":
-    let s = signalC("hello")
+    let s {.height: 0.} = signalC("hello")
     check s() == "hello"
 
   test "setting to the same value short-circuits (no re-runs)":
-    let s = signalC(7)
+    let s {.height: 0.} = signalC(7)
     var runs = 0
     discard createRoot:
       createEffect proc() =
@@ -107,7 +107,7 @@ suite "signal":
 suite "createEffect":
 
   test "runs once on registration; re-runs when a tracked signal changes":
-    let s = signalC(0)
+    let s {.height: 0.} = signalC(0)
     var observed: seq[int] = @[]
     discard createRoot:
       createEffect proc() =
@@ -117,8 +117,8 @@ suite "createEffect":
     check observed == @[0, 1, 2, 3]
 
   test "does not re-run for untracked signal changes":
-    let tracked = signalC(0)
-    let untracked = signalC(0)
+    let tracked {.height: 0.} = signalC(0)
+    let untracked {.height: 0.} = signalC(0)
     var runs = 0
     discard createRoot:
       createEffect proc() =
@@ -130,8 +130,8 @@ suite "createEffect":
     check runs == 2
 
   test "tracks multiple signals; any change re-runs":
-    let a = signalC(1)
-    let b = signalC(2)
+    let a {.height: 0.} = signalC(1)
+    let b {.height: 0.} = signalC(2)
     var sums: seq[int] = @[]
     discard createRoot:
       createEffect proc() =
@@ -141,7 +141,7 @@ suite "createEffect":
     check sums == @[3, 12, 30]
 
   test "scope dispose stops the effect":
-    let s = signalC(0)
+    let s {.height: 0.} = signalC(0)
     var runs = 0
     let root = createRoot:
       createEffect proc() =
@@ -155,9 +155,9 @@ suite "createEffect":
     check runs == 2
 
   test "dynamic dependencies: a signal no longer read stops triggering":
-    let cond = signalC(true)
-    let a = signalC("a")
-    let b = signalC("b")
+    let cond {.height: 0.} = signalC(true)
+    let a {.height: 0.} = signalC("a")
+    let b {.height: 0.} = signalC("b")
     var seenVals: seq[string] = @[]
     discard createRoot:
       createEffect proc() =
@@ -187,7 +187,7 @@ suite "createEffect: shared-signal reentrancy":
     # Reproduces at N=3; would have stayed hidden at N=2 because
     # seq.del's swap-delete happens to round-trip correctly for two.
     var out1, out2, out3: string
-    let sig = signalC("a")
+    let sig {.height: 0.} = signalC("a")
     discard createRoot:
       createEffect proc() = out1 = "1:" & sig()
       createEffect proc() = out2 = "2:" & sig()
@@ -225,7 +225,7 @@ suite "createEffect: shared-signal reentrancy":
     check newObserverRuns == 1    # only the initial-creation run
 
   test "observer that disposes itself during run doesn't break siblings":
-    let sig = signalC(0)
+    let sig {.height: 0.} = signalC(0)
     var aRuns, bRuns, cRuns = 0
     var aScope: Scope
     let root = createRoot:
@@ -255,7 +255,7 @@ suite "createEffect: shared-signal reentrancy":
 suite "createComputed":
 
   test "derives from source signal and stays in sync":
-    let count = signalC(2)
+    let count {.height: 0.} = signalC(2)
     var doubled: Signal[int]
     discard createRoot:
       doubled = createComputed proc(): int = count() * 2
@@ -264,7 +264,7 @@ suite "createComputed":
     check doubled.get() == 20
 
   test "computed itself is observable by other effects":
-    let count = signalC(1)
+    let count {.height: 0.} = signalC(1)
     var seenVals: seq[int] = @[]
     discard createRoot:
       let plus10 = createComputed proc(): int = count() + 10
@@ -274,7 +274,7 @@ suite "createComputed":
     check seenVals == @[11, 15]
 
   test "computed disposes with its scope":
-    let count = signalC(0)
+    let count {.height: 0.} = signalC(0)
     var computed: Signal[int]
     let root = createRoot:
       computed = createComputed proc(): int = count() * 3

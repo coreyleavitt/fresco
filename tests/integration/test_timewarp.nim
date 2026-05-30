@@ -25,7 +25,7 @@ suite "timewarp: rewindTo + resumeLive":
     defer: globalJournal = nil
 
     discard createRoot:
-      let s = signalC(0, label = "count")
+      let s {.height: 0.} = signalC(0, label = "count")
       bindForTimeWarp(s)
       s.set(1)
       s.set(2)
@@ -44,7 +44,7 @@ suite "timewarp: rewindTo + resumeLive":
     globalJournal = j
     defer: globalJournal = nil
     discard createRoot:
-      let s = signalC(0, label = "cursor")
+      let s {.height: 0.} = signalC(0, label = "cursor")
       bindForTimeWarp(s)
       s.set(10)
       let midId = j.events[^1].id
@@ -64,7 +64,7 @@ suite "timewarp: rewindTo + resumeLive":
     globalJournal = j
     defer: globalJournal = nil
     discard createRoot:
-      let s = signalC(0, label = "n")
+      let s {.height: 0.} = signalC(0, label = "n")
       bindForTimeWarp(s)
       s.set(1); s.set(2)
       let midId = j.events[^1].id
@@ -81,8 +81,8 @@ suite "timewarp: rewindTo + resumeLive":
     globalJournal = j
     defer: globalJournal = nil
     discard createRoot:
-      let bound = signalC(0, label = "bound")
-      let unbound = signalC(0, label = "unbound")
+      let bound {.height: 0.} = signalC(0, label = "bound")
+      let unbound {.height: 0.} = signalC(0, label = "unbound")
       bindForTimeWarp(bound)
       # Note: `unbound` is NOT bound — its label is still journaled,
       # but no applier exists, so rewindTo doesn't touch it.
@@ -108,8 +108,8 @@ suite "timewarp: rewindTo + resumeLive":
     globalJournal = j
     defer: globalJournal = nil
     discard createRoot:
-      let s = signalC(0, label = "n")
-      let side = signalC(0, label = "side")
+      let s {.height: 0.} = signalC(0, label = "n")
+      let side {.height: 0.} = signalC(0, label = "side")
       bindForTimeWarp(s)
       discard createRoot:
         createEffect proc() =
@@ -135,7 +135,7 @@ suite "timewarp: rewindTo + resumeLive":
     globalJournal = j
     defer: globalJournal = nil
     discard createRoot:
-      let c = signalC(cRed, label = "color")
+      let c {.height: 0.} = signalC(cRed, label = "color")
       bindForTimeWarp(c)
       c.set(cGreen)
       let midId = j.events[^1].id
@@ -148,11 +148,11 @@ suite "timewarp: rewindTo + resumeLive":
     globalJournal = j
     defer: globalJournal = nil
     discard createRoot:
-      let outerLive = signalC(0, label = "outer")
+      let outerLive {.height: 0.} = signalC(0, label = "outer")
       bindForTimeWarp(outerLive)
       outerLive.set(1)
       let root = createRoot:
-        let inner = signalC(0, label = "inner")
+        let inner {.height: 0.} = signalC(0, label = "inner")
         bindForTimeWarp(inner)
         inner.set(10)
       let midId = j.events[^1].id

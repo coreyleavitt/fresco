@@ -78,7 +78,7 @@ suite "supervisor onRestart":
       var attempts = 0
       proc child(): Future[void] {.async.} =
         inc attempts
-        let count = signalC(0, label = "count")
+        let count {.height: 0.} = signalC(0, label = "count")
         count.set(attempts * 10)        # journaled
         await sleepAsync(1.milliseconds)
         if attempts < 2:
@@ -105,7 +105,7 @@ suite "supervisor orReplayJournal":
       var observedValues: seq[int] = @[]
       proc child(): Future[void] {.async.} =
         inc attempts
-        let count = signalC(0, label = "count")
+        let count {.height: 0.} = signalC(0, label = "count")
         observedValues.add count()       # what the new body sees at startup
         count.set(attempts * 100)        # journaled
         await sleepAsync(1.milliseconds)
@@ -128,9 +128,9 @@ suite "supervisor orReplayJournal":
       var sawB: bool = false
       proc child(): Future[void] {.async.} =
         inc attempts
-        let temperature = signalC(0.0, label = "temperature")
-        let enabled = signalC(false, label = "enabled")
-        let title = signalC("default", label = "title")
+        let temperature {.height: 0.} = signalC(0.0, label = "temperature")
+        let enabled {.height: 0.} = signalC(false, label = "enabled")
+        let title {.height: 0.} = signalC("default", label = "title")
         if attempts == 2:
           sawF = $temperature()
           sawB = enabled()
@@ -156,8 +156,8 @@ suite "supervisor orReplayJournal":
       var observed: seq[(int, int)] = @[]
       proc child(): Future[void] {.async.} =
         inc attempts
-        let a = signalC(0, label = "a")
-        let b = signalC(0, label = "b")
+        let a {.height: 0.} = signalC(0, label = "a")
+        let b {.height: 0.} = signalC(0, label = "b")
         observed.add (a(), b())
         a.set(attempts * 11)
         b.set(attempts * 22)
@@ -177,8 +177,8 @@ suite "supervisor orReplayJournal":
       var observed = 0
       proc child(): Future[void] {.async.} =
         inc attempts
-        let touched = signalC(0, label = "touched")
-        let untouched = signalC(999, label = "untouched")  # never written
+        let touched {.height: 0.} = signalC(0, label = "touched")
+        let untouched {.height: 0.} = signalC(999, label = "untouched")  # never written
         observed = untouched()
         touched.set(attempts * 10)        # only this is journaled
         await sleepAsync(1.milliseconds)
@@ -198,7 +198,7 @@ suite "supervisor orReplayJournal":
     # constructor should warn and use the initial. The exact stderr
     # output isn't asserted (test framework would capture it).
     pendingRestoration = {"broken": "not-a-number"}.toTable
-    let s = signalC(42, label = "broken")
+    let s {.height: 0.} = signalC(42, label = "broken")
     check s.peek() == 42                  # fallback used
     # Entry was consumed even on parse failure.
     check "broken" notin pendingRestoration
@@ -208,14 +208,14 @@ suite "supervisor orReplayJournal":
     # consumeRestoration's `else` branch returns fallback without
     # error.
     pendingRestoration = {"items": "1,2,3"}.toTable
-    let s = signalC(@[7, 8, 9], label = "items")
+    let s {.height: 0.} = signalC(@[7, 8, 9], label = "items")
     check s.peek() == @[7, 8, 9]
     check "items" notin pendingRestoration
 
   test "read-and-remove: two signals with same label, only first restored":
     pendingRestoration = {"shared": "100"}.toTable
-    let first = signalC(0, label = "shared")
-    let second = signalC(0, label = "shared")
+    let first {.height: 0.} = signalC(0, label = "shared")
+    let second {.height: 0.} = signalC(0, label = "shared")
     check first.peek() == 100
     check second.peek() == 0
     check "shared" notin pendingRestoration
@@ -224,7 +224,7 @@ suite "supervisor orReplayJournal":
     proc body() {.async: (raises: [Exception]).} =
       var observed = -1
       proc child(): Future[void] {.async.} =
-        let count = signalC(7, label = "count")
+        let count {.height: 0.} = signalC(7, label = "count")
         observed = count()
       let sup = newSupervisor()
       sup.addChild("c", lcTemporary, child, onRestart = orReplayJournal)
@@ -239,7 +239,7 @@ suite "supervisor orReplayJournal":
       var stagingEmpty = false
       proc child(): Future[void] {.async.} =
         inc attempts
-        let count = signalC(0, label = "count")
+        let count {.height: 0.} = signalC(0, label = "count")
         # Verify staging is empty IMMEDIATELY after construction.
         if attempts == 2:
           stagingEmpty = "count" notin pendingRestoration
@@ -258,7 +258,7 @@ suite "supervisor orReplayJournal":
       var attempts = 0
       proc child(): Future[void] {.async.} =
         inc attempts
-        let count = signalC(0, label = "count")
+        let count {.height: 0.} = signalC(0, label = "count")
         count.set(attempts * 100)
         await sleepAsync(1.milliseconds)
         if attempts < 2:
@@ -280,7 +280,7 @@ suite "supervisor orReplayJournal":
     pendingRestoration = {"broken": "not-a-number"}.toTable
     pendingRestorationSource = TaskId(0)
     let baselineCount = globalJournal.events.len
-    let s = signalC(42, label = "broken")
+    let s {.height: 0.} = signalC(42, label = "broken")
     check s.peek() == 42       # fallback used (already covered)
     var restoredEventCount = 0
     for ev in globalJournal.events[baselineCount ..< globalJournal.events.len]:
@@ -298,7 +298,7 @@ suite "supervisor orReplayJournal":
           firstTaskId = currentScope.taskId
         else:
           secondTaskId = currentScope.taskId
-        let count = signalC(0, label = "count")
+        let count {.height: 0.} = signalC(0, label = "count")
         count.set(attempts * 7)
         await sleepAsync(1.milliseconds)
         if attempts < 2:
@@ -326,7 +326,7 @@ suite "supervisor orReplayJournal":
     # them up via the template's `mixin restore`.
     pendingRestoration = {"theme": "blue"}.toTable
     pendingRestorationSource = TaskId(0)
-    let theme = signalC(cRed, label = "theme")
+    let theme {.height: 0.} = signalC(cRed, label = "theme")
     check theme.peek() == cBlue
     check "theme" notin pendingRestoration
 
@@ -335,7 +335,7 @@ suite "supervisor orReplayJournal":
     # overload; consumeRestoration falls through to the initial value.
     pendingRestoration = {"size": "10x20"}.toTable
     pendingRestorationSource = TaskId(0)
-    let b = signalC(Box(width: 1, height: 1), label = "size")
+    let b {.height: 0.} = signalC(Box(width: 1, height: 1), label = "size")
     check b.peek() == Box(width: 1, height: 1)
     # Entry was still consumed (read-and-remove semantics).
     check "size" notin pendingRestoration
@@ -346,8 +346,8 @@ suite "supervisor orReplayJournal":
       var seen = initTable[string, int]()
       proc child(): Future[void] {.async.} =
         inc attempts
-        let kept = signalC(0, label = "ui.count")
-        let dropped = signalC(0, label = "net.bytes")
+        let kept {.height: 0.} = signalC(0, label = "ui.count")
+        let dropped {.height: 0.} = signalC(0, label = "net.bytes")
         seen["ui.count"] = kept()
         seen["net.bytes"] = dropped()
         kept.set(attempts * 11)
