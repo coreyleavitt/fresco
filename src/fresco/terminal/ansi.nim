@@ -124,6 +124,25 @@ proc isWide(r: Rune): bool =
   (v >= 0x20000 and v <= 0x2FFFD) or
   (v >= 0x30000 and v <= 0x3FFFD)
 
+proc isZeroWidth(r: Rune): bool =
+  ## Returns true for runes that occupy zero display columns: combining marks,
+  ## zero-width format characters, and variation selectors.
+  let v = r.int32
+  # Combining Diacritical Marks and other standard combining blocks
+  (v >= 0x0300 and v <= 0x036F) or
+  (v >= 0x1AB0 and v <= 0x1AFF) or
+  (v >= 0x1DC0 and v <= 0x1DFF) or
+  (v >= 0x20D0 and v <= 0x20FF) or
+  (v >= 0xFE20 and v <= 0xFE2F) or
+  # Zero-width format characters
+  v == 0x200B or  # ZERO WIDTH SPACE
+  v == 0x200C or  # ZERO WIDTH NON-JOINER
+  v == 0x200D or  # ZERO WIDTH JOINER
+  v == 0xFEFF or  # ZERO WIDTH NO-BREAK SPACE / BOM
+  # Variation selectors
+  (v >= 0xFE00 and v <= 0xFE0F) or
+  (v >= 0xE0100 and v <= 0xE01EF)
+
 proc displayWidth*(s: string): int =
   ## Rendered cell width of `s`. CSI/OSC escape sequences contribute 0
   ## cells; CJK wide runes count as 2; all other printable runes count
@@ -157,5 +176,6 @@ proc displayWidth*(s: string): int =
       inc i
     else:
       let r = s.runeAt(i)
-      result += (if isWide(r): 2 else: 1)
+      if not isZeroWidth(r):
+        result += (if isWide(r): 2 else: 1)
       i += r.size

@@ -77,3 +77,21 @@ suite "displayWidth":
     check displayWidth("漢字")  == 4
     check displayWidth("a漢b") == 4
     check displayWidth("한")    == 2
+
+  test "combining marks (U+0300 block) count as zero cells":
+    # U+0301 COMBINING ACUTE ACCENT — base 'e' is 1 cell, combiner adds 0
+    let eAcute = "e" & "\xCC\x81"   # U+0301 in UTF-8
+    check displayWidth(eAcute) == 1
+    # 5-letter word with one combining mark still measures 5
+    let word = "caf" & "\xCC\x81" & "e"   # café with combiner separate
+    check displayWidth(word) == 4
+
+  test "ZWJ (U+200D) between base runes counts zero cells":
+    # U+200D in UTF-8 is \xE2\x80\x8D
+    let joined = "a" & "\xE2\x80\x8D" & "b"
+    check displayWidth(joined) == 2
+
+  test "variation selector (U+FE0F) after base char counts zero cells":
+    # U+FE0F VARIATION SELECTOR-16 in UTF-8 is \xEF\xB8\x8F
+    let withVS = "a" & "\xEF\xB8\x8F"
+    check displayWidth(withVS) == 1
