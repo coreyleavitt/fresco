@@ -1,4 +1,5 @@
 import std/unittest
+import std/strutils
 import fresco/terminal/ansi
 
 suite "ANSI cursor + erase":
@@ -117,3 +118,38 @@ suite "displayWidth":
     check displayWidth("\x1b_appcmd\x1b\\" & "z") == 1
     # PM: ESC ^ ... ESC \
     check displayWidth("\x1b^privmsg\x1b\\" & "w") == 1
+
+suite "clipToWidth":
+
+  test "plain ASCII truncation":
+    check clipToWidth("hello", 3) == "hel"
+
+  test "no-op when already <= width":
+    check clipToWidth("hi", 5) == "hi"
+
+  test "wide chars counted as 2":
+    check clipToWidth("漢字", 2) == "漢"
+    check clipToWidth("a漢b", 3) == "a漢"
+
+  test "wide-char-at-boundary pads with space":
+    check clipToWidth("漢", 1) == " "
+
+  test "escape passthrough uncounted - no-op case":
+    let styled = "\x1b[31mred\x1b[0m"
+    check clipToWidth(styled, 5) == styled
+
+  test "escape passthrough uncounted - truncation case":
+    let styled = "\x1b[31mredish\x1b[0m"
+    let clipped = clipToWidth(styled, 3)
+    check clipped.startsWith("\x1b[31mred")
+    check displayWidth(clipped) == 3
+
+  test "width 0 returns empty string":
+    check clipToWidth("hello", 0) == ""
+    check clipToWidth("", 0) == ""
+
+  test "width 1 with plain char returns one char":
+    check clipToWidth("abc", 1) == "a"
+
+  test "negative width returns empty string":
+    check clipToWidth("hello", -1) == ""

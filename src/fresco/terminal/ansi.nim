@@ -187,3 +187,65 @@ proc displayWidth*(s: string): int =
       if not isZeroWidth(r):
         result += (if isWide(r): 2 else: 1)
       i += r.size
+
+proc clipToWidth*(s: string, width: int): string =
+  ## Return a prefix of `s` whose display width is at most `width` columns.
+  ## ANSI escape sequences are copied through verbatim and do not consume
+  ## display budget.  Wide runes that would overhang the boundary are replaced
+  ## by a single space so no partial glyph is emitted.
+  ## `width` ≤ 0 ⇒ `""`.
+  if width <= 0: return ""
+  # Fast path: string already fits.
+  if displayWidth(s) <= width: return s
+  var col = 0
+  var i = 0
+  while i < s.len:
+    let b = s[i]
+    if b == '\x1b':
+      # Copy the escape sequence verbatim; it contributes 0 columns.
+      let seqStart = i
+      inc i
+      if i >= s.len:
+        result.add s[seqStart ..< i]
+        break
+      case s[i]
+      of '[':
+        inc i
+        while i < s.len and s[i].ord notin {0x40..0x7E}: inc i
+        if i < s.len: inc i
+      of ']', 'P', '^', '_':
+        inc i
+        while i < s.len:
+          if s[i] == '\x07':
+            inc i; break
+          if s[i] == '\x1b' and i + 1 < s.len and s[i+1] == '\\':
+            i += 2; break
+          inc i
+      of 'N', 'O':
+        inc i
+        if i < s.len: inc i
+      else:
+        inc i
+      result.add s[seqStart ..< i]
+    elif b.ord < 0x20:
+      # Non-ESC control byte — skip, don't emit.
+      inc i
+    else:
+      let r = s.runeAt(i)
+      let rw = if isZeroWidth(r): 0 elif isWide(r): 2 else: 1
+      if rw == 0:
+        # Zero-width: emit while budget not yet exhausted.
+        if col < width:
+          result.add s[i ..< i + r.size]
+        i += r.size
+      elif col + rw > width:
+        # Would exceed budget.
+        if rw == 2 and col + 1 == width:
+          # Wide rune at the exact half-boundary: pad with a space.
+          result.add ' '
+        # Either way, stop.
+        break
+      else:
+        result.add s[i ..< i + r.size]
+        col += rw
+        i += r.size
