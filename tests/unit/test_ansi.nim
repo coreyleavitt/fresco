@@ -95,3 +95,25 @@ suite "displayWidth":
     # U+FE0F VARIATION SELECTOR-16 in UTF-8 is \xEF\xB8\x8F
     let withVS = "a" & "\xEF\xB8\x8F"
     check displayWidth(withVS) == 1
+
+  test "SS2 (ESC N + one char) contributes zero cells":
+    # ESC N x — SS2 single-shift introduces one char from G2; all 3 bytes → 0
+    check displayWidth("a" & "\x1bNx" & "b") == 2
+    check displayWidth("\x1bNx") == 0
+
+  test "SS3 (ESC O + one char) contributes zero cells":
+    # ESC O x — SS3 single-shift; same treatment as SS2
+    check displayWidth("a" & "\x1bOx" & "b") == 2
+    check displayWidth("\x1bOx") == 0
+
+  test "DCS string sequence (ESC P ... ST) contributes zero cells":
+    # ESC P payload ESC \  — all bytes → 0 display columns
+    check displayWidth("\x1bP1;2;3|payload\x1b\\" & "x") == 1
+    # BEL-terminated DCS
+    check displayWidth("\x1bPdata\x07y") == 1
+
+  test "APC (ESC _) and PM (ESC ^) string sequences contribute zero cells":
+    # APC: ESC _ ... ESC \
+    check displayWidth("\x1b_appcmd\x1b\\" & "z") == 1
+    # PM: ESC ^ ... ESC \
+    check displayWidth("\x1b^privmsg\x1b\\" & "w") == 1

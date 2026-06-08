@@ -160,8 +160,10 @@ proc displayWidth*(s: string): int =
         inc i
         while i < s.len and s[i].ord notin {0x40..0x7E}: inc i
         if i < s.len: inc i
-      of ']':
-        # OSC: ESC ] ... (BEL | ESC \)
+      of ']', 'P', '^', '_':
+        # OSC (ESC ]), DCS (ESC P), PM (ESC ^), APC (ESC _):
+        # string sequences terminated by BEL or ST (ESC \).
+        # Entire payload contributes 0 display columns.
         inc i
         while i < s.len:
           if s[i] == '\x07':
@@ -169,6 +171,12 @@ proc displayWidth*(s: string): int =
           if s[i] == '\x1b' and i + 1 < s.len and s[i+1] == '\\':
             i += 2; break
           inc i
+      of 'N', 'O':
+        # SS2 (ESC N) / SS3 (ESC O): single-shift; introduces ONE further
+        # character from the G2/G3 set.  Skip both the designator and that
+        # introduced byte → 0 display columns for all three bytes.
+        inc i  # skip designator
+        if i < s.len: inc i  # skip introduced char
       else:
         # Two-byte ESC-something (e.g. ESC 7 / ESC 8).
         inc i
