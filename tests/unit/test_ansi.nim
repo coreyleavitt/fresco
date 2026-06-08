@@ -153,3 +153,37 @@ suite "clipToWidth":
 
   test "negative width returns empty string":
     check clipToWidth("hello", -1) == ""
+
+  # --- slice 1b: reset-on-cut + OSC-8 close ---
+
+  test "styled cut appends SGR reset":
+    let clipped = clipToWidth("\x1b[31mredish\x1b[0m", 3)
+    check clipped.startsWith("\x1b[31mred")
+    check clipped.endsWith("\x1b[0m")
+    check displayWidth(clipped) == 3
+
+  test "conservative double-SGR cut still appends reset":
+    let clipped = clipToWidth("\x1b[1m\x1b[22mlongtext", 3)
+    check clipped.endsWith("\x1b[0m")
+
+  test "no SGR - no reset appended":
+    check clipToWidth("plaintext", 3) == "pla"
+
+  test "uncut styled string returned unchanged":
+    let s = "\x1b[31mhi\x1b[0m"
+    check clipToWidth(s, 10) == s
+
+  test "OSC-8 hyperlink cut mid-text gets closed":
+    # Link open: ESC ] 8 ; ; http://x ESC \
+    # Link text: linktext
+    # Link close: ESC ] 8 ; ; ESC \
+    let linkOpen  = "\x1b]8;;http://x\x1b\\"
+    let linkClose = "\x1b]8;;\x1b\\"
+    let input = linkOpen & "linktext" & linkClose
+    let clipped = clipToWidth(input, 3)
+    # Must start with the link-open and have "lin"
+    check clipped.startsWith(linkOpen)
+    check clipped.contains("lin")
+    # Must contain the OSC-8 close (no SGR was open, so no SGR reset)
+    check clipped.contains(linkClose)
+    check displayWidth(clipped) == 3

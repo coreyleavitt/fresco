@@ -194,11 +194,19 @@ proc clipToWidth*(s: string, width: int): string =
   ## display budget.  Wide runes that would overhang the boundary are replaced
   ## by a single space so no partial glyph is emitted.
   ## `width` ≤ 0 ⇒ `""`.
+  ##
+  ## Style hygiene at the cut (slice 1b):
+  ## - If the string was actually truncated AND any SGR (`ESC [ … m`) was
+  ##   emitted before the cut, a closing `ESC [0m` is appended.
+  ## - If an OSC-8 hyperlink was opened (non-empty URI) and not closed before
+  ##   the cut, `ESC ]8;;ESC\` is appended after the SGR reset (if any).
   if width <= 0: return ""
-  # Fast path: string already fits.
+  # Fast path: string already fits — return unchanged, no hygiene appended.
   if displayWidth(s) <= width: return s
   var col = 0
   var i = 0
+  var sgrSeen = false      # any SGR (ESC [ … m) emitted before cut
+  var osc8Open = false     # OSC-8 hyperlink with non-empty URI is active
   while i < s.len:
     let b = s[i]
     if b == '\x1b':
@@ -210,17 +218,40 @@ proc clipToWidth*(s: string, width: int): string =
         break
       case s[i]
       of '[':
+        # CSI: scan to final byte in 0x40..0x7E
         inc i
         while i < s.len and s[i].ord notin {0x40..0x7E}: inc i
         if i < s.len: inc i
+        # If final byte is 'm', it's an SGR.
+        if i > 0 and s[i - 1] == 'm':
+          sgrSeen = true
       of ']', 'P', '^', '_':
+        # OSC / DCS / PM / APC: string sequences terminated by BEL or ST.
+        let oscIntro = s[i]  # remember which introducer
         inc i
+        let payloadStart = i
         while i < s.len:
           if s[i] == '\x07':
             inc i; break
           if s[i] == '\x1b' and i + 1 < s.len and s[i+1] == '\\':
             i += 2; break
           inc i
+        # Track OSC-8 hyperlink state.
+        # OSC-8 form: ESC ] 8 ; params ; uri ST  (open when uri non-empty)
+        #             ESC ] 8 ; ; ST              (close — empty uri)
+        if oscIntro == ']':
+          # Extract the payload (between the ']' and the terminator).
+          let payload = s[payloadStart ..< i - (if i >= 2 and s[i-1] == '\\': 2
+                                                 elif i >= 1 and s[i-1] == '\x07': 1
+                                                 else: 0)]
+          # Check for OSC-8: payload starts with "8;"
+          if payload.len >= 2 and payload[0] == '8' and payload[1] == ';':
+            # Find the second ';' to locate the URI field.
+            var semi2 = 2
+            while semi2 < payload.len and payload[semi2] != ';': inc semi2
+            if semi2 < payload.len:
+              let uri = payload[semi2 + 1 ..< payload.len]
+              osc8Open = uri.len > 0
       of 'N', 'O':
         inc i
         if i < s.len: inc i
@@ -243,9 +274,16 @@ proc clipToWidth*(s: string, width: int): string =
         if rw == 2 and col + 1 == width:
           # Wide rune at the exact half-boundary: pad with a space.
           result.add ' '
-        # Either way, stop.
-        break
+        # Either way, stop — append hygiene suffixes and exit.
+        if sgrSeen: result.add "\x1b[0m"
+        if osc8Open: result.add "\x1b]8;;\x1b\\"
+        return
       else:
         result.add s[i ..< i + r.size]
         col += rw
         i += r.size
+  # Reached end of string after emitting all scheduled escapes past the last
+  # visible rune (trailing escapes that fit within or at the boundary).
+  # We already broke when display budget ran out above, so if we land here the
+  # string was not cut mid-visible-rune — hygiene is handled in the loop's
+  # early-return above; nothing extra needed here.
