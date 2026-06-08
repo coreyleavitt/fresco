@@ -16,4 +16,15 @@ deps {
     intonaco git=(url)"https://github.com/coreyleavitt/intonaco.git" ref="main"
 }
 
+// Test-only deps. milpa resolves these for fresco's own build/test but
+// NEVER lets them enter a downstream graph (a transitive dep's dev-deps
+// are excluded), so proptest's z3/softlink pull stays out of amoxtli and
+// anything else that depends on fresco.
+dev-deps {
+    // Property-based testing — choice-sequence engine. Sibling lib at
+    // /projects/nimlibs/proptest; local= pins to the working tree. Used
+    // by the tier-1 property suites (e.g. clipToWidth, slice 1c).
+    proptest local="/home/corey/projects/nimlibs/proptest"
+}
+
 kind "library"

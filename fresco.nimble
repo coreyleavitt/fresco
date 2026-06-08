@@ -62,6 +62,7 @@ task test, "run all tests":
     "tests/unit/test_infer_caps.nim",
     "tests/unit/test_xmodule_caps.nim",
     "tests/unit/test_devtools.nim",
+    "tests/unit/test_clip_proptest.nim",
   ]
   let integrationTests = @[
     "tests/integration/test_termios_pty.nim",
