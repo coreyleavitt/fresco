@@ -67,6 +67,7 @@ task test, "run all tests":
     "tests/unit/test_layout_blank_fill.nim",
     "tests/unit/test_altscreen_cap.nim",
     "tests/unit/test_altscreen.nim",
+    "tests/unit/test_altscreen_cap_gate.nim",
   ]
   let integrationTests = @[
     "tests/integration/test_termios_pty.nim",
