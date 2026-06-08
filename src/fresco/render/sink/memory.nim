@@ -39,9 +39,9 @@ proc commit*(s: MemorySink, layout: Layout) =
   ## elaboration.
   s.rows = newSeq[string](layout.height)
   for r in layout.regions:
-    for i in 0 ..< r.target.len:
+    for i in 0 ..< r.rows.len:
       let dstRow = r.row + i
       if dstRow < 0 or dstRow >= layout.height: continue
-      s.rows[dstRow] = r.target[i]
+      s.rows[dstRow] = r.rows[i]
     r.pending = false
     r.pendingScroll = 0

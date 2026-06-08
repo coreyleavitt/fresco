@@ -71,7 +71,7 @@ suite "devtools panel: end-to-end smoke (PTY)":
       # events rendered via the widget.
       let streamR = screen.regions[1]
       var sawSignalWrite = false
-      for line in streamR.target:
+      for line in streamR.rows:
         if "write x=2" in line: sawSignalWrite = true
       check sawSignalWrite
 

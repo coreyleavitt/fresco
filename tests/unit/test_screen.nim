@@ -75,13 +75,13 @@ suite "Region flush semantics":
     # Regression for round-2 H4: previously `resize` clamped r.height
     # but left r.target's stale rows in place, so the next flush
     # would emit rows past the new region bottom into whatever sits
-    # below. After the fix, `r.target.len <= r.height` is an invariant.
+    # below. After the fix, `r.rows.len <= r.height` is an invariant.
     let s = newScreen(10, 20)
     let r = newRegion(s, 5, 0, 5, 20)
     r.set(["a", "b", "c", "d", "e"])
-    check r.target.len == 5
+    check r.rows.len == 5
     # Simulate a SIGWINCH that shrunk the terminal so the region
     # overflows the bottom edge — setSize does the clamping + target
     # truncation that `resize` would do internally on a real SIGWINCH.
     setSize(s, 7, 20)
-    check r.target.len <= r.height
+    check r.rows.len <= r.height

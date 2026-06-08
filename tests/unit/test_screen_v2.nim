@@ -36,11 +36,11 @@ suite "Screen v2: reactive size signal":
     let s = newScreen(10, 20)
     let r = newRegion(s, row = 5, col = 0, height = 5, width = 20)
     r.set(["a", "b", "c", "d", "e"])
-    check r.target.len == 5
+    check r.rows.len == 5
     # Shrink the terminal so the region overflows the new height.
     setSize(s, 7, 20)
     check r.height == 2          # 7 - 5 (row) = 2
-    check r.target.len == 2       # target truncated to fit
+    check r.rows.len == 2       # target truncated to fit
 
   test "setSize clamps a region whose origin is now outside the screen":
     let s = newScreen(10, 20)
@@ -136,7 +136,7 @@ suite "Screen v2: sink-polymorphic Screen[S]":
         observed.add(sizeSig)
     setSize(s, 7, 20)
     check r.height == 2          # 7 - 5 = 2
-    check r.target.len == 2       # truncated
+    check r.rows.len == 2       # truncated
     check observed[^1] == (7, 20) # signal updated
 
 suite "Screen v2: auto-paint":

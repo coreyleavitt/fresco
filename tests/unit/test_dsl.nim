@@ -73,12 +73,12 @@ suite "DSL: region block":
       region(r):
         row 0, [title]:  title
         row 1, [count]:  $count
-    check r.target[0] == "hello"
-    check r.target[1] == "0"
+    check r.rows[0] == "hello"
+    check r.rows[1] == "0"
     title := "world"
-    check r.target[0] == "world"
+    check r.rows[0] == "world"
     count := 5
-    check r.target[1] == "5"
+    check r.rows[1] == "5"
 
   test "rows arm binds a slice from a seq signal":
     let s = newScreen(10, 20)
@@ -88,9 +88,9 @@ suite "DSL: region block":
       region(r):
         row 0, []:          "header"
         rows 1..3, [items]: items
-    check r.target == @["header", "a", "b", "c"]
+    check r.rows == @["header", "a", "b", "c"]
     items := @["x", "y"]
-    check r.target == @["header", "x", "y", ""]
+    check r.rows == @["header", "x", "y", ""]
 
   test "row index can be a computed expression":
     let s = newScreen(5, 20)
@@ -99,9 +99,9 @@ suite "DSL: region block":
     discard createRoot:
       region(r):
         row r.height - 1, [footer]: footer
-    check r.target[2] == "end"
+    check r.rows[2] == "end"
     footer := "stop"
-    check r.target[2] == "stop"
+    check r.rows[2] == "stop"
 
   test "^N from-end indexing":
     let s = newScreen(10, 20)
@@ -112,8 +112,8 @@ suite "DSL: region block":
       region(r):
         row 0,  [title]:  title
         row ^1, [status]: status     # last row of region (index 4)
-    check r.target[0] == "top"
-    check r.target[4] == "bot"
+    check r.rows[0] == "top"
+    check r.rows[4] == "bot"
 
   test "rows A..^N slice with from-end end":
     let s = newScreen(10, 20)
@@ -124,6 +124,6 @@ suite "DSL: region block":
         row 0, []:           "header"
         rows 1..^1, [items]: items   # rows 1..4
         # nothing at the bottom
-    check r.target == @["header", "a", "b", "c", "d"]
+    check r.rows == @["header", "a", "b", "c", "d"]
     items := @["x"]
-    check r.target == @["header", "x", "", "", ""]
+    check r.rows == @["header", "x", "", "", ""]

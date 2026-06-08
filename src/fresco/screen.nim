@@ -25,7 +25,7 @@ import intonaco/reactive
 # be imported explicitly by their consumers.
 export terminal
 
-export layout.Region, layout.set, layout.markDirty, layout.setRow, layout.scrollUp
+export layout.Region, layout.set, layout.markDirty, layout.setRow, layout.scrollUp, layout.rows, layout.resizeRows
 
 # --- TIOCGWINSZ bindings --------------------------------------------------
 
@@ -228,8 +228,7 @@ proc setSize*[S: Sink](s: Screen[S], height, width: int) =
       r.width = 0
     elif r.col + r.width > width:
       r.width = width - r.col
-    if r.target.len > r.height:
-      r.target.setLen(r.height)
+    r.resizeRows(r.height)
     r.pending = true
   resizePending = false
   s.size.set((height, width))

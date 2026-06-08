@@ -55,7 +55,7 @@ proc flush*(t: TerminalSink, layout: Layout): string =
         r.row, r.row + r.height - 1, r.pendingScroll)
       r.pendingScroll = 0
     if not r.pending: continue
-    result &= t.renderer.render(r.row, r.col, r.target)
+    result &= t.renderer.render(r.row, r.col, r.rows)
     r.pending = false
 
 proc commit*(t: TerminalSink, layout: Layout) =

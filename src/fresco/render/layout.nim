@@ -77,3 +77,19 @@ proc scrollUp*(r: Region, n: int) =
   ## semantics (TerminalSink emits DECSTBM; MemorySink shifts the
   ## captured buffer or falls back to repaint).
   r.pendingScroll = n
+
+proc rows*(r: Region): lent seq[string] =
+  ## Read accessor for the region's current target rows. Zero-copy
+  ## (lent return). Callers use r.rows[i] / r.rows.len / r.rows ==
+  ## seq comparisons. The underlying field (`target`) will become
+  ## private in slice 2b once all direct accesses are through this
+  ## accessor.
+  r.target
+
+proc resizeRows*(r: Region, n: int) =
+  ## Truncate `target` to at most `n` rows. Matches the inline
+  ## `if r.target.len > r.height: r.target.setLen(r.height)` idiom
+  ## used in screen.nim's setSize. Grows are not needed here (the
+  ## set/setRow procs handle that); this is truncation-only.
+  if r.target.len > n:
+    r.target.setLen(n)
