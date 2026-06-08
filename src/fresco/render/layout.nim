@@ -54,11 +54,21 @@ proc set*(r: Region, content: openArray[string]) =
   ## differences from the prior commit. Overflowing rows
   ## (content longer than `r.height`) are truncated. Each row is
   ## clipped to `r.width` display columns via `clipToWidth`.
-  let src = if content.len <= r.height: content[0 ..< content.len]
-            else: content[0 ..< r.height]
-  r.target = newSeq[string](src.len)
-  for i, line in src:
-    r.target[i] = clipToWidth(line, r.width)
+  ##
+  ## `target` is always sized to `r.height`. Rows from `content.len`
+  ## through `r.height-1` are explicitly blanked ("") so that old
+  ## content from a previous larger `set` does not linger (the
+  ## stale-on-shrink fix).
+  let srcLen = min(content.len, r.height)
+  if r.target.len != r.height:
+    r.target.setLen(r.height)
+  for i in 0 ..< srcLen:
+    let clipped = clipToWidth(content[i], r.width)
+    if r.target[i] != clipped:
+      r.target[i] = clipped
+  for i in srcLen ..< r.height:
+    if r.target[i] != "":
+      r.target[i] = ""
   r.pending = true
 
 proc markDirty*(r: Region) =
