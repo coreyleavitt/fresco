@@ -24,6 +24,7 @@ import ./render/sink
 import ./render/sink/terminal
 import ./terminal/ansi
 import ./terminal/altscreen_cap
+import ./terminal/termios as termios_mod
 import intonaco/reactive
 import std/posix
 
@@ -75,6 +76,10 @@ proc enter*[S: Sink](s: AltScreen[S]) =
   ## Emit ?1049h (switch to alt screen buffer) and invalidate the sink
   ## so the next paint redraws the entire surface. Call this once before
   ## the first paint tick.
+  ##
+  ## After the write succeeds, registers the fd in the signal-handler's
+  ## async-signal-safe alt-screen state so SIGINT/SIGTERM emit ?1049l
+  ## without heap allocation (raw write of a const byte buffer).
   mixin invalidate
   let seq = altScreenEnter()
   when S is TerminalSink:
@@ -85,10 +90,16 @@ proc enter*[S: Sink](s: AltScreen[S]) =
       if n > 0: written += n
       elif errno == EINTR: continue
       else: break
+    termios_mod.markAltScreenEntered(s.sink.fd)
   s.sink.invalidate()
 
 proc leave*[S: Sink](s: AltScreen[S]) =
   ## Emit ?1049l (restore normal screen buffer). Call on shutdown.
+  ##
+  ## Clears the signal-handler's alt-screen state BEFORE the write so
+  ## a concurrent signal during leave does not double-emit ?1049l.
+  when S is TerminalSink:
+    termios_mod.markAltScreenLeft()
   let seq = altScreenLeave()
   when S is TerminalSink:
     var written = 0

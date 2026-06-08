@@ -86,7 +86,67 @@ var prevSigInt  {.threadvar.}: SigHandler
 var prevSigTerm {.threadvar.}: SigHandler
 var prevSigSegv {.threadvar.}: SigHandler
 
+# --- async-signal-safe alt-screen leave -------------------------------------
+#
+# These threadvars mirror the termios-restore state above. They must be
+# plain C-compatible types (cint / cint-as-bool) so the signal handler can
+# read and write them without any Nim GC interaction.
+#
+# `sigAltScreenFd` holds the output fd to write the leave sequence on.
+# It is set by `markAltScreenEntered` (called from AltScreen.enter) and
+# cleared by `markAltScreenLeft` (called from AltScreen.leave / finally).
+#
+# `sigAltScreenActive` is a cint used as a boolean flag (0 = not entered,
+# 1 = entered). The signal handler emits the leave sequence only when this
+# is non-zero. Plain assignment is async-signal-safe on all targets.
+var sigAltScreenFd     {.threadvar.}: cint   ## output fd, or -1 when none
+var sigAltScreenActive {.threadvar.}: cint   ## 1 when alt-screen is live
+
+# Compile-time constant byte buffer for `\x1b[?1049l` — no heap alloc.
+# Using a `array[N, byte]` lets us pass `addr` directly to the POSIX
+# write() syscall, which is on the async-signal-safe list (POSIX.1-2017).
+const AltScreenLeaveBytes*: array[8, byte] =
+  [0x1b'u8, 0x5b, 0x3f, 0x31, 0x30, 0x34, 0x39, 0x6c]
+  # ESC  [    ?    1    0    4    9    l
+
+proc markAltScreenEntered*(fd: cint) {.gcsafe, raises: [].} =
+  ## Record that the alternate-screen buffer has been entered on `fd`.
+  ## Called by AltScreen.enter AFTER the ?1049h write succeeds.
+  ## Setting two plain cint threadvars is async-signal-safe by assignment.
+  sigAltScreenFd     = fd
+  sigAltScreenActive = 1
+
+proc markAltScreenLeft*() {.gcsafe, raises: [].} =
+  ## Clear the alt-screen signal state. Called by AltScreen.leave and
+  ## by withAltScreen's finally block so normal exit doesn't double-emit.
+  sigAltScreenActive = 0
+  sigAltScreenFd     = -1
+
 proc termiosSignalHandler(sig: cint) {.noconv.} =
+  # Emit ?1049l FIRST (before termios restore) so the terminal returns to
+  # the primary buffer before we hand control back to cooked mode. Only
+  # emit when alt-screen was actually entered — the flag prevents the
+  # sequence appearing for programs that never called enter().
+  #
+  # ASYNC-SIGNAL-SAFE: const array on the stack (no heap), raw POSIX
+  # write() syscall, plain cint reads. No Nim GC calls anywhere in
+  # this path.
+  if sigAltScreenActive != 0 and sigAltScreenFd >= 0:
+    # Stack-local copy of the const — no heap alloc.
+    var buf = AltScreenLeaveBytes
+    var remaining = buf.len
+    var offset = 0
+    while remaining > 0:
+      let n = posix.write(sigAltScreenFd, addr buf[offset], remaining)
+      if n > 0:
+        offset += n
+        remaining -= n
+      elif errno == EINTR:
+        continue
+      else:
+        break
+    sigAltScreenActive = 0
+
   # Restore innermost-first: each stored scope undoes its own change
   # so the final state is the termios as of process startup. When
   # depth exceeded MaxSignalSnapshots, we restore from the first
