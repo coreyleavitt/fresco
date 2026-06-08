@@ -114,6 +114,43 @@ proc flush*(s: AltScreen[TerminalSink]): string =
   s.sink.flush(s.layout)
 
 # ---------------------------------------------------------------------------
+# Exception-safe scope (slice 6a)
+# ---------------------------------------------------------------------------
+
+template withAltScreen*[S: Sink, C: GrantsAltScreenCap](
+    sink: S, h, w: int, cap: C,
+    screenIdent: untyped, body: untyped) =
+  ## Exception-safe alternate-screen scope.
+  ##
+  ## Guarantees ?1049l (leave) is emitted on every exit path — normal
+  ## return AND exception unwind. The template creates the AltScreen,
+  ## then as its FIRST action inside the `try` calls `enter()` (?1049h).
+  ## The `finally` unconditionally calls `leave()` (?1049l).
+  ##
+  ## Ordering rationale:
+  ##   - `newAltScreen` has no terminal side-effects; safe before `try`.
+  ##   - `enter()` is the first statement *inside* `try` so that even a
+  ##     raise from `enter` hits `finally`. `leave()` on a screen that
+  ##     never completed `enter` is safe: it simply writes ?1049l, which
+  ##     is a harmless no-op when ?1049h was never emitted.
+  ##   - This closes the window where ?1049h is emitted but the `try` has
+  ##     not yet begun (a construct-then-enter-outside-try ordering would
+  ##     leak the alt buffer if enter raised between construction and try).
+  ##
+  ## Hygiene: `screenIdent` is injected into the body scope via
+  ## `{.inject.}` so the caller can name the binding freely.
+  ##
+  ## Usage:
+  ##   withAltScreen(sink, h, w, cap, s):
+  ##     s.paint()
+  let screenIdent {.inject.} = newAltScreen(sink, h, w, cap)
+  try:
+    screenIdent.enter()
+    body
+  finally:
+    screenIdent.leave()
+
+# ---------------------------------------------------------------------------
 # Resize (SIGWINCH path)
 # ---------------------------------------------------------------------------
 
