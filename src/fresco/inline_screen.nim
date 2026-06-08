@@ -34,6 +34,8 @@
 ## markDirty, setRow, paint — all delegate to the same Layout + Sink
 ## machinery. No separate renderer is needed.
 
+{.experimental: "callOperator".}
+
 import intonaco/reactive
 import ./render/layout
 import ./render/sink
