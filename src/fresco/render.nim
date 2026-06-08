@@ -48,6 +48,11 @@ proc render*(r: Renderer, row, col: int,
   for i, line in target:
     let absRow = row + i
     if absRow < 0 or absRow >= r.height: continue
+    when compileOption("assertions"):
+      doAssert displayWidth(line) <= r.width,
+        "render: line display width " & $displayWidth(line) &
+        " exceeds renderer width " & $r.width &
+        " at row " & $absRow & " col " & $col
     if r.known[absRow] and r.current[absRow] == line:
       continue
     result &= cursorTo(absRow + 1, col + 1)

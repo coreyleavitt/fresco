@@ -45,3 +45,14 @@ suite "Renderer diff":
     discard r.render(0, 0, ["same"])
     r.resize(5, 30)
     check r.render(0, 0, ["same"]) != ""
+
+when compileOption("assertions"):
+  suite "Renderer width guard":
+
+    test "render raises AssertionDefect when a line exceeds renderer width":
+      ## Inject an over-wide row directly: create a Renderer with width=3,
+      ## then pass a line whose displayWidth is 5. No clip occurs inside
+      ## render() — the doAssert is the tripwire.
+      let r = newRenderer(5, 3)
+      expect AssertionDefect:
+        discard r.render(0, 0, ["hello"])  # displayWidth("hello") == 5 > 3
