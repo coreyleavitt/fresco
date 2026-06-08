@@ -119,6 +119,38 @@ suite "displayWidth":
     # PM: ESC ^ ... ESC \
     check displayWidth("\x1b^privmsg\x1b\\" & "w") == 1
 
+suite "physicalRows":
+
+  test "exact-width line measures as 1 row":
+    # dw == width: exactly fills one row, no wrap
+    let line = "hello"  # displayWidth == 5
+    check physicalRows(line, 5) == 1
+
+  test "width+1 wraps to 2 rows":
+    # dw == 6, width == 5: just over one wrap boundary
+    let line = "hello!"  # displayWidth == 6
+    check physicalRows(line, 5) == 2
+
+  test "multi-row case (3x width)":
+    # dw == 15, width == 5: exactly 3 rows
+    let line = "aaaaabbbbbccccc"  # displayWidth == 15
+    check physicalRows(line, 5) == 3
+
+  test "pure-SGR line (zero displayWidth) measures to 1 row":
+    # max(1, ...) guard: a line that is all escape sequences still
+    # advances at least 1 physical row
+    check physicalRows("\x1b[31m\x1b[0m", 80) == 1
+    check physicalRows("", 80) == 1
+
+  test "ceil-not-floor: dw=5 width=3 gives 2":
+    # floor(5/3)==1, ceil(5/3)==2
+    let line = "abcde"  # displayWidth == 5
+    check physicalRows(line, 3) == 2
+
+  test "width <= 0 returns 1 (divide-by-zero guard)":
+    check physicalRows("hello", 0)  == 1
+    check physicalRows("hello", -1) == 1
+
 suite "clipToWidth":
 
   test "plain ASCII truncation":

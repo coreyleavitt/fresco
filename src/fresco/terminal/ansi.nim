@@ -188,6 +188,20 @@ proc displayWidth*(s: string): int =
         result += (if isWide(r): 2 else: 1)
       i += r.size
 
+proc physicalRows*(line: string, width: int): int =
+  ## Number of physical terminal rows that `line` occupies when rendered
+  ## into a terminal of `width` columns. Committed scrollback content is
+  ## raw/unclipped, so a long line wraps across multiple rows.
+  ##
+  ## Formula: ``max(1, ceil(displayWidth(line) / width))``.
+  ##
+  ## Guards:
+  ## - ``width <= 0`` ⇒ 1  (TIOCGWINSZ may report 0; avoid division by zero)
+  ## - ``max(1, …)``  ⇒ pure-SGR / empty lines still advance one row
+  if width <= 0: return 1
+  let dw = max(0, displayWidth(line))
+  result = max(1, (dw + width - 1) div width)
+
 proc clipToWidth*(s: string, width: int): string =
   ## Return a prefix of `s` whose display width is at most `width` columns.
   ## ANSI escape sequences are copied through verbatim and do not consume
