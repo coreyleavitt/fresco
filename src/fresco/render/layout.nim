@@ -16,10 +16,12 @@
 ## `Layout` (this file) + `Sink` (a concept) lets every frontend
 ## pick its own emission strategy while sharing the spatial model.
 
+import ../terminal/ansi
+
 type
   Region* = ref object
     row*, col*, height*, width*: int
-    target*: seq[string]
+    target: seq[string]
     pending*: bool
     pendingScroll*: int
       ## When non-zero, the sink should perform a DECSTBM-style scroll
@@ -50,11 +52,13 @@ proc newRegion*(l: Layout, row, col, height, width: int): Region =
 proc set*(r: Region, content: openArray[string]) =
   ## Queue a new target. The next sink commit will emit only the
   ## differences from the prior commit. Overflowing rows
-  ## (content longer than `r.height`) are truncated.
-  if content.len <= r.height:
-    r.target = @content
-  else:
-    r.target = @(content[0 ..< r.height])
+  ## (content longer than `r.height`) are truncated. Each row is
+  ## clipped to `r.width` display columns via `clipToWidth`.
+  let src = if content.len <= r.height: content[0 ..< content.len]
+            else: content[0 ..< r.height]
+  r.target = newSeq[string](src.len)
+  for i, line in src:
+    r.target[i] = clipToWidth(line, r.width)
   r.pending = true
 
 proc markDirty*(r: Region) =
@@ -65,6 +69,24 @@ proc markDirty*(r: Region) =
 proc setRow*(r: Region, idx: int, line: string) =
   ## Replace a single row in the region's target. Idx is region-local
   ## (0 == top of region). Out-of-bounds is silently dropped.
+  ## The row is clipped to `r.width` display columns via `clipToWidth`.
+  if idx < 0 or idx >= r.height: return
+  while r.target.len <= idx: r.target.add ""
+  let clipped = clipToWidth(line, r.width)
+  if r.target[idx] != clipped:
+    r.target[idx] = clipped
+    r.pending = true
+
+proc setRowChecked*(r: Region, idx: int, line: string) {.inline.} =
+  ## Store a pre-clipped row directly, bypassing `clipToWidth`. For
+  ## callers that have already called `clipToWidth` (e.g. the DECSTBM
+  ## fast-path) so the chokepoint doesn't re-clip in a hot loop.
+  ## Under assertions, a doAssert guards that `line` is truly within
+  ## width. Exported as an internal-perf API.
+  when compileOption("assertions"):
+    doAssert displayWidth(line) <= r.width,
+      "setRowChecked: line display width " & $displayWidth(line) &
+      " exceeds region width " & $r.width
   if idx < 0 or idx >= r.height: return
   while r.target.len <= idx: r.target.add ""
   if r.target[idx] != line:
@@ -81,9 +103,8 @@ proc scrollUp*(r: Region, n: int) =
 proc rows*(r: Region): lent seq[string] =
   ## Read accessor for the region's current target rows. Zero-copy
   ## (lent return). Callers use r.rows[i] / r.rows.len / r.rows ==
-  ## seq comparisons. The underlying field (`target`) will become
-  ## private in slice 2b once all direct accesses are through this
-  ## accessor.
+  ## seq comparisons. The underlying field (`target`) is private;
+  ## all writes go through `set`/`setRow`/`setRowChecked`.
   r.target
 
 proc resizeRows*(r: Region, n: int) =
