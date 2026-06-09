@@ -73,6 +73,7 @@ task test, "run all tests":
     "tests/unit/test_surface_discharge.nim",
     "tests/unit/test_inline_commit.nim",
     "tests/unit/test_inline_setsize.nim",
+    "tests/unit/test_inline_tail_buffer.nim",
   ]
   let integrationTests = @[
     "tests/integration/test_termios_pty.nim",
@@ -104,6 +105,7 @@ task test, "run all tests":
     "tests/integration/test_inline_trigger.nim",
     "tests/integration/test_both_mode_headless.nim",
     "tests/integration/test_inline_pty_scrollback.nim",
+    "tests/integration/test_inline_tail_pty.nim",
   ]
   for t in unitTests & integrationTests:
     exec "nim r --hints:off --warnings:off --path:src " & t

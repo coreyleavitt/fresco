@@ -122,7 +122,166 @@ proc markAltScreenLeft*() {.gcsafe, raises: [].} =
   sigAltScreenActive = 0
   sigAltScreenFd     = -1
 
+# --- async-signal-safe inline-tail buffer (tier-3 teardown contract) --------
+#
+# Mirrors the committed `ScrollbackLog.pending` tail in already-serialized
+# bytes. Maintained in HEALTHY context (LogSink.append pushes; drain pops).
+# On SIGSEGV/SIGABRT/SIGBUS the handler does one raw write — no heap read,
+# no alloc, no GC call. Same trust model as the alt-screen const byte buffer.
+#
+# Layout:
+#   sigTailBuf  — fixed byte array; holds the serialized tail
+#   sigTailLen  — valid byte count [0..InlineTailCap)
+#   sigTailFd   — output fd (-1 when disarmed)
+#   sigTailActive — 1 when an inline screen is armed
+
+const InlineTailCap* = 8192
+  ## Maximum bytes held in the static crash-flush tail buffer.
+  ## On overflow the OLDEST bytes are dropped so the NEWEST committed
+  ## output survives into the crash handler's single raw write.
+
+var sigTailBuf    {.threadvar.}: array[InlineTailCap, byte]
+var sigTailLen    {.threadvar.}: cint
+var sigTailFd     {.threadvar.}: cint
+var sigTailActive {.threadvar.}: cint
+
+proc armInlineTail*(fd: cint) {.gcsafe, raises: [].} =
+  ## Arm the static tail buffer for `fd`. Called by `withInlineScreen` /
+  ## armInlineTailBuffer after the screen is constructed.
+  sigTailFd     = fd
+  sigTailLen    = 0
+  sigTailActive = 1
+
+proc disarmInlineTail*() {.gcsafe, raises: [].} =
+  ## Disarm the tail buffer. Called on normal teardown so the crash
+  ## handler does not emit stale bytes from a previous session.
+  sigTailActive = 0
+  sigTailFd     = -1
+  sigTailLen    = 0
+
+proc setInlineTail*(lines: openArray[string]) {.gcsafe, raises: [].} =
+  ## REBUILD the tail buffer from `lines` (no incremental update — a full
+  ## rebuild avoids any desync between the mirror and the real pending seq).
+  ## Each line is followed by 0x0A (newline). On overflow the OLDEST bytes
+  ## are dropped so the buffer holds the LAST InlineTailCap bytes.
+  ## No-op when disarmed (sigTailActive == 0). Alloc-free: writes directly
+  ## into the fixed array byte-by-byte.
+  if sigTailActive == 0: return
+
+  # First pass: measure total length so we know whether to truncate.
+  var total = 0
+  for s in lines:
+    total += s.len + 1   # +1 for '\n'
+
+  if total == 0:
+    sigTailLen = 0
+    return
+
+  if total <= InlineTailCap:
+    # Fits entirely: fill from position 0.
+    var pos = 0
+    for s in lines:
+      for ch in s:
+        sigTailBuf[pos] = ch.byte
+        inc pos
+      sigTailBuf[pos] = 0x0A
+      inc pos
+    sigTailLen = cint(pos)
+  else:
+    # Overflow: keep only the LAST InlineTailCap bytes.
+    # Build into a temp offset into conceptual space then copy the tail window.
+    # We walk through the serialized sequence twice:
+    #   1st pass: find the byte-offset where the surviving tail starts.
+    #   2nd pass: fill sigTailBuf from that offset.
+    let dropBytes = total - InlineTailCap
+    # Walk through lines to find which line/byte we start keeping from.
+    var bytesSeen = 0
+    var startLine = 0
+    var startByte = 0   # byte offset within startLine's "line\n" string
+    var found = false
+    for li in 0 ..< lines.len:
+      let lineLen = lines[li].len + 1  # +1 for newline
+      if bytesSeen + lineLen > dropBytes:
+        startLine = li
+        startByte = dropBytes - bytesSeen
+        found = true
+        break
+      bytesSeen += lineLen
+    if not found:
+      # All lines fit in drop zone — should not happen given total > InlineTailCap
+      # but be safe.
+      sigTailLen = 0
+      return
+    # Fill sigTailBuf with the surviving tail.
+    var pos = 0
+    for li in startLine ..< lines.len:
+      let s = lines[li]
+      let lineLen = s.len + 1
+      let skip = if li == startLine: startByte else: 0
+      # Emit bytes from `skip` in the "line\n" sequence.
+      var byteInLine = 0
+      while byteInLine < lineLen and pos < InlineTailCap:
+        if byteInLine >= skip:
+          if byteInLine < s.len:
+            sigTailBuf[pos] = s[byteInLine].byte
+          else:
+            sigTailBuf[pos] = 0x0A
+          inc pos
+        inc byteInLine
+    sigTailLen = cint(pos)
+
+# --- test seams (no real SIGSEGV needed) ------------------------------------
+
+proc inlineTailSnapshot*(): string {.gcsafe.} =
+  ## Return the current tail buffer contents as a string (for test assertions).
+  ## Reads sigTailBuf[0 ..< sigTailLen] into a new Nim string.
+  if sigTailLen <= 0: return ""
+  result = newString(sigTailLen)
+  for i in 0 ..< sigTailLen:
+    result[i] = chr(sigTailBuf[i])
+
+proc flushInlineTailNow*() {.gcsafe, raises: [].} =
+  ## Runs ONLY the handler's tail-write block against sigTailFd, WITHOUT
+  ## termios restore or re-raise. Lets tests point sigTailFd at a pipe and
+  ## assert the exact bytes the crash handler would emit, deterministically.
+  if sigTailActive != 0 and sigTailFd >= 0 and sigTailLen > 0:
+    var remaining = int(sigTailLen)
+    var offset = 0
+    while remaining > 0:
+      let n = posix.write(sigTailFd, addr sigTailBuf[offset], remaining)
+      if n > 0:
+        offset += n
+        remaining -= n
+      elif errno == EINTR:
+        continue
+      else:
+        break
+    sigTailActive = 0
+
 proc termiosSignalHandler(sig: cint) {.noconv.} =
+  # --- Tier-3 teardown contract: flush the pre-serialized inline tail -------
+  #
+  # If an inline screen is armed and the buffer has content, emit it now via
+  # a single raw POSIX write loop — no alloc, no heap read, no GC call.
+  # This is the static-tail-buffer flush described in the teardown contract
+  # (RFC S5 slice 15). The alt-screen and inline-tail surfaces are mutually
+  # exclusive, so ordering between the two blocks is moot.
+  #
+  # ASYNC-SIGNAL-SAFE: cint reads, fixed array addr, raw POSIX write().
+  if sigTailActive != 0 and sigTailFd >= 0 and sigTailLen > 0:
+    var tailRemaining = int(sigTailLen)
+    var tailOffset = 0
+    while tailRemaining > 0:
+      let n = posix.write(sigTailFd, addr sigTailBuf[tailOffset], tailRemaining)
+      if n > 0:
+        tailOffset += n
+        tailRemaining -= n
+      elif errno == EINTR:
+        continue
+      else:
+        break
+    sigTailActive = 0  # prevent double-emit on nested signal
+
   # Emit ?1049l FIRST (before termios restore) so the terminal returns to
   # the primary buffer before we hand control back to cooked mode. Only
   # emit when alt-screen was actually entered — the flag prevents the

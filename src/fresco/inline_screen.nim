@@ -41,6 +41,7 @@ import intonaco/reactive
 import ./render/layout
 import ./render/sink
 import ./terminal/ansi as ansiMod
+import ./terminal/termios as termiosMod
 
 export layout.Region, layout.set, layout.markDirty, layout.setRow,
        layout.scrollUp, layout.rows, layout.resizeRows
@@ -144,6 +145,9 @@ proc append*(s: LogSink, line: string) =
   ## non-SGR CSI, non-OSC-8 OSC sequences. Neither appendLine nor bindScrollback
   ## sanitize — all content passes through here.
   s.log.pending.add(ansiMod.sanitizeLogLine(line))
+  # Mirror the updated pending seq into the static tail buffer so the crash
+  # handler can flush it async-signal-safely. Lines are already sanitized.
+  termiosMod.setInlineTail(s.log.pending)
   if s.log.notify != nil:
     s.log.notify()
 
@@ -445,6 +449,8 @@ proc commitOneBatch[S: Sink](s: InlineScreen[S]): string =
   let batch = s.logDrainBatch(kCommitBatch)
   if batch.len == 0:
     return ""
+  # Mirror the now-smaller pending seq into the tail buffer after the drain.
+  termiosMod.setInlineTail(s.log.pending)
 
   # Compute liveTop = min r.row over all regions (0 if no regions).
   var liveTop = 0
@@ -487,6 +493,8 @@ proc teardownFlush*[S: Sink](s: InlineScreen[S]) =
   let n = s.logPendingLen()
   if n == 0: return
   let batch = s.logDrainBatch(n)   # drain ALL
+  # Mirror empty pending into the tail buffer (teardown drained everything).
+  termiosMod.setInlineTail(s.log.pending)
   when compiles(s.sink.writeAll("")):   # TerminalSink path
     var bytes = ""
     for line in batch: bytes &= line & "\n"
