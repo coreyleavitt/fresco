@@ -130,7 +130,7 @@ suite "S0a: runHeadless InlineScreen[MemorySink] overload":
         s.appendLine("committed line 2")
         discard s.commit()
 
-      let result = await runHeadless(s, app, inputs = @[])
+      let result = await runHeadless(s, app, events = @[])
       check result.committedRows.len == 2
       check result.committedRows[0] == "committed line 1"
       check result.committedRows[1] == "committed line 2"

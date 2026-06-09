@@ -77,6 +77,7 @@ task test, "run all tests":
     "tests/unit/test_inline_lifecycle.nim",
     "tests/unit/test_scrollback_screenmodel.nim",
     "tests/unit/test_memory_sink_committed.nim",
+    "tests/unit/test_headless_resize_inject.nim",
   ]
   let integrationTests = @[
     "tests/integration/test_termios_pty.nim",

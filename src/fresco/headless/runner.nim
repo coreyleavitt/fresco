@@ -27,8 +27,33 @@ type
       ## Committed (scrollback) lines captured from an
       ## InlineScreen[MemorySink] run. Empty when using the plain
       ## `runHeadless(app, layout)` overload (no InlineScreen).
-      ## Populated by `runHeadless(screen, app, inputs)` after the
+      ## Populated by `runHeadless(screen, app, events)` after the
       ## InlineScreen-level drain completes.
+
+  InlineEventKind* = enum
+    ievKey     ## A keyboard event delivered to the app via pushKey.
+    ievResize  ## A terminal-resize event applied via s.setSize(h, w).
+
+  InlineEvent* = object
+    ## A scripted event in a unified Key|Resize stream for the
+    ## InlineScreen runHeadless overload. Constructed via `keyEv` or
+    ## `resizeEv` convenience helpers.
+    case kind*: InlineEventKind
+    of ievKey:
+      key*: KeyEvent
+    of ievResize:
+      resizeH*: int
+      resizeW*: int
+
+proc keyEv*(k: KeyEvent): InlineEvent =
+  ## Construct a Key event for a scripted InlineEvent stream.
+  InlineEvent(kind: ievKey, key: k)
+
+proc resizeEv*(h, w: int): InlineEvent =
+  ## Construct a Resize event for a scripted InlineEvent stream.
+  ## The harness applies `s.setSize(h, w)` then waits one dispatcher
+  ## turn so reactive `liveZoneHeight` updates before the next event.
+  InlineEvent(kind: ievResize, resizeH: h, resizeW: w)
 
 proc runHeadless*(app: HeadlessApp,
                   inputs: seq[KeyEvent],
@@ -79,7 +104,7 @@ type
 
 proc runHeadless*(screen: InlineScreen[MemorySink],
                   app: HeadlessInlineApp,
-                  inputs: seq[KeyEvent],
+                  events: seq[InlineEvent] = @[],
                   timeout: Duration = 1.seconds,
                   perKeySettle: Duration = 1.milliseconds
                  ): Future[HeadlessResult] {.async: (raises: [Exception]).} =
@@ -88,6 +113,14 @@ proc runHeadless*(screen: InlineScreen[MemorySink],
   ## the harness drains the screen after the app finishes and surfaces
   ## both `rows` (live band) and `committedRows` (scrollback) in
   ## `HeadlessResult`.
+  ##
+  ## The `events` parameter is a unified Key|Resize stream (see
+  ## `InlineEvent`, `keyEv`, `resizeEv`). Key events are delivered to the
+  ## app via `pushKey`; Resize events call `s.setSize(h, w)` and then
+  ## yield one dispatcher turn (`perKeySettle`) so reactive
+  ## `liveZoneHeight` and any watchResizes-style relayout can react
+  ## before the next event. Passing `events = @[]` (the default) is
+  ## equivalent to the old `inputs = @[]` call.
   ##
   ## Use this overload when the consumer is an InlineScreen-based app
   ## (e.g., amoxtli's REPL) and the test needs to assert on committed
@@ -98,9 +131,16 @@ proc runHeadless*(screen: InlineScreen[MemorySink],
   let stream = newSyntheticInputStream()
   let appFut = app(stream)
 
-  for ev in inputs:
-    stream.pushKey(ev)
-    await sleepAsync(perKeySettle)
+  for ev in events:
+    case ev.kind
+    of ievKey:
+      stream.pushKey(ev.key)
+      await sleepAsync(perKeySettle)
+    of ievResize:
+      screen.setSize(ev.resizeH, ev.resizeW)
+      # Yield one dispatcher turn so the reactive liveZoneHeight Dynamic
+      # (and any watchResizes-style subscriber) updates before the next event.
+      await sleepAsync(perKeySettle)
 
   if not appFut.finished:
     discard await appFut.withTimeout(timeout)
@@ -110,10 +150,17 @@ proc runHeadless*(screen: InlineScreen[MemorySink],
       except CancelledError: discard
       except CatchableError: discard
 
-  # Final drain: call InlineScreen-level commit so pending ScrollbackLog
-  # batches flush through commitInline → sink.committedRows. This is the
-  # key difference from `sink.commit(layout)` which bypasses the log.
-  discard screen.commit()
+  # Final capture: drain any buffered committed lines + capture live band.
+  #
+  # teardownFlush drains pending log lines into sink.committedRows without
+  # checking the bottom-anchor contract — safe even after a resize event
+  # that leaves regions at stale positions. paint() re-renders the current
+  # live band into sink.rows.
+  #
+  # If the app already drained the log via s.commit(), teardownFlush is a
+  # no-op (log empty) and paint() still refreshes the live-band snapshot.
+  screen.teardownFlush()
+  screen.paint()
 
   result.rows = screen.sink.rows
   result.committedRows = screen.sink.committedRows
