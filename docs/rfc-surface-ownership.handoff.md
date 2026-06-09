@@ -1,0 +1,95 @@
+# Surface ownership — handoff
+
+- **RFC:** `docs/rfc-surface-ownership.md`
+- **Stage:** 3 (implement slices via `/tdd`, `/loop` grind) — IN PROGRESS. Stage 2 (architect rounds 1/2/3) COMPLETE. S3-scope fork RESOLVED (Option A).
+- **Resume:** continue the grind from the next unimplemented slice. Command:
+  `/loop implement the next unimplemented RFC slice with /tdd, following the standing rules; after each slice report one progress line (e.g. "slice 5/26 done"); stop when every slice is implemented`
+
+### Stage-3 progress (25 slices total; order: S0 0a·0b·1a·1b·1c·2a·2b·3·4 → S1 4b·5·5b·6a·6b → S2 7·8 → S3 9·10·10b·10c·11·12 → S4 13·13b·14)
+- [x] 0a displayWidth zero-width runes → 0 — `cf10716` (555 OK)
+- [x] 0b displayWidth SS2/SS3 + DCS/PM/APC → 0 — `d1adcda` (559 OK)
+- [x] 1a clipToWidth escape-aware width truncation — `b11192c`
+- [x] 1b clipToWidth reset-on-cut + OSC-8 close — `3711a56` (573 OK)
+- [x] 1c clipToWidth proptest suite — `08ce889` (576 OK). proptest wired as fresco milpa **`dev-deps {}`** (z3/softlink never enter fresco's graph). Used proptest DSL `property/given/ensure` + custom `ansiStringStrategy` (UTF-8 + SGR + OSC-8). 3 props: width-bound, idempotence, no-split-escapes.
+      • UPSTREAM FIX (required, done): intonaco declared proptest as a regular `deps` (test-only → wrong); moved to `dev-deps`, committed `1b085b2`, **pushed to intonaco main** (fresco fetches intonaco from github main). Also required a milpa **reinstall** (`uv tool install --from /projects/milpa milpa --reinstall`) to pick up the dev-deps + local-provenance fix — the earlier `a9ed/4c35` provenance mismatch was an old-milpa bug, gone after reinstall.
+      • fresco dep fetch: `milpa -C fresco fetch` (default `~/.cache/milpa` CAS, matches ./dev mount) → `resolved 8 deps`, nim.cfg has `_deps/proptest/src`. fresco has NO `./dev deps` target — deps fetched manually via host `milpa fetch`.
+- [x] 2a Region.rows/resizeRows accessors + ~76 callers migrated (pure seam) — `d284dad` (576 OK)
+- [x] 2b clip at Region.set/setRow chokepoint + target privatized + setRowChecked — `d8ae786` (584 OK)
+- [x] 3 Region.set blank-fills shrunk rows — `3a36de1` (589 OK)
+- [x] 4 render() width-guard debug doAssert — `b61d997` (590 OK)  ←★ **STAGE S0 COMPLETE** (fixes live amoxtli corruption)
+- [x] S1 4b AltScreenCap via intonaco `cap` macro (marker+grant+`GrantsAltScreenCap` concept) — `0d2e09d` (593 OK)
+- [x] S1 5 AltScreen[S] type + enter/leave + SIGWINCH invalidate — `ab5150d` (596 OK)
+      • Design note: `AltScreen` composes Layout+Sink (HAS-A, not wrapping Screen[S]); cap threaded as generic constraint `[C: GrantsAltScreenCap]` (compile-time, zero runtime). `enter()`/`leave()` use `when S is TerminalSink` for the fd write (MemorySink skips escapes). **`enter()` is EXPLICIT (not auto-on-construct)** so regions set up before `?1049h` emits — correct sequencing, mirrors amoxtli REPL lifecycle.
+- [x] S1 5b fail-fast cap gate (`acquireAltScreenGrant` + `AltScreenUnsupportedError` + `AltScreenCapWitness`, no silent fallback) — `2aead50` (600 OK)
+- [x] S1 6a `withAltScreen` exception-safe restore template (enter first-in-try, leave in finally, error propagates) — `61184f7` (603 OK)
+- [x] S1 6b async-signal-safe alt-screen leave (const `array[8,byte]` `\x1b[?1049l` + raw `write(fd)`, NO heap in handler; integrated into the ONE termios handler — no pre-existing "exit-action stack", RFC phrasing was aspirational) + NEW `tests/integration/helpers/pty_subprocess.nim` (`runInPty`/`openPtyPair`; PTYs work in-container) — `722aae5` (606 OK)  ←★ **STAGE S1 COMPLETE**
+- [x] S2 7 InlineScreen + private ScrollbackLog behind LogSink + ScreenView — `15d361d` (624 OK). In `src/fresco/inline_screen.nim`. 5 capability-split tests prove `logSink.takeBatch`/`.log`/`.logDrainBatch` all unreachable; pinned render byte-identical to Screen[S].
+      • ⚠ DEVIATIONS for S3 to know: (1) `InlineScreen.liveZoneHeight` is **`Dynamic[int]`** not `Signal[int]` — call it as `s.liveZoneHeight()`. (2) pipeline drain/count accessors are `s.logDrainBatch(max)` / `s.logPendingLen()` **on InlineScreen** (exported); `takeBatch`/`pendingLen` stay private on ScrollbackLog. S3 commit pipeline uses the InlineScreen accessors. (3) `paint*(s: InlineScreen)` exists; `screenView*(s)` projects to ScreenView. (4) flags `pendingCommit`/`commitInProgress` fields exist (unused until 10c).
+- [x] S2 8 structural discharge of AltScreen committedCount=0 (compiles() witnesses, no leak) — `eba16b0` (631 OK)  ←★ **STAGE S2 COMPLETE** (surface-typing core done)
+      • note: `{.experimental: "callOperator".}` now canonical in inline_screen.nim (the `dynamic`/`size()` call needs it at the source module, not just importers).
+- [x] S3 9 physicalRows integer ceilDiv+max(1,…) — `6bd5a13` (637 OK). Free fn in `terminal/ansi.nim` next to displayWidth (no slice-7 dep). `(dw+width-1) div width`, width<=0⇒1, dw=max(0,displayWidth). 6 cases incl. pure-SGR→1 + ceil-not-floor (5/3→2).
+- [x] S3 10+10b commit pipeline (SYNCHRONOUS) + cursor-home — `0bfbfed` (642 OK). `commit*[S](s): string {.discardable.}` in inline_screen.nim is the byte-capture seam (returns emitted bytes). Byte-builder `commitInline*(t, layout, committed, liveTop, inputRow, inputCol): string` on **TerminalSink** (owns the private renderer); `writeAll*` extracted from commit; `ensureRenderer` helper. Step order (round-3 CRITICALs, verified): pre-drain pendingScroll→`cursorTo(liveTop+1,1)`→committed prints raw+`\n`→`renderer.invalidate()`→repaint band→`cursorTo(input)`. Cache invalidate IS between committed-emit and repaint (CRITICAL-1). cursorTo(liveTop) is the next bytes after pre-drain scrollUpRegion (CRITICAL-2). Zero-height clamp PRESERVES pending (returns ""). `const kCommitBatch* = 256`. NEW fields `inputRow*/inputCol*` (default 0, caller-set) = declared input point. Synchronous full-drain `while logPendingLen()>0` loop; debug asserts `logPendingLen==0` + no-region-pending after.
+      • ⚠ DEVIATIONS for 10c/11: (1) `physicalRows` cursor-accounting call + assert lives INSIDE `commitInline` (terminal.nim), NOT the orchestrator — importing ansi/terminal into inline_screen.nim collides `unicode.size(Rune)` with the `dynamic liveZoneHeight` call-operator. Same reason: orchestrator reads height via `s.liveZoneHeight.get()` not `s.liveZoneHeight()`. (2) sink dispatch is `when compiles(s.sink.commitInline(...))` (TerminalSink path) else `s.paint()` (MemorySink = no scrollback) — MemorySink path is untested until slice 13. (3) `commitInProgress` set/cleared simply as scaffolding; the async trigger + idempotent callSoon + auto-paint suppression + multi-batch *yielding* are 10c (NOT yet built — slice 10 is synchronous full-drain).
+- [ ] **S3 ← NEXT:** 10c trigger(pendingCommit dirty flag)+commitInProgress gate+callSoon multi-batch yield · 11 bindScrollback+appendLine over LogSink (single sanitize chokepoint) · 12 InlineScreen.setSize reflow (real new code, zero-height clamp + scrollUp guard)
+- [ ] S4: 13 headless both-mode · 13b PTY committed-scrollback (tier-2, uses 6b's pty_subprocess.nim) · 14 examples
+
+### Resume next: slice 10c
+`/loop implement the next unimplemented RFC slice with /tdd, following the standing rules; after each slice report one progress line (e.g. "slice 5/26 done"); stop when every slice is implemented`
+S3 is where the round-3 CRITICALs live — read the RFC's **"Concurrency"** + **slice 10** sections carefully before 10. Key: commit pipeline is `commit*(screen)`, ONE public proc, dispatcher-atomic, `commitInProgress`-gated; native-scroll then **invalidate live-band cache** before repaint (the root-bug-reborn fix); pre-drain pendingScroll then **immediately** `cursorTo(live-top)` (DECSTBM leaves cursor at 1,1). S3 uses InlineScreen accessors `logDrainBatch`/`logPendingLen` + `liveZoneHeight()` (Dynamic, call with `()`).
+
+## Build/dep note (since this session)
+proptest is a fresco milpa **dev-dep** now (z3/softlink excluded from graph). If `nim.cfg`/`_deps` are missing on a fresh checkout, regenerate host-side: `milpa -C /home/corey/projects/fresco fetch` (default `~/.cache/milpa` CAS — matches `./dev` mount). Requires the milpa upstream fix already pushed to intonaco main (`1b085b2`) + a current milpa install. fresco has no `./dev deps` target.
+
+## Where we are
+RFC drafted, sliced, and revised by **three** architect rounds (4 lenses each: depth/breadth/design/feasibility). Round 3 was a narrow S3-hardening pass (per Corey: "we can make sure S3 is 100% solid this way" — which resolved the round-2 S3-scope fork toward Option A). Round-3 fixes applied. Stage 2 done. Next is Stage 3 (`/loop` + `/tdd`), then Stage 4 (`/code-review`).
+
+This is **fresco-repo work** (`/projects/fresco`), not amoxtli. amoxtli's REPL is the proof-consumer and migrates only after fresco ships this.
+
+## Round-2 changes applied (this session)
+Six CRITICALs + the strong agreements, all clear-best, applied to the RFC:
+- **Height formula off-by-one (depth):** `Σ max(1, ceil(displayWidth/width))` — a printed line always advances ≥1 row even at displayWidth 0; plus `width<=0` divide-by-zero guard. (slice 9)
+- **Shared-`Region` two-writer window (breadth ×2):** new "Single-writer discipline" subsection — `bindScrollback` effects only enqueue into the log; only the pipeline flushes; live-band `pendingScroll` pre-drained at commit entry. (Concurrency + slices 10/11)
+- **Async-signal-safety (depth):** signal-path `?1049l` must be a `const` byte buffer written via raw `write(fd,…)`, not heap-allocating `altScreenLeave()`. New section + slice 6b rewrite.
+- **`AltScreenCap` doesn't exist (feasibility):** define a minimal cap token inline as new **slice 4b**; don't block on the unbuilt terminal-interaction RFC.
+- **`Region.target` privatization breaks ~70 callers (feasibility):** split slice 2 → **2a** (read accessor + migrate all callers) + **2b** (flip private + clip + `setRowChecked` escape).
+- **`compiles()`/negativeCompile unsound + redundant (depth + feasibility):** slice 8 now uses in-language `check not compiles(…)` with a **positive witness** to kill the vacuous-pass trap; dropped the `nim check` subprocess helper.
+- **`ScreenLike` concept dropped (design CRITICAL):** phantom abstraction (widgets take `Region`/`RenderTarget`, not the screen) + Nim-concept fragility → replaced with explicit `ScreenView` value object; open question resolved.
+- **`ScrollbackLog` given real ops** (`append`/`flush`/`pendingLen`); **constructors** take caller-owned `size: Signal` (+ static convenience); **`liveZoneHeight`** derivation pinned; **`commitLine`→`appendLine`** (enqueue semantic, kills git-vocab collision).
+- New sections: **Multi-screen composition** (one fd → v0 caller-serialization invariant), **Teardown contract** (flush pending + final paint on exit, best-effort), **batch watermark** for large committed bursts (`callSoon` between batches).
+- Sanitization spec made precise (strip C0 controls incl. `\t`/`\b`; OSC-close on cut); slice 0b two-byte SS2/SS3 skip; slice 6a `withAltScreen` enter-inside-try atomicity; new **slice 13b** PTY tier-2 committed-scrollback test (closes the zero-automated-coverage gap); research-artifact ships post-amoxtli-migration (no over-claim).
+- Line-number corrections: `render.nim:59` = definition; `terminal.nim:54-55` = call; MemorySink `pendingScroll` zeroing is by-design (`layout.nim:29-32`), not a defect.
+
+## Slices (post-round-3; ~26 — S3 hardened)
+S0: 0a displayWidth zero-width · 0b displayWidth SS2/SS3/DCS/PM/APC (2-byte skip) · 1a clipToWidth width-trunc · 1b reset-on-cut + OSC-close · 1c proptest (incl. OSC) · **2a target accessor + migrate ~70 callers** · **2b flip private + clip + setRowChecked** · 3 blank-fill shrink · 4 render() debug guard
+S1: **4b define AltScreenCap** · 5 AltScreen type + enter/leave + SIGWINCH (TerminalSink.flush) · 5b capability gate · 6a exception-restore (enter-inside-try) · 6b signal-restore async-safe (+ pty_subprocess helper)
+S2: 7 distinct types + **private ScrollbackLog behind LogSink capability** (append-only; pipeline-private takeBatch/pendingLen) + ScreenView · 8 structural discharge via compiles() + positive witness
+S3 (hardened round 3): 9 physicalRows **integer ceilDiv** + max(1,…) · 10 **`commit*` proc** — take-batch + pre-drain pendingScroll **+ explicit cursorTo(live-top)** → native scroll → **invalidate live-band cache** → repaint → cursor-home; **testable byte-capture seam**; completion asserts · 10b cursor-home · **10c NEW: pipeline trigger (pendingCommit dirty flag) + commitInProgress gate** · 11 bindScrollback + appendLine over **LogSink** (single sanitize chokepoint) + effect-ordering invariant · 12 **InlineScreen.setSize is real code** (not Screen[S] reuse) + zero-height clamp + scrollUp guard + resize-between-batches re-read liveZoneHeight
+S4: 13 headless both-mode · **13b PTY committed-scrollback (tier-2)** · 14 examples
+
+## Round-3 changes applied (S3 hardening — this session)
+Round 3 found 5 CRITICALs, all in S3, all clear-best (no forks). The headline: **round-2's two fixes were in tension** — the `kCommitBatch`/`callSoon` bounded-latency batching reintroduced the very dispatcher yields that round-2's "commit is atomic" guarantee relied on being absent. Reconciled + the rest:
+- **Native-scroll cache coherence (depth CRITICAL-1 — the root bug, reborn).** Committed `print + \n` shifts every physical row up by n but does NOT touch the `Renderer` cache (`render.nim:51,83-91`), so the live-band repaint's diff skips now-stale rows. Fix: **invalidate the live-band cache after the native-scroll emit, before repaint** (`Region.row` stays — band is bottom-anchored). New step 5 in slice 10.
+- **Batching breaks atomicity → `commitInProgress` gate (depth HIGH-1 + breadth #5, independently found).** A flag held across ALL batches suppresses `runAutoPaint` for the whole burst; per-batch pre-drain + fresh `liveZoneHeight` re-read. Concurrency section rewritten.
+- **Pipeline trigger was unspecified (breadth #2, depth).** Nothing said what *calls* `commit*`. New **slice 10c**: `pendingCommit` dirty flag, idempotent `callSoon`, trigger on `log.pendingLen > 0` (not `anyPending` — zero-region screens would buffer forever).
+- **DECSTBM pre-drain leaves cursor at (1,1) (depth CRITICAL-2).** Must emit explicit `cursorTo(live-top)` as the immediately-following bytes before any committed print. Slice 10 step 2.
+- **Slice 10 wasn't tier-1 testable (feasibility CRITICAL).** `TerminalSink.flush` can't capture native-scroll committed bytes. Fix: `commit*` computes-then-emits a single byte string exposed to tests; populate `log` via `appendLine` directly (no slice-11 dep).
+- **Slice 12 "reuses existing setSize" was FALSE (feasibility CRITICAL).** `setSize` is on `Screen[S]`, a distinct type; `InlineScreen.setSize` is real new code. Slice 12 rewritten to implement it (+ don't copy `screen.nim`'s setLen-without-clip bug).
+- **Single-writer made STRUCTURAL (design CRITICAL).** Was a prose invariant (the "load-bearing convention" smell this RFC condemns). Now: private `ScrollbackLog` + enqueue-only `LogSink` capability handed to bindings — they *cannot* flush/write-Region because the symbol isn't in reach. Compile-time-first, per fresco's non-negotiable.
+- **ScrollbackLog interface (design HIGH ×2 + LOW).** `takeBatch` replaces `flush():int` (responsibility smear) + public `pendingLen` (policy leak; now pipeline-private); `commit*` named as the one public proc; `flush` vocabulary collision avoided.
+- Smaller: slice 9 integer `ceilDiv` (not float ceil / not floor div) — depth + feasibility both flagged; `scrollUp` zero-height guard; pipeline completion asserts; mid-commit SIGTERM teardown; appendLine-from-effect ordering doc; dynamic-chrome limitation + follow-on.
+
+## Open forks (awaiting Corey)
+- **NONE from round 3** — every finding resolved to a determinate best fix. (The S3-scope fork that was open after round 2 is RESOLVED: invoking round 3 to harden S3 chose Option A.)
+- **Viewport-scroll-during-paint:** v0 stance = "correct only at bottom"; scroll-suspend deferred. Confirm acceptable. (Still open from round 1 — a one-line confirm, not a blocker.)
+
+## Key decisions (this session + prior)
+- **S3-scope resolved → Option A** (unified RFC; harden S3 in place). Round 3 made S3 100% solid rather than spinning it out.
+- **Round-2's batching undermined round-2's atomicity.** The fix is an explicit `commitInProgress` gate, not the absence of `await` — a synchronous pipeline is atomic for free, a batched one is not.
+- **Single-writer is a type, not a comment.** `LogSink` capability split discharges it at compile time (fresco compile-time-first); prose invariants for correctness-critical properties are the same smell as load-bearing `invalidate()`.
+- Native scroll relocates physical rows; the diff cache must be invalidated to match, or the RFC's own root bug recurs inside its pipeline.
+- (Prior) Concept abstractions for the widget surface are a phantom — explicit value objects beat Nim concepts when nothing polymorphises. Define our own minimal cap rather than block on an unbuilt sibling RFC.
+
+## Review ledger (stage 4)
+| id | sev | finding | status | proof / reason |
+|----|-----|---------|--------|----------------|
+| —  | —   | (stage 4 not started) | — | — |
