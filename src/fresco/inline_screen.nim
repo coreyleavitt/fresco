@@ -36,12 +36,19 @@
 
 {.experimental: "callOperator".}
 
+import chronos
 import intonaco/reactive
 import ./render/layout
 import ./render/sink
 
 export layout.Region, layout.set, layout.markDirty, layout.setRow,
        layout.scrollUp, layout.rows, layout.resizeRows
+
+# Defined locally to avoid importing screen.nim (which transitively imports
+# terminal.nim → ansi.nim → std/unicode, triggering a `unicode.size` ambiguity
+# with the Signal call-operator in this module's constructors).
+# Must match screen.AutoPaintInterval = 33.milliseconds.
+const AutoPaintInterval* = 33.milliseconds
 
 const kCommitBatch* = 256
   ## Per-batch watermark for the inline commit pipeline. The synchronous
@@ -58,6 +65,10 @@ type
     ## Bindings never receive a ScrollbackLog — only a LogSink.
     pending: seq[string]
       ## Buffered committed lines since the last takeBatch call.
+    notify: proc() {.gcsafe.}
+      ## Installed by newInlineScreen after construction.
+      ## Called by append after every enqueue. The closure captures the
+      ## screen and calls scheduleCommit. nil until the screen is wired.
 
 # ---------------------------------------------------------------------------
 # Public types
@@ -108,6 +119,10 @@ type
     inputCol*: int
       ## Live band's declared cursor-home column (0-based). Set by the caller
       ## to position the cursor after each commit. Default: 0.
+    commitRuns*: int
+      ## Incremented once per driveCommit invocation that actually drains
+      ## (i.e. when logPendingLen > 0 at the top of driveCommit).
+      ## Test-observable batch counter (slice 10c).
 
 # ---------------------------------------------------------------------------
 # LogSink ops — append is the SOLE public door
@@ -118,6 +133,8 @@ proc append*(s: LogSink, line: string) =
   # slice 11: sanitize here (strip \n/\r/C0-controls/motion-CSI/state-OSC,
   # keep SGR) before enqueueing.
   s.log.pending.add(line)
+  if s.log.notify != nil:
+    s.log.notify()
 
 # ---------------------------------------------------------------------------
 # Pipeline-private ops — NOT exported (no asterisk)
@@ -147,6 +164,95 @@ proc logSink*[S: Sink](s: InlineScreen[S]): LogSink =
   LogSink(log: s.log)
 
 # ---------------------------------------------------------------------------
+# Auto-paint gate predicate (private layout helper)
+# ---------------------------------------------------------------------------
+
+proc anyPendingLayout(layout: Layout): bool =
+  for r in layout.regions:
+    if r.pending or r.pendingScroll != 0: return true
+  false
+
+# ---------------------------------------------------------------------------
+# Shared single-batch emit body
+# ---------------------------------------------------------------------------
+# commitOneBatch must be forward-declared here as a concept because the
+# generic body uses `mixin` to defer `commitInline`/`writeAll` resolution.
+# It is defined after the constructors section (below) where it can see
+# the full InlineScreen[S] type — both forms are in scope for Nim's
+# two-pass resolution of generic instantiation.
+
+proc commitOneBatch[S: Sink](s: InlineScreen[S]): string
+
+# ---------------------------------------------------------------------------
+# scheduleCommit / driveCommit — the async-trigger machinery
+#
+# Implementation note: driveCommit is NOT an {.async.} proc. Generic async
+# procs in this chronos version have a known instantiation-site macro-
+# expansion issue: `sleepAsync` returns an `InternalRaisesFuture[void,
+# (CancelledError,)]`, which requires `internalRaiseIfError(fut, raises, info)`
+# (3-arg form) to be visible at instantiation time. In modules that import
+# inline_screen but not chronos directly, this macro is not in scope, causing
+# "attempting to call undeclared routine: internalRaiseIfError". Rather than
+# require every consumer to import chronos, we implement the yield-between-
+# batches step via callSoon (a plain proc call) which is directly callable
+# without the async machinery. callSoon schedules a `proc(pointer){.gcsafe.}`
+# on the dispatcher's callback queue — exactly one dispatcher turn of latency.
+# ---------------------------------------------------------------------------
+
+proc scheduleCommit[S: Sink](s: InlineScreen[S])  # forward decl for notify
+
+proc driveCommitStep[S: Sink](s: InlineScreen[S]) {.gcsafe.}
+
+proc scheduleCommit[S: Sink](s: InlineScreen[S]) =
+  ## Idempotent: if already scheduled or a batch chain is in flight, return.
+  ## A running driveCommit loops until logPendingLen==0 and will pick up
+  ## any newly-appended lines, so a second schedule is never needed.
+  if s.pendingCommit or s.commitInProgress:
+    return
+  s.pendingCommit = true
+  # Schedule one dispatcher turn away. callSoon takes CallbackFunc =
+  # proc(pointer){.gcsafe, raises:[].}. We wrap in a closure via a tiny
+  # proc that discards the pointer argument.
+  let capture = s
+  proc cb(p: pointer) {.gcsafe, raises: [].} =
+    try: driveCommitStep(capture)
+    except CatchableError: discard
+  callSoon(cb, nil)
+
+proc driveCommitStep[S: Sink](s: InlineScreen[S]) {.gcsafe.} =
+  ## One step of the bounded-latency multi-batch driver.
+  ## On the FIRST call (pendingCommit was set): clear flag, set commitInProgress,
+  ## drain one batch, then re-schedule if more remain.
+  ## commitInProgress spans ALL batches (cleared only on final drain or
+  ## zero-height clamp) so auto-paint cannot interleave mid-burst.
+  if not s.commitInProgress:
+    # First entry: test-and-clear the pending flag.
+    s.pendingCommit = false
+    if s.logPendingLen() == 0:
+      return
+    inc s.commitRuns
+    s.commitInProgress = true
+
+  # Per-batch step: drain one batch.
+  # Zero-height clamp: band not open; preserve pending, stop.
+  if s.liveZoneHeight.get() <= 0:
+    s.commitInProgress = false
+    return
+
+  discard commitOneBatch(s)
+
+  if s.logPendingLen() > 0:
+    # More remain. Yield one dispatcher turn then continue.
+    # commitInProgress stays true across the gap.
+    let capture = s
+    proc cb(p: pointer) {.gcsafe, raises: [].} =
+      try: driveCommitStep(capture)
+      except Exception: discard
+    callSoon(cb, nil)
+  else:
+    s.commitInProgress = false
+
+# ---------------------------------------------------------------------------
 # Constructors
 # ---------------------------------------------------------------------------
 
@@ -167,7 +273,7 @@ proc newInlineScreen*[S: Sink](sink: S, size: Signal[(int, int)],
   # there is no competing `get` in unicode.
   dynamic liveZoneHeight:
     max(0, get(size)[0] - ph)
-  InlineScreen[S](
+  let scr = InlineScreen[S](
     layout: newLayout(h, w),
     log: log,
     sink: sink,
@@ -178,7 +284,10 @@ proc newInlineScreen*[S: Sink](sink: S, size: Signal[(int, int)],
     commitInProgress: false,
     inputRow: 0,
     inputCol: 0,
+    commitRuns: 0,
   )
+  scr.log.notify = proc() {.gcsafe.} = scheduleCommit(scr)
+  scr
 
 proc newInlineScreen*[S: Sink](sink: S, h, w: int,
     pinnedHeaderRows = 1): InlineScreen[S] =
@@ -242,6 +351,43 @@ proc screenView*[S: Sink](s: InlineScreen[S]): ScreenView =
 # seam for tests). The async dirty-flag / callSoon scheduling is slice 10c.
 # ---------------------------------------------------------------------------
 
+proc commitOneBatch[S: Sink](s: InlineScreen[S]): string =
+  ## Drain one batch from the log through the sink. Returns the emitted bytes
+  ## (empty string for non-TerminalSink paths). Does NOT touch commitInProgress.
+  ## Zero-height clamp: if liveZoneHeight <= 0, returns "" without draining.
+  ##
+  ## This is the single shared emit body used by both `commit*` (synchronous
+  ## full-drain) and `driveCommit` (async multi-batch driver). One implementation
+  ## of the emit logic — no drift between the sync and async paths.
+  mixin commitInline, writeAll
+
+  if s.liveZoneHeight.get() <= 0:
+    return ""
+
+  let batch = s.logDrainBatch(kCommitBatch)
+  if batch.len == 0:
+    return ""
+
+  # Compute liveTop = min r.row over all regions (0 if no regions).
+  var liveTop = 0
+  if s.layout.regions.len > 0:
+    liveTop = s.layout.regions[0].row
+    for r in s.layout.regions:
+      if r.row < liveTop:
+        liveTop = r.row
+
+  # Dispatch to the sink-appropriate batch handler.
+  # TerminalSink: commitInline handles the full pipeline (steps 2,4,5,6,7)
+  #   including the physicalRows cursor-accounting assertion.
+  # Other sinks (MemorySink etc.): no committed-line emit; repaint live band.
+  when compiles(s.sink.commitInline(s.layout, batch, liveTop, 0, 0)):
+    let bytes = s.sink.commitInline(s.layout, batch, liveTop,
+                                    s.inputRow, s.inputCol)
+    s.sink.writeAll(bytes)
+    result = bytes
+  else:
+    s.paint()
+
 proc commit*[S: Sink](s: InlineScreen[S]): string {.discardable.} =
   ## Synchronous full-drain commit. Batch-loops until the log is empty.
   ##
@@ -269,29 +415,9 @@ proc commit*[S: Sink](s: InlineScreen[S]): string {.discardable.} =
     s.commitInProgress = false
     return ""
 
-  # Batch loop: synchronous full-drain.
-  while s.logPendingLen() > 0:
-    let batch = s.logDrainBatch(kCommitBatch)
-
-    # Compute liveTop = min r.row over all regions (0 if no regions).
-    var liveTop = 0
-    if s.layout.regions.len > 0:
-      liveTop = s.layout.regions[0].row
-      for r in s.layout.regions:
-        if r.row < liveTop:
-          liveTop = r.row
-
-    # Dispatch to the sink-appropriate batch handler.
-    # TerminalSink: commitInline handles the full pipeline (steps 2,4,5,6,7)
-    #   including the physicalRows cursor-accounting assertion.
-    # Other sinks (MemorySink etc.): no committed-line emit; repaint live band.
-    when compiles(s.sink.commitInline(s.layout, batch, liveTop, 0, 0)):
-      let bytes = s.sink.commitInline(s.layout, batch, liveTop,
-                                      s.inputRow, s.inputCol)
-      s.sink.writeAll(bytes)
-      result &= bytes
-    else:
-      s.paint()
+  # Batch loop: synchronous full-drain via the shared commitOneBatch body.
+  while s.logPendingLen() > 0 and s.liveZoneHeight.get() > 0:
+    result &= commitOneBatch(s)
 
   when compileOption("assertions"):
     doAssert s.logPendingLen() == 0,
@@ -301,3 +427,22 @@ proc commit*[S: Sink](s: InlineScreen[S]): string {.discardable.} =
         "commit: region still pending/scrolling after drain"
 
   s.commitInProgress = false
+
+# ---------------------------------------------------------------------------
+# Auto-paint + shouldAutoPaint predicate (slice 10c)
+# ---------------------------------------------------------------------------
+
+proc shouldAutoPaint*[S: Sink](s: InlineScreen[S]): bool =
+  ## True iff auto-paint should fire: no commit in progress AND a region is
+  ## pending. Exposed as a testable predicate so tests can assert suppression
+  ## without racing the 33ms timer.
+  (not s.commitInProgress) and anyPendingLayout(s.layout)
+
+proc runAutoPaint*[S: Sink](s: InlineScreen[S]) {.async.} =
+  ## Long-running task that paints the live band whenever a region is dirty
+  ## AND no commit pipeline is in flight. Same lifecycle shape as Screen's
+  ## runAutoPaint: opt-in, explicit cancel, no entanglement with the constructor.
+  while true:
+    await sleepAsync(AutoPaintInterval)
+    if shouldAutoPaint(s):
+      paint(s)

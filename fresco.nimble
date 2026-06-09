@@ -100,6 +100,7 @@ task test, "run all tests":
     "tests/integration/test_context_isolation.nim",
     "tests/integration/test_topology.nim",
     "tests/integration/test_altscreen_signal.nim",
+    "tests/integration/test_inline_trigger.nim",
   ]
   for t in unitTests & integrationTests:
     exec "nim r --hints:off --warnings:off --path:src " & t
