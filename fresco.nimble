@@ -115,6 +115,8 @@ task examples, "compile-check every examples/*.nim":
     "examples/ex03_devtools.nim",
     "examples/ex04_animation.nim",
     "examples/ex05_stopwatch.nim",
+    "examples/altscreen_app.nim",
+    "examples/inline_prompt.nim",
   ]
   for e in examples:
     exec "nim check --hints:off --warnings:off --path:src " & e
