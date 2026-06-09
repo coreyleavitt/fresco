@@ -23,17 +23,25 @@
 
 import chronos
 import std/posix
+import intonaco/reactive
 import ./render/sink
 import ./inline_screen
 import ./terminal/termios
 
 var teardownPipeRegistered {.threadvar.}: bool
   ## Whether the read fd is registered with the chronos dispatcher.
-  ## Prevents double-register if watchTeardownSignals is called more than once.
+  ## Set true when we register the fd; reset false when we unregister it
+  ## (in waitTeardownByte's finally and in withInlineScreen's finally as
+  ## a belt-and-suspenders reset in case cancel hasn't fired yet).
 
 proc waitTeardownByte() {.async.} =
   ## Suspend until the teardown self-pipe is readable, then drain it.
   ## Mirrors screen.nim's waitWinchByte pattern exactly.
+  ##
+  ## H3 lifecycle safety: each call registers the current fd if not already
+  ## registered, and always unregisters in the finally (on both normal
+  ## completion and cancellation). This pairs register/unregister per call
+  ## so successive lifecycles start clean regardless of how the prior one exited.
   let fd = AsyncFD(teardownPipeReadFd())
   if not teardownPipeRegistered:
     try: register(fd) except OSError: discard
@@ -48,6 +56,8 @@ proc waitTeardownByte() {.async.} =
     await fut
   finally:
     try: removeReader(fd) except OSError: discard
+    try: unregister(fd) except OSError: discard
+    teardownPipeRegistered = false
   # Drain whatever arrived (coalesced signals).
   drainTeardownPipe()
 
@@ -62,7 +72,7 @@ proc watchTeardownSignals*[S: Sink](s: InlineScreen[S]) {.async.} =
   ##
   ## Spawn with `asyncSpawn` near the app loop, exactly like `watchResizes`.
   ## armGracefulTeardown() must have been called first so the self-pipe exists.
-  doAssert teardownPipeReadFd() != 0 or true,
+  doAssert gracefulArmed(),
     "fresco: watchTeardownSignals requires armGracefulTeardown() first"
   await waitTeardownByte()
   # Normal context — full teardown pipeline is safe.
@@ -73,9 +83,10 @@ proc watchTeardownSignals*[S: Sink](s: InlineScreen[S]) {.async.} =
 # withInlineScreen — three-tier teardown lifecycle
 # ---------------------------------------------------------------------------
 
-template withInlineScreen*[S: Sink](sink: S, h, w: int, pinnedHeaderRows: int,
-                                    s: untyped, body: untyped) =
-  ## Exception-safe inline-screen scope. fresco owns all THREE teardown tiers:
+template withInlineScreenImpl(sink: untyped, s: untyped, body: untyped) =
+  ## Private shared body for all `withInlineScreen` public overloads.
+  ## At call site `s` is already bound to the constructed InlineScreen.
+  ## All three teardown tiers:
   ##
   ##   tier-1 (normal / exception): `teardownFlush(s)` in `finally` — runs in
   ##     full normal context; all heap operations valid; committed lines always
@@ -105,6 +116,34 @@ template withInlineScreen*[S: Sink](sink: S, h, w: int, pinnedHeaderRows: int,
   ## The watch task needs dispatcher turns supplied by the async `body`. Use
   ## this template inside an `{.async.}` proc — the same requirement as
   ## `watchResizes` and `runAutoPaint`.
+  withCbreak:
+    when compiles(sink.fd):
+      armInlineTail(sink.fd)
+      armGracefulTeardown()
+      let watchFut = watchTeardownSignals(s)
+    try:
+      body
+    finally:
+      teardownFlush(s)
+      when compiles(sink.fd):
+        if not watchFut.finished: watchFut.cancelSoon()
+        # H3: unregister the pipe fd from the chronos dispatcher BEFORE
+        # disarmGracefulTeardown closes it. This ensures the fd number is
+        # removed from the selector before the kernel can reuse it — so the
+        # next lifecycle's register() call on a potentially-recycled fd number
+        # succeeds cleanly. Belt-and-suspenders: waitTeardownByte's finally also
+        # unregisters, but cancelSoon fires on the NEXT dispatcher turn (after
+        # this finally), so we must do it here to be synchronous.
+        if teardownPipeRegistered:
+          try: unregister(AsyncFD(teardownPipeReadFd())) except OSError: discard
+          teardownPipeRegistered = false
+        disarmGracefulTeardown()
+        disarmInlineTail()
+
+template withInlineScreen*[S: Sink](sink: S, h, w: int, pinnedHeaderRows: int,
+                                    s: untyped, body: untyped) =
+  ## Exception-safe inline-screen scope. fresco owns all THREE teardown tiers.
+  ## See `withInlineScreenImpl` for the full contract documentation.
   ##
   ## Hygiene: `s` is injected into the body scope via `{.inject.}` so the
   ## caller names the binding freely.
@@ -117,21 +156,28 @@ template withInlineScreen*[S: Sink](sink: S, h, w: int, pinnedHeaderRows: int,
   ##       discard scr.commit()
   ##   waitFor main()
   let s {.inject.} = newInlineScreen(sink, h, w, pinnedHeaderRows)
-  withCbreak:
-    when compiles(sink.fd):
-      armInlineTail(sink.fd)
-      armGracefulTeardown()
-      let watchFut = watchTeardownSignals(s)
-    try:
-      body
-    finally:
-      teardownFlush(s)
-      when compiles(sink.fd):
-        if not watchFut.finished: watchFut.cancelSoon()
-        disarmGracefulTeardown()
-        disarmInlineTail()
+  withInlineScreenImpl(sink, s, body)
 
 template withInlineScreen*[S: Sink](sink: S, h, w: int,
                                     s: untyped, body: untyped) =
   ## Convenience overload: defaults `pinnedHeaderRows = 1`.
   withInlineScreen(sink, h, w, 1, s, body)
+
+template withInlineScreen*[S: Sink](sink: S, size: Signal[(int, int)],
+                                    pinnedHeaderRows: int,
+                                    s: untyped, body: untyped) =
+  ## Reactive overload: constructs via `newInlineScreen(sink, size,
+  ## pinnedHeaderRows)` so the SIGWINCH handler can write the size signal
+  ## and `liveZoneHeight` reacts. All three teardown tiers are identical to
+  ## the static `h, w` overload — only the constructor differs.
+  ##
+  ## Usage:
+  ##   proc main() {.async.} =
+  ##     let sizeSig = signalC((24, 80))
+  ##     withInlineScreen(newTerminalSink(), sizeSig, 1, scr):
+  ##       scr.appendLine("hello")
+  ##       discard scr.commit()
+  ##   waitFor main()
+  let s {.inject.} = newInlineScreen(sink, size, pinnedHeaderRows)
+  withInlineScreenImpl(sink, s, body)
+
