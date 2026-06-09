@@ -7,6 +7,11 @@
 ##
 ## Generator: plain ASCII + embedded ANSI (SGR + OSC-8 hyperlinks) so the
 ## open-OSC hygiene code path is exercised on every run.
+##
+## sanitizeLogLine property tests (M7a):
+##   P4  Idempotence       — sanitize(sanitize(x)) == sanitize(x)
+##   P5  No C1 in output   — output byte in 0x80..0x9F → invariant violated
+##   P6  No bare ESC       — output contains no trailing/lone \x1b
 
 import std/unittest
 import proptest
@@ -149,3 +154,122 @@ suite "clipToWidth — proptest invariants":
     given s in ansiStringStrategy(),
           w in integers(0, 40)
     ensure hasNoSplitEscapes(clipToWidth(s, w))
+
+# ---------------------------------------------------------------------------
+# Adversarial sanitizeLogLine generator
+# ---------------------------------------------------------------------------
+# Builds strings that mix: printable ASCII, C0 controls, 8-bit C1 bytes
+# (0x80..0x9F), DCS/PM/APC 7-bit sequences, SS2/SS3, SGR CSI, OSC-8,
+# valid multibyte UTF-8, and stray continuation bytes.
+
+proc adversarialSanitizeStrategy(): Strategy[string] =
+  newStrategy(proc(src: var DataSource): string =
+    let nSegs = src.drawInteger(toInt128(0), toInt128(6), toInt128(0)).toInt64.int
+    var acc = ""
+    for _ in 0 ..< nSegs:
+      # kind: 0=printable ASCII, 1=C0 control, 2=C1 byte (0x80..0x9F),
+      #       3=7-bit DCS/PM/APC, 4=SS2/SS3, 5=SGR CSI, 6=OSC-8,
+      #       7=valid multibyte UTF-8 (2-byte, U+00C0..U+07FF),
+      #       8=stray continuation byte (0xA0..0xBF)
+      let kind = src.drawInteger(toInt128(0), toInt128(8), toInt128(0)).toInt64.int
+      case kind
+      of 0:
+        let len = src.drawInteger(toInt128(1), toInt128(4), toInt128(1)).toInt64.int
+        acc.add src.drawString(intervals([(0x20'i32, 0x7e'i32)]), len, len)
+      of 1:
+        # C0 control (non-ESC): pick from 0x00..0x1A, 0x1C..0x1F
+        let b = src.drawInteger(toInt128(0), toInt128(25), toInt128(0)).toInt64.int
+        acc.add chr(if b < 27: b else: b + 2)  # skip 0x1B (ESC)
+      of 2:
+        # 8-bit C1 control byte (0x80..0x9F)
+        let b = src.drawInteger(toInt128(0x80), toInt128(0x9F), toInt128(0x80)).toInt64.int
+        acc.add chr(b)
+      of 3:
+        # 7-bit DCS (ESC P), PM (ESC ^), or APC (ESC _)
+        let intro = case src.drawInteger(toInt128(0), toInt128(2), toInt128(0)).toInt64.int
+                    of 0: "P"
+                    of 1: "^"
+                    else: "_"
+        acc.add "\x1b" & intro & "payload\x1b\\"
+      of 4:
+        # SS2 (ESC N x) or SS3 (ESC O x)
+        let ns = if src.drawBoolean(0.5): "N" else: "O"
+        acc.add "\x1b" & ns & "x"
+      of 5:
+        # SGR CSI (should be kept)
+        let c = src.drawInteger(toInt128(31), toInt128(36), toInt128(31)).toInt64.int
+        acc.add "\x1b[" & $c & "m"
+        if src.drawBoolean(0.5):
+          acc.add "\x1b[0m"
+      of 6:
+        # OSC-8 open+close (should be kept)
+        acc.add "\x1b]8;;https://example.com\x1b\\"
+        acc.add "link"
+        acc.add "\x1b]8;;\x1b\\"
+      of 7:
+        # Valid 2-byte UTF-8 rune (U+00C0..U+07FF range)
+        let cp = src.drawInteger(toInt128(0xC0), toInt128(0x7FF), toInt128(0xC0)).toInt64.int
+        # Encode as UTF-8: 2 bytes for U+0080..U+07FF
+        let b1 = 0xC0 or (cp shr 6)
+        let b2 = 0x80 or (cp and 0x3F)
+        acc.add chr(b1)
+        acc.add chr(b2)
+      of 8:
+        # Stray continuation byte (0xA0..0xBF, all invalid at start position)
+        let b = src.drawInteger(toInt128(0xA0), toInt128(0xBF), toInt128(0xA0)).toInt64.int
+        acc.add chr(b)
+      else: discard
+    acc
+  )
+
+proc hasNoC1(s: string): bool =
+  ## Returns true iff s contains no bare C1 byte (0x80..0x9F) at a
+  ## sequence-start position. Valid UTF-8 multibyte sequences whose
+  ## continuation bytes fall in 0x80..0xBF are allowed through — only
+  ## isolated 0x80..0x9F bytes that are NOT continuation bytes of a
+  ## preceding lead byte are considered C1 violations.
+  var i = 0
+  while i < s.len:
+    let b = s[i].ord
+    if b >= 0xC0:
+      # UTF-8 lead byte: compute expected length and skip the whole sequence.
+      let rlen = if b >= 0xF0: 4 elif b >= 0xE0: 3 else: 2
+      i += rlen
+    elif b >= 0x80 and b <= 0x9F:
+      # C1 byte at a start position — violation.
+      return false
+    else:
+      inc i
+  true
+
+proc hasNoLoneEsc(s: string): bool =
+  ## Returns true iff every \x1b in s is followed by at least one more byte.
+  var i = 0
+  while i < s.len:
+    if s[i] == '\x1b':
+      if i + 1 >= s.len:
+        return false  # trailing bare ESC
+    inc i
+  true
+
+# ---------------------------------------------------------------------------
+# sanitizeLogLine property tests
+# ---------------------------------------------------------------------------
+
+suite "sanitizeLogLine — proptest invariants":
+
+  property "P4 idempotence: sanitize(sanitize(x)) == sanitize(x)":
+    with Settings(maxExamples: 400, testId: "sanitize-idempotent")
+    given s in adversarialSanitizeStrategy()
+    let once = sanitizeLogLine(s)
+    ensure sanitizeLogLine(once) == once
+
+  property "P5 no C1 byte in output (0x80..0x9F)":
+    with Settings(maxExamples: 400, testId: "sanitize-no-c1")
+    given s in adversarialSanitizeStrategy()
+    ensure hasNoC1(sanitizeLogLine(s))
+
+  property "P6 no lone/trailing bare ESC in output":
+    with Settings(maxExamples: 400, testId: "sanitize-no-lone-esc")
+    given s in adversarialSanitizeStrategy()
+    ensure hasNoLoneEsc(sanitizeLogLine(s))

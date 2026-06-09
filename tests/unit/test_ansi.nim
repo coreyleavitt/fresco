@@ -255,3 +255,148 @@ suite "sanitizeLogLine":
     let mixed = "abc\x1b[31mred\x1b[0m\n\t\x1b]0;title\x07\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\"
     let once = sanitizeLogLine(mixed)
     check sanitizeLogLine(once) == once
+
+  # --- DCS / PM / APC / SS2 / SS3 ---
+
+  test "DCS (ESC P ... ST) stripped, surrounding text survives":
+    check sanitizeLogLine("a\x1bPdcs-payload\x1b\\b") == "ab"
+    check sanitizeLogLine("a\x1bPdcs-bel\x07b") == "ab"
+
+  test "PM (ESC ^ ... ST) stripped, surrounding text survives":
+    check sanitizeLogLine("a\x1b^pm-payload\x1b\\b") == "ab"
+
+  test "APC (ESC _ ... ST) stripped, surrounding text survives":
+    check sanitizeLogLine("a\x1b_apc-payload\x1b\\b") == "ab"
+
+  test "SS2 (ESC N x) stripped, surrounding text survives":
+    check sanitizeLogLine("a\x1bNxb") == "ab"
+
+  test "SS3 (ESC O x) stripped, surrounding text survives":
+    check sanitizeLogLine("a\x1bOxb") == "ab"
+
+  test "lone trailing ESC stripped":
+    check sanitizeLogLine("a\x1b") == "a"
+
+  test "truncated CSI (no final byte before end) stripped":
+    check sanitizeLogLine("a\x1b[123") == "a"
+
+  # --- C1 controls (8-bit, 0x80..0x9F) — H2 security fix ---
+
+  test "8-bit CSI (0x9B) stripped — H2":
+    # \x9b is 8-bit CSI (≡ ESC [); params+final byte are consumed too.
+    # \x9b2J = 8-bit-CSI "2J" (erase screen) — full sequence stripped.
+    check sanitizeLogLine("a\x9b2Jb") == "ab"
+    # \x9bb: 'b' (0x62) is in the CSI final-byte range (0x40..0x7E) so the
+    # entire sequence \x9bb is consumed — the 'b' is NOT printable here.
+    check sanitizeLogLine("a\x9bb") == "a"
+    # Bare \x9b with no following byte — stripped (lone C1).
+    check sanitizeLogLine("a\x9b") == "a"
+
+  test "8-bit OSC (0x9D) stripped — H2":
+    # BEL-terminated payload consumed; following 'b' is printable.
+    check sanitizeLogLine("a\x9dclipboard-write\x07b") == "ab"
+    # ST-terminated variant.
+    check sanitizeLogLine("a\x9dclipboard-write\x1b\\b") == "ab"
+
+  test "8-bit DCS (0x90) stripped — H2":
+    # 'b' after 0x90 is DCS payload until ST — strip whole sequence.
+    # Use a proper ST-terminated sequence so the text after ST is printable.
+    check sanitizeLogLine("a\x90payload\x1b\\b") == "ab"
+    check sanitizeLogLine("a\x90payload\x07b") == "ab"
+
+  test "8-bit PM (0x9E) stripped — H2":
+    check sanitizeLogLine("a\x9epayload\x1b\\b") == "ab"
+
+  test "8-bit APC (0x9F) stripped — H2":
+    check sanitizeLogLine("a\x9fpayload\x1b\\b") == "ab"
+
+  test "stray UTF-8 continuation byte (0xA5) at start position stripped — H2":
+    check sanitizeLogLine("a\xa5b") == "ab"
+
+  test "valid multibyte UTF-8 passes through unchanged — H2 regression":
+    # café (U+00E9 = 0xC3 0xA9), Japanese, emoji codepoint
+    check sanitizeLogLine("café") == "café"
+    check sanitizeLogLine("日本語") == "日本語"
+    check sanitizeLogLine("hello\xC3\xA9world") == "hello\xC3\xA9world"
+
+  test "C1 output contains no byte in 0x80..0x9F — H2 invariant":
+    let inputs = [
+      "a\x80b", "a\x85b", "a\x8fb", "a\x90payload\x1b\\b",
+      "a\x9b2Jb", "a\x9cb", "a\x9dclip\x07b", "a\x9epayload\x1b\\b",
+      "a\x9fpayload\x1b\\b", "a\xa0b",
+    ]
+    for s in inputs:
+      let sanitized = sanitizeLogLine(s)
+      # Walk start positions only — skip continuation bytes of valid UTF-8
+      # multibyte sequences so we don't falsely flag them.
+      var i = 0
+      while i < sanitized.len:
+        let b = sanitized[i].ord
+        if b >= 0xC0:
+          # UTF-8 lead byte: skip the full sequence
+          let rlen = if b >= 0xF0: 4 elif b >= 0xE0: 3 else: 2
+          i += rlen
+        else:
+          check b < 0x80 or b > 0x9F
+          inc i
+
+  # --- Security-3: 8-bit ST (0x9C) as string-sequence terminator ---
+
+  test "Security-3: 8-bit ST (0x9C) terminates 8-bit OSC body — KEEP after 0x9C":
+    # 0x9D is 8-bit OSC; "title" is the body; 0x9C is the 8-bit ST terminator.
+    # Everything AFTER the 0x9C byte is not part of the sequence and must be kept.
+    check sanitizeLogLine("\x9dtitle\x9cKEEP") == "KEEP"
+
+  test "Security-3: 8-bit ST (0x9C) terminates 8-bit DCS body — KEEP after 0x9C":
+    check sanitizeLogLine("\x90payload\x9cKEEP") == "KEEP"
+
+  test "Security-3: 8-bit ST (0x9C) terminates 8-bit PM body — KEEP after 0x9C":
+    check sanitizeLogLine("\x9epayload\x9cKEEP") == "KEEP"
+
+  test "Security-3: 8-bit ST (0x9C) terminates 8-bit APC body — KEEP after 0x9C":
+    check sanitizeLogLine("\x9fpayload\x9cKEEP") == "KEEP"
+
+  test "Security-3: 0x9C alone (no preceding string introducer) is stripped (single-byte C1)":
+    # 0x9C standing alone (no OSC/DCS/PM/APC before it) is just a lone
+    # single-byte C1 control — it gets consumed by the `else: discard` branch.
+    check sanitizeLogLine("a\x9cb") == "ab"
+
+# --- Security-1: clipToWidth C1 body-scan completeness ---
+
+suite "clipToWidth Security-1: C1 body bytes fully consumed":
+
+  test "Security-1: 8-bit OSC terminated by BEL — body bytes not emitted, text after BEL kept":
+    # 0x9D is 8-bit OSC; body is "title"; terminated by BEL (0x07); "X" follows.
+    # The entire OSC sequence is consumed (stripped); "X" must appear in output.
+    let s = "\x9dtitle\x07" & "X"
+    let clipped = clipToWidth(s, 5)
+    check clipped.contains("X")
+    check not clipped.contains("\x9d")
+    check not clipped.contains("title")
+
+  test "Security-1: 8-bit CSI (0x9B) body + final byte not emitted as text":
+    # "\x9b2J" is an 8-bit CSI erase-screen sequence (final byte 'J' in 0x40..0x7E).
+    # Body "2" and final "J" must be consumed, not emitted; "Y" follows and must survive.
+    let s = "\x9b2J" & "Y"
+    let clipped = clipToWidth(s, 5)
+    check clipped.contains("Y")
+    check not clipped.contains("\x9b")
+
+  test "Security-1: 8-bit OSC terminated by 0x9C — content after 0x9C emitted":
+    # 0x9D "title" 0x9C terminates by 8-bit ST; "X" follows and must appear.
+    let s = "\x9dtitle\x9c" & "X"
+    let clipped = clipToWidth(s, 5)
+    check clipped.contains("X")
+    check not clipped.contains("\x9d")
+    check not clipped.contains("title")
+
+  test "Security-1: unterminated 8-bit OSC consumes to end of string (safe)":
+    # An unterminated OSC (no BEL/ST/0x9C) gobbles the rest of the string.
+    # This is the correct/safe behavior: nothing from the unterminated body leaks.
+    # The body "\x1b[H" looks like a 7-bit escape but it is inside the OSC body
+    # and must NOT be re-processed as a 7-bit CSI sequence.
+    let s = "\x9d\x1b[H"  # unterminated: no BEL, no ST, no 0x9C
+    let clipped = clipToWidth(s, 5)
+    # The entire string is consumed as one unterminated sequence; output is empty.
+    check clipped == ""
+    check not clipped.contains("\x1b[H")

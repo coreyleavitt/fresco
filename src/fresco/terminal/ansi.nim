@@ -285,10 +285,52 @@ proc sanitizeLogLine*(s: string): string =
     elif b.ord < 0x20:
       # C0 control (not ESC) → strip
       inc i
-    else:
-      # Printable byte (including UTF-8 multibyte continuation bytes 0x80..0xFF)
+    elif b.ord <= 0x7E:
+      # Printable ASCII (0x20..0x7E) → keep
       result.add b
       inc i
+    elif b.ord <= 0x9F:
+      # 8-bit C1 controls (0x80..0x9F) at a sequence-start position.
+      # These are the single-byte equivalents of their ESC-prefixed forms.
+      # Strip the introducer AND any associated sequence payload so that
+      # none of the sequence body leaks into the output.
+      # NOTE: This branch is ONLY reached at a sequence-start position.
+      # Continuation bytes of valid multibyte runes are consumed by the
+      # UTF-8 lead-byte branch below (0xC0..0xFF) so they never land here.
+      inc i  # consume the C1 introducer byte
+      case b.ord
+      of 0x9B:
+        # 8-bit CSI (≡ ESC [): params... final(0x40..0x7E) — strip entire seq
+        while i < s.len and s[i].ord notin {0x40..0x7E}: inc i
+        if i < s.len: inc i  # consume final byte
+      of 0x9D, 0x90, 0x9E, 0x9F:
+        # 8-bit OSC (0x9D ≡ ESC ]), DCS (0x90 ≡ ESC P),
+        # PM (0x9E ≡ ESC ^), APC (0x9F ≡ ESC _):
+        # string sequences terminated by BEL, ST (ESC \), or 8-bit ST (0x9C).
+        while i < s.len:
+          if s[i] == '\x07':
+            inc i; break
+          if s[i].ord == 0x9C:
+            inc i; break  # Security-3: honor 8-bit ST as terminator
+          if s[i] == '\x1b' and i + 1 < s.len and s[i+1] == '\\':
+            i += 2; break
+          inc i
+      else:
+        # All other C1 bytes (0x80..0x9A, 0x9C): single-byte controls —
+        # already consumed above, nothing more to skip.
+        discard
+    elif b.ord <= 0xBF:
+      # 0xA0..0xBF at a start position = stray UTF-8 continuation byte
+      # (valid continuations are consumed by the lead-byte branch below).
+      # Strip to avoid emitting partial/corrupt sequences.
+      inc i
+    else:
+      # UTF-8 lead byte (0xC0..0xFF): decode the full rune and emit
+      # all its bytes so valid multibyte text (café, CJK, emoji, etc.)
+      # passes through unchanged.
+      let r = s.runeAt(i)
+      result.add s[i ..< i + r.size]
+      i += r.size
 
 proc clipToWidth*(s: string, width: int): string =
   ## Return a prefix of `s` whose display width is at most `width` columns.
@@ -303,8 +345,17 @@ proc clipToWidth*(s: string, width: int): string =
   ## - If an OSC-8 hyperlink was opened (non-empty URI) and not closed before
   ##   the cut, `ESC ]8;;ESC\` is appended after the SGR reset (if any).
   if width <= 0: return ""
-  # Fast path: string already fits — return unchanged, no hygiene appended.
-  if displayWidth(s) <= width: return s
+  # Fast path: string already fits AND contains no C1 bytes (0x80..0x9F) that
+  # need stripping — return unchanged, no hygiene appended. We skip the fast
+  # path when C1 bytes are present so the main loop can strip them (Security-1).
+  block fastPath:
+    var hasC1 = false
+    for ch in s:
+      if ch.ord >= 0x80 and ch.ord <= 0x9F:
+        hasC1 = true
+        break
+    if not hasC1 and displayWidth(s) <= width:
+      return s
   var col = 0
   var i = 0
   var sgrSeen = false      # any SGR (ESC [ … m) emitted before cut
@@ -363,7 +414,62 @@ proc clipToWidth*(s: string, width: int): string =
     elif b.ord < 0x20:
       # Non-ESC control byte — skip, don't emit.
       inc i
+    elif b.ord <= 0x9F:
+      # 0x20..0x7E: printable ASCII.
+      # 0x80..0x9F: 8-bit C1 controls at a start position — strip the
+      #             introducer AND any associated sequence body so that no
+      #             sequence bytes leak into the output (mirrors the complete
+      #             body-scan logic in sanitizeLogLine).
+      # Only printable ASCII (0x20..0x7E) is emitted here; C1 bytes advance
+      # without adding to result. runeAt is called for the ASCII path only.
+      if b.ord <= 0x7E:
+        let r = s.runeAt(i)
+        let rw = if isZeroWidth(r): 0 elif isWide(r): 2 else: 1
+        if rw == 0:
+          if col < width:
+            result.add s[i ..< i + r.size]
+          i += r.size
+        elif col + rw > width:
+          if rw == 2 and col + 1 == width:
+            result.add ' '
+          if sgrSeen: result.add "\x1b[0m"
+          if osc8Open: result.add "\x1b]8;;\x1b\\"
+          return
+        else:
+          result.add s[i ..< i + r.size]
+          col += rw
+          i += r.size
+      else:
+        # 0x80..0x9F: C1 introducer — consume the introducer AND its body
+        # so that no sequence bytes bleed through as text.
+        inc i  # consume the C1 introducer byte
+        case b.ord
+        of 0x9B:
+          # 8-bit CSI (≡ ESC [): params... final(0x40..0x7E)
+          while i < s.len and s[i].ord notin {0x40..0x7E}: inc i
+          if i < s.len: inc i  # consume final byte
+        of 0x9D, 0x90, 0x9E, 0x9F:
+          # 8-bit OSC (0x9D ≡ ESC ]), DCS (0x90 ≡ ESC P),
+          # PM (0x9E ≡ ESC ^), APC (0x9F ≡ ESC _):
+          # string sequences terminated by BEL, ST (ESC \), or 8-bit ST (0x9C).
+          while i < s.len:
+            if s[i] == '\x07':
+              inc i; break
+            if s[i].ord == 0x9C:
+              inc i; break
+            if s[i] == '\x1b' and i + 1 < s.len and s[i+1] == '\\':
+              i += 2; break
+            inc i
+        else:
+          # All other C1 bytes (0x80..0x9A, 0x9C): single-byte controls —
+          # introducer already consumed above, nothing more to skip.
+          discard
+    elif b.ord <= 0xBF:
+      # 0xA0..0xBF: stray UTF-8 continuation byte at start position — strip.
+      inc i
     else:
+      # 0xC0..0xFF: UTF-8 lead byte — decode the full rune and account for
+      # its display width (handles CJK, emoji, etc.).
       let r = s.runeAt(i)
       let rw = if isZeroWidth(r): 0 elif isWide(r): 2 else: 1
       if rw == 0:
