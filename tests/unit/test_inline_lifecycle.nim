@@ -226,6 +226,49 @@ suite "withInlineScreen H3: second lifecycle fd re-registration":
     waitFor body()
 
 # ---------------------------------------------------------------------------
+# H3b regression: delayed watch-task cancellation must not double-unregister
+# ---------------------------------------------------------------------------
+
+suite "withInlineScreen H3b: cancellation finally is fd-safe":
+
+  test "H3b dispatcher turns after a normal exit do not crash on teardown":
+    ## The amoxtli REPL does `waitFor runApp()` (a withInlineScreen lifecycle
+    ## that exits normally — scheduling `watchFut.cancelSoon()`) and THEN runs
+    ## more dispatcher turns (`waitFor c.close()` etc). Those later turns deliver
+    ## the queued cancellation to the watch task: `waitTeardownByte` resumes via
+    ## CancelledError and runs its finally. But `withInlineScreenImpl`'s finally
+    ## already unregistered the self-pipe fd (and `disarmGracefulTeardown` closed
+    ## it) synchronously. The bug: that finally unconditionally called
+    ## removeReader/unregister on the now-absent fd, raising an AssertionDefect
+    ## ("Descriptor [N] is not registered in the selector!") — a Defect the
+    ## `except OSError` could not catch → process crash on teardown.
+    ##
+    ## Fix: gate the finally cleanup on `teardownPipeRegistered` (the same flag
+    ## that gates `register`), so the second finally is a clean no-op.
+    ##
+    ## Repro shape: run a lifecycle to a normal exit, then pump the dispatcher
+    ## (sleepAsync) so the queued cancelSoon fires. Pre-fix this aborts the
+    ## process; post-fix it returns and `survived` is true.
+    proc lifecycle() {.async: (raises: [CancelledError, Exception]).} =
+      let (pipeR, pipeW) = openPipe()
+      defer:
+        discard posix.close(pipeR)
+        discard posix.close(pipeW)
+      withInlineScreen(newTerminalSink(pipeW), 5, 20, 1, s):
+        s.appendLine("h3b")
+        # exits normally → finally schedules watchFut.cancelSoon()
+
+    proc body() {.async: (raises: [CancelledError, Exception]).} =
+      await lifecycle()
+      # Mimic the REPL's trailing `waitFor c.close()`: extra dispatcher turns
+      # deliver the queued cancellation to the watch task.
+      await sleepAsync(50.milliseconds)
+
+    waitFor body()
+    var survived = true
+    check survived
+
+# ---------------------------------------------------------------------------
 # M4 regression: gracefulArmed() assertion in watchTeardownSignals
 # ---------------------------------------------------------------------------
 

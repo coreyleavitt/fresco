@@ -39,9 +39,11 @@ proc waitTeardownByte() {.async.} =
   ## Mirrors screen.nim's waitWinchByte pattern exactly.
   ##
   ## H3 lifecycle safety: each call registers the current fd if not already
-  ## registered, and always unregisters in the finally (on both normal
-  ## completion and cancellation). This pairs register/unregister per call
-  ## so successive lifecycles start clean regardless of how the prior one exited.
+  ## registered, and unregisters in the finally — but only if `teardownPipeRegistered`
+  ## is still set, since `withInlineScreenImpl`'s finally may have already
+  ## unregistered and closed the fd before this (cancellation) finally runs.
+  ## This pairs register/unregister per call so successive lifecycles start
+  ## clean regardless of how the prior one exited.
   let fd = AsyncFD(teardownPipeReadFd())
   if not teardownPipeRegistered:
     try: register(fd) except OSError: discard
@@ -55,9 +57,21 @@ proc waitTeardownByte() {.async.} =
   try:
     await fut
   finally:
-    try: removeReader(fd) except OSError: discard
-    try: unregister(fd) except OSError: discard
-    teardownPipeRegistered = false
+    # Only clean up if WE still own the registration. `withInlineScreenImpl`'s
+    # finally unregisters the fd (and `disarmGracefulTeardown` closes it)
+    # synchronously, while the watch task's `cancelSoon` is delivered on a
+    # LATER dispatcher turn — so this finally can run second, after the fd is
+    # already gone from the selector and closed. `register` at the top is
+    # gated on this same flag; the cleanup must be too, else `removeReader`/
+    # `unregister` hit a stale/recycled fd and raise an `AssertionDefect`
+    # ("Descriptor [N] is not registered in the selector!") — a Defect, NOT an
+    # OSError, so the `except OSError` would not catch it and the process would
+    # crash on teardown. Gating on the flag makes whichever finally runs first
+    # do the cleanup and the other a clean no-op.
+    if teardownPipeRegistered:
+      teardownPipeRegistered = false
+      try: removeReader(fd) except OSError: discard
+      try: unregister(fd) except OSError: discard
   # Drain whatever arrived (coalesced signals).
   drainTeardownPipe()
 
