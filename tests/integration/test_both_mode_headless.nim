@@ -138,10 +138,11 @@ suite "S4 slice 13 Suite B: InlineScreen headless end-to-end":
 
   test "B1a: live-band region content present in sink.rows after commit":
     ## h=5, w=20, pinnedHeaderRows=1 → liveZoneHeight=4.
+    ## Bottom-anchored: region at row 1 (h - liveZoneHeight = 5 - 4 = 1).
     let sink = newMemorySink()
     let s = newInlineScreen(sink, 5, 20, pinnedHeaderRows = 1)
 
-    let r = s.newRegion(0, 0, 4, 20)
+    let r = s.newRegion(1, 0, 4, 20)
     r.set(@["live-a", "live-b", "live-c", "live-d"])
 
     appendLine(s, "committed-1")
@@ -149,19 +150,20 @@ suite "S4 slice 13 Suite B: InlineScreen headless end-to-end":
 
     discard commit(s)
 
-    # Live-band region rows (rows 0–3) must carry the region content.
+    # Live-band region rows (rows 1–4) must carry the region content.
     check sink.rows.len == 5
-    check sink.rows[0] == "live-a"
-    check sink.rows[1] == "live-b"
-    check sink.rows[2] == "live-c"
-    check sink.rows[3] == "live-d"
+    check sink.rows[1] == "live-a"
+    check sink.rows[2] == "live-b"
+    check sink.rows[3] == "live-c"
+    check sink.rows[4] == "live-d"
 
   test "B1b: committed lines ABSENT from sink.rows (MemorySink has no scrollback)":
     ## MemorySink models no scrollback; committed history is invisible.
+    ## Bottom-anchored: region at row 1 (h - liveZoneHeight = 5 - 4 = 1).
     let sink = newMemorySink()
     let s = newInlineScreen(sink, 5, 20, pinnedHeaderRows = 1)
 
-    let r = s.newRegion(0, 0, 4, 20)
+    let r = s.newRegion(1, 0, 4, 20)
     r.set(@["live-a", "live-b", "live-c", "live-d"])
 
     appendLine(s, "committed-1")
@@ -175,10 +177,11 @@ suite "S4 slice 13 Suite B: InlineScreen headless end-to-end":
       check "committed-2" notin row
 
   test "B1c: log drains to 0 after commit":
+    ## Bottom-anchored: region at row 1 (h - liveZoneHeight = 5 - 4 = 1).
     let sink = newMemorySink()
     let s = newInlineScreen(sink, 5, 20, pinnedHeaderRows = 1)
 
-    let r = s.newRegion(0, 0, 4, 20)
+    let r = s.newRegion(1, 0, 4, 20)
     r.set(@["live-a", "live-b"])
 
     appendLine(s, "committed-1")

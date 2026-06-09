@@ -75,6 +75,7 @@ task test, "run all tests":
     "tests/unit/test_inline_setsize.nim",
     "tests/unit/test_inline_tail_buffer.nim",
     "tests/unit/test_inline_lifecycle.nim",
+    "tests/unit/test_scrollback_screenmodel.nim",
   ]
   let integrationTests = @[
     "tests/integration/test_termios_pty.nim",
@@ -110,7 +111,7 @@ task test, "run all tests":
     "tests/integration/test_inline_graceful_pty.nim",
   ]
   for t in unitTests & integrationTests:
-    exec "nim r --hints:off --warnings:off --path:src " & t
+    exec "nim r -d:frescoTesting --hints:off --warnings:off --path:src " & t
 
 task examples, "compile-check every examples/*.nim":
   let examples = @[

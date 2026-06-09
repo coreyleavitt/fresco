@@ -48,10 +48,12 @@ proc app(stream: InputStream, s: InlineScreen[TerminalSink])
 
   var lineBuffer = ""
 
-  # Pinned live band: row 0 = status header, row 1 = prompt.
+  # Pinned live band: bottom-anchored at the last two rows.
   # pinnedHeaderRows=2, so liveZoneHeight = h - 2.
-  let header = s.newRegion(0, 0, 1, s.width)
-  let prompt  = s.newRegion(1, 0, 1, s.width)
+  # Row H-2 = status header, row H-1 = prompt (H = constructed height, 24).
+  let h = s.height
+  let header = s.newRegion(h - 2, 0, 1, s.width)
+  let prompt  = s.newRegion(h - 1, 0, 1, s.width)
 
   proc updatePrompt() =
     header.setRow(0, "inline_prompt demo  [Enter] commit  [Backspace] erase  [Ctrl-C/D] quit")

@@ -9,6 +9,26 @@
 ## committed output — printed once via native scroll and never
 ## addressed again.
 ##
+## ## Bottom-anchor contract
+##
+## InlineScreen regions are bottom-anchored — they occupy the last rows
+## of the terminal. For a terminal of height H and a band of k rows,
+## place regions at rows `H-k .. H-1` (0-based). Committed content
+## spills into rows `0 .. H-k-1` above the band and into native
+## terminal scrollback when those rows fill up.
+##
+## Example: `pinnedHeaderRows=2`, H=24 → band rows 22 and 23 (0-based):
+##
+## ```nim
+## let header = s.newRegion(s.height - 2, 0, 1, s.width)
+## let prompt  = s.newRegion(s.height - 1, 0, 1, s.width)
+## ```
+##
+## Placing regions at the top (rows 0, 1) while calling `commit` is
+## incorrect: committed content would overwrite rows above the band
+## that don't exist, or the terminal would have nowhere to scroll
+## committed lines into.
+##
 ## ## Type-level single-writer guarantee
 ##
 ## `ScrollbackLog` is PRIVATE to this module. The only handle bindings
@@ -40,17 +60,14 @@ import chronos
 import intonaco/reactive
 import ./render/layout
 import ./render/sink
+import ./render/timing
 import ./terminal/ansi as ansiMod
 import ./terminal/termios as termiosMod
 
-export layout.Region, layout.set, layout.markDirty, layout.setRow,
-       layout.scrollUp, layout.rows, layout.resizeRows
+export timing.AutoPaintInterval
 
-# Defined locally to avoid importing screen.nim (which transitively imports
-# terminal.nim → ansi.nim → std/unicode, triggering a `unicode.size` ambiguity
-# with the Signal call-operator in this module's constructors).
-# Must match screen.AutoPaintInterval = 33.milliseconds.
-const AutoPaintInterval* = 33.milliseconds
+export layout.Region, layout.set, layout.markDirty, layout.setRow,
+       layout.scrollUp, layout.rows, layout.resizeRows, layout.reclipRows
 
 const kCommitBatch* = 256
   ## Per-batch watermark for the inline commit pipeline. The synchronous
@@ -102,38 +119,67 @@ type
     size*: Signal[(int, int)]
       ## Caller-owned; the SIGWINCH handler writes it.
     liveZoneHeight*: Dynamic[int]
-      ## Derived: max(0, size[0] - pinnedHeaderRows). Updates reactively
-      ## when size changes. Dynamic[int] (not Signal[int]) because the dep
-      ## is a closure-captured Signal parameter, not a compile-time-listed
-      ## dep — the `dynamic` macro's runtime-floor auto-tracking is the
-      ## right tool here. Readable via `s.liveZoneHeight()`.
+      ## Derived live-band height: ``max(0, size[0] - pinnedHeaderRows)``.
+      ## Updates reactively when ``size`` changes (chronos dispatcher turn).
+      ##
+      ## Two usage modes:
+      ##
+      ## (1) Reactive / ``bindScrollback`` — the live band always shows the
+      ##     last ``liveZoneHeight`` collection items; older items overflow
+      ##     into committed scrollback.  Here ``liveZoneHeight`` equals the
+      ##     live-tail height = ``H - pinnedHeaderRows`` (the full band
+      ##     minus the fixed chrome rows reserved at the bottom).
+      ##
+      ## (2) Imperative — the consumer places bottom-anchored regions
+      ##     directly via ``newRegion(s, row, col, h, w)``.  Here
+      ##     ``liveZoneHeight`` serves only as the "terminal tall enough to
+      ##     spill" guard in the commit pipeline (the zero-height clamp).
+      ##     The consumer is responsible for placing regions so that
+      ##     ``max(r.row + r.height) == layout.height`` (bottom-anchor
+      ##     contract) — the commit pipeline enforces this at runtime.
+      ##
+      ## ``pinnedHeaderRows`` is the reserved fixed-chrome height: rows
+      ## at the bottom of the terminal that are never part of the live band.
+      ## The live band must be bottom-anchored — its lowest edge must reach
+      ## terminal row ``H`` (see the bottom-anchor contract enforcement in
+      ## ``commitOneBatch``).
+      ##
+      ## Dynamic[int] (not Signal[int]) because the dependency is a
+      ## closure-captured Signal parameter; the ``dynamic`` macro's
+      ## runtime-floor auto-tracking is the right tool.
+      ## Readable as a call: ``s.liveZoneHeight()``.
     pinnedHeaderRows*: int
       ## Baked at construction. Fixed chrome height (v0 bound — see RFC).
-    pendingCommit*: bool
+    pendingCommit: bool
       ## Dirty flag: set by append on the first enqueue of an idle log.
       ## Test-and-cleared by the commit pipeline (S3 slice 10c).
-    commitInProgress*: bool
+      ## INTERNAL — write access is reserved for the pipeline.
+    commitInProgress: bool
       ## Auto-paint gate: set when the pipeline begins, cleared after
       ## the final batch. runAutoPaint skips paint while set (S3).
+      ## INTERNAL — write access is reserved for the pipeline.
     inputRow*: int
       ## Live band's declared cursor-home row (0-based). Set by the caller
       ## to position the cursor after each commit. Default: 0.
     inputCol*: int
       ## Live band's declared cursor-home column (0-based). Set by the caller
       ## to position the cursor after each commit. Default: 0.
-    commitRuns*: int
-      ## Incremented once per driveCommit invocation that actually drains
-      ## (i.e. when logPendingLen > 0 at the top of driveCommit).
-      ## Test-observable batch counter (slice 10c).
-    stagedH*: int
+    commitRuns: int
+      ## Incremented once per full commit (driveCommitStep first entry OR
+      ## synchronous commit*) that actually drains (logPendingLen > 0).
+      ## INTERNAL — read via commitRunsCount() test seam.
+    stagedH: int
       ## Staged height from a setSize call that arrived mid-burst.
       ## Applied when the burst completes (finishCommit). Default: 0.
-    stagedW*: int
+      ## INTERNAL — no legitimate external write contract.
+    stagedW: int
       ## Staged width from a setSize call that arrived mid-burst.
       ## Applied when the burst completes (finishCommit). Default: 0.
-    hasStagedSize*: bool
+      ## INTERNAL — no legitimate external write contract.
+    hasStagedSize: bool
       ## True iff a setSize arrived while commitInProgress was set.
       ## Cleared and applied by finishCommit. Default: false.
+      ## INTERNAL — no legitimate external write contract.
 
 # ---------------------------------------------------------------------------
 # LogSink ops — append is the SOLE public door
@@ -221,11 +267,23 @@ proc commitOneBatch[S: Sink](s: InlineScreen[S]): string
 
 proc scheduleCommit[S: Sink](s: InlineScreen[S])  # forward decl for notify
 
-proc driveCommitStep[S: Sink](s: InlineScreen[S]) {.gcsafe.}
+proc driveCommitStep[S: Sink](s: InlineScreen[S]) {.gcsafe, raises: [].}
 
 proc applySizeNow*[S: Sink](s: InlineScreen[S], h, w: int)  # forward decl for finishCommit
 
 proc finishCommit*[S: Sink](s: InlineScreen[S])  # forward decl for driveCommitStep
+
+proc assertDrained[S: Sink](s: InlineScreen[S]) {.inline.} =
+  ## Assert that the log is fully drained and no region is pending.
+  ## Called from both the async (driveCommitStep) and sync (commit*) paths
+  ## so the invariant is auditable at both exit points. No-op when assertions
+  ## are disabled (compileOption("assertions") is false).
+  when compileOption("assertions"):
+    doAssert s.logPendingLen() == 0,
+      "commit: log not empty after full drain"
+    for r in s.layout.regions:
+      doAssert (not r.pending) and r.pendingScroll == 0,
+        "commit: region still pending/scrolling after drain"
 
 proc scheduleCommit[S: Sink](s: InlineScreen[S]) =
   ## Idempotent: if already scheduled or a batch chain is in flight, return.
@@ -243,7 +301,7 @@ proc scheduleCommit[S: Sink](s: InlineScreen[S]) =
     except CatchableError: discard
   callSoon(cb, nil)
 
-proc driveCommitStep[S: Sink](s: InlineScreen[S]) {.gcsafe.} =
+proc driveCommitStep[S: Sink](s: InlineScreen[S]) {.gcsafe, raises: [].} =
   ## One step of the bounded-latency multi-batch driver.
   ## On the FIRST call (pendingCommit was set): clear flag, set commitInProgress,
   ## drain one batch, then re-schedule if more remain.
@@ -271,9 +329,10 @@ proc driveCommitStep[S: Sink](s: InlineScreen[S]) {.gcsafe.} =
     let capture = s
     proc cb(p: pointer) {.gcsafe, raises: [].} =
       try: driveCommitStep(capture)
-      except Exception: discard
+      except CatchableError: discard
     callSoon(cb, nil)
   else:
+    assertDrained(s)
     finishCommit(s)
 
 # ---------------------------------------------------------------------------
@@ -341,6 +400,29 @@ proc logDrainBatch*[S: Sink](s: InlineScreen[S], max: int): seq[string] =
   takeBatch(s.log, max)
 
 # ---------------------------------------------------------------------------
+# Test seams — narrow observable windows into internal pipeline state.
+# Named with a *ForTest suffix for write-path seams to make misuse visible.
+# ---------------------------------------------------------------------------
+
+proc commitRunsCount*[S: Sink](s: InlineScreen[S]): int =
+  ## Number of commit runs (driveCommit first entries OR synchronous commit
+  ## calls) that actually drained at least one line. Test-observable batch counter.
+  s.commitRuns
+
+proc isCommitInProgress*[S: Sink](s: InlineScreen[S]): bool =
+  ## True while a multi-batch async burst is in flight. Test-observable gate.
+  s.commitInProgress
+
+when defined(frescoTesting):
+  proc setCommitInProgressForTest*[S: Sink](s: InlineScreen[S], v: bool) =
+    ## Forcibly set commitInProgress. Test seam ONLY — absent from production
+    ## builds (compiled only when `-d:frescoTesting` is set). Lets tests
+    ## simulate a mid-burst state without running a real async pipeline.
+    ## The `when defined(frescoTesting)` wrapper ensures the WRITE trapdoor
+    ## into invariant-critical state does not exist in production binaries.
+    s.commitInProgress = v
+
+# ---------------------------------------------------------------------------
 # Geometry helpers
 # ---------------------------------------------------------------------------
 
@@ -378,12 +460,10 @@ proc applySizeNow*[S: Sink](s: InlineScreen[S], h, w: int) =
     elif r.col + r.width > w:
       r.width = w - r.col
     r.resizeRows(r.height)
-    # Re-clip existing rows to the new width — screen.nim's setSize omits
-    # this step (the latent bug). `let` from a lent return copies the seq,
-    # so iterating `cur` is safe while we mutate r.target via setRow.
-    let cur = r.rows
-    for i in 0 ..< cur.len:
-      r.setRow(i, cur[i])
+    # Re-clip existing rows to the new width via the shared layout helper.
+    # (Previously inlined here as `let cur = r.rows; for i in ...: r.setRow(i, cur[i])`;
+    # now delegates to reclipRows so all three resize paths share one implementation.)
+    r.reclipRows()
     r.pending = true
   s.size.set((h, w))
 
@@ -433,6 +513,18 @@ proc screenView*[S: Sink](s: InlineScreen[S]): ScreenView =
 # seam for tests). The async dirty-flag / callSoon scheduling is slice 10c.
 # ---------------------------------------------------------------------------
 
+type
+  BandNotBottomAnchoredDefect* = object of Defect
+    ## Raised by `commit` when the live band is not bottom-anchored — its lowest
+    ## region does not reach the terminal's bottom row, so committed content has
+    ## nowhere to spill into native scrollback (the InlineScreen scrollback model
+    ## breaks). This is a CONSUMER-CONTRACT violation (a programming error in the
+    ## caller's region placement), not an internal fresco assertion — hence its
+    ## own named `Defect` rather than `AssertionDefect`. It is a `Defect` so it
+    ## is exempt from the `{.raises.}` effect system (it can surface from the
+    ## `{.raises: [].}` async commit driver) and is NOT elided under `-d:danger`
+    ## (it is a real `raise`, not a `doAssert`).
+
 proc commitOneBatch[S: Sink](s: InlineScreen[S]): string =
   ## Drain one batch from the log through the sink. Returns the emitted bytes
   ## (empty string for non-TerminalSink paths). Does NOT touch commitInProgress.
@@ -451,6 +543,25 @@ proc commitOneBatch[S: Sink](s: InlineScreen[S]): string =
     return ""
   # Mirror the now-smaller pending seq into the tail buffer after the drain.
   termiosMod.setInlineTail(s.log.pending)
+
+  # Design-2: fail-fast on a non-bottom-anchored band.
+  # The bottom-anchor contract requires that committed content spills from the
+  # top of the live band upward into native scrollback. If regions exist but
+  # the band's lowest edge does NOT reach the terminal bottom, the terminal
+  # has nowhere for committed lines to spill — the scrollback model breaks.
+  # Invariant: max(r.row + r.height) over all regions == s.layout.height.
+  if s.layout.regions.len > 0:
+    var lowestEdge = 0
+    for r in s.layout.regions:
+      let edge = r.row + r.height
+      if edge > lowestEdge:
+        lowestEdge = edge
+    if lowestEdge != s.layout.height:
+      raise newException(BandNotBottomAnchoredDefect,
+        "InlineScreen commit requires a bottom-anchored band: " &
+        "lowest region must reach terminal row " & $s.layout.height &
+        " (got " & $lowestEdge & "). " &
+        "Place regions at rows H-bandHeight .. H-1 (0-based).")
 
   # Compute liveTop = min r.row over all regions (0 if no regions).
   var liveTop = 0
@@ -473,44 +584,57 @@ proc commitOneBatch[S: Sink](s: InlineScreen[S]): string =
     s.paint()
 
 proc teardownFlush*[S: Sink](s: InlineScreen[S]) =
-  ## Best-effort teardown: emit any buffered committed lines RAW
-  ## (`line + "\n"`, cursor-unanchored) followed by a final `"\n"`, and
-  ## ABANDON the structured live-band repaint (repainting at Region.row
-  ## without knowing the post-interruption physical cursor would land the
-  ## band in the wrong rows — RFC teardown contract). The committed tail is
-  ## never lost; only the live-band frame is sacrificed.
+  ## Teardown flush: fully drain any buffered committed lines RAW
+  ## (`line + "\n"`, cursor-unanchored) followed by a final `"\n"`.
+  ## GUARANTEE: the committed tail is fully drained — zero bytes dropped.
+  ## The live-band frame is intentionally NOT repainted: the physical cursor
+  ## position is unknown at teardown time, so repainting at Region.row would
+  ## land the band in the wrong rows.
+  ##
+  ## After draining, explicitly disarms the static inline-tail buffer so
+  ## that the subsequent restoreAllAndReraise/flushInlineTailNow call is a
+  ## structural no-op rather than a coincidental one. This enforces the
+  ## invariant: "after teardownFlush, the static tail is disarmed/empty."
   ##
   ## ASYNC-SIGNAL-SAFETY: this is an EXPLICIT-call contract invoked from the
-  ## consumer's NORMAL shutdown path (e.g. a chronos addSignal SIGTERM
-  ## handler that wakes the loop), NOT from the async signal handler itself —
+  ## consumer's NORMAL shutdown path (e.g. the chronos watch task that wakes
+  ## on the self-pipe), NOT from the async signal handler itself —
   ## draining heap `pending` strings + a write loop are not async-signal-safe.
-  ## The fatal-signal handler (slice 6b) does only the termios restore +
-  ## alt-screen leave, which ARE async-signal-safe. The lines are already
+  ## The fatal-signal handler does only the termios restore + alt-screen leave
+  ## + static-buffer flush, which ARE async-signal-safe. The lines are already
   ## sanitized (LogSink.append chokepoint), so emit them as-is.
   ##
-  ## MemorySink (no scrollback model): no-op.
+  ## MemorySink (no scrollback model): still disarms the tail buffer so the
+  ## structural invariant holds regardless of sink type.
   mixin writeAll
   let n = s.logPendingLen()
-  if n == 0: return
-  let batch = s.logDrainBatch(n)   # drain ALL
-  # Mirror empty pending into the tail buffer (teardown drained everything).
-  termiosMod.setInlineTail(s.log.pending)
-  when compiles(s.sink.writeAll("")):   # TerminalSink path
-    var bytes = ""
-    for line in batch: bytes &= line & "\n"
-    bytes &= "\n"
-    s.sink.writeAll(bytes)
-  # else (MemorySink / no raw-write sink): drained but not emitted — no scrollback to flush to.
+  if n > 0:
+    let batch = s.logDrainBatch(n)   # drain ALL
+    when compiles(s.sink.writeAll("")):   # TerminalSink path
+      var bytes = ""
+      for line in batch: bytes &= line & "\n"
+      bytes &= "\n"
+      s.sink.writeAll(bytes)
+    # else (MemorySink / no raw-write sink): drained but not emitted — no scrollback to flush to.
+  # Explicitly disarm the static tail buffer. On the graceful path this makes
+  # the flushInlineTailNow() call inside restoreAllAndReraise a structural
+  # no-op. On the crash path teardownFlush never runs, so the tail stays armed
+  # for the signal handler to flush. Either way: no double-emit, nothing dropped.
+  termiosMod.disarmInlineTail()
 
 proc commit*[S: Sink](s: InlineScreen[S]): string {.discardable.} =
   ## Synchronous full-drain commit. Batch-loops until the log is empty.
   ##
-  ## Pipeline order per round-3 CRITICALs (enforced inside commitInline):
-  ##   2. Pre-drain pendingScroll + cursorTo(liveTop, 1)
-  ##   4. Print committed lines raw (native scroll into history)
-  ##   5. Invalidate live-band renderer cache
-  ##   6. Repaint live band at unchanged rows
-  ##   7. cursor → inputRow/inputCol
+  ## Regions must be bottom-anchored (rows `H-bandHeight .. H-1`); see the
+  ## module-level bottom-anchor contract. Committed content spills into the
+  ## rows above the band and then into native terminal scrollback.
+  ##
+  ## Pipeline order (enforced inside commitInline):
+  ##   2. Pre-drain pendingScroll for live-band regions.
+  ##   3. cursorTo(liveTop+1, 1) + ED 0 — clear old band.
+  ##   4. Emit N committed lines raw + band rows as relative-flow \n stream.
+  ##   5. Invalidate live-band renderer cache; mark regions pending=false.
+  ##   6. cursor → inputRow/inputCol.
   ##
   ## TerminalSink: commitInline computes the bytes (including physicalRows
   ##   cursor-accounting assertion); writeAll writes them.
@@ -529,16 +653,15 @@ proc commit*[S: Sink](s: InlineScreen[S]): string {.discardable.} =
     finishCommit(s)
     return ""
 
+  # Only count as a run if there is actually something to drain.
+  if s.logPendingLen() > 0:
+    inc s.commitRuns
+
   # Batch loop: synchronous full-drain via the shared commitOneBatch body.
   while s.logPendingLen() > 0 and s.liveZoneHeight.get() > 0:
     result &= commitOneBatch(s)
 
-  when compileOption("assertions"):
-    doAssert s.logPendingLen() == 0,
-      "commit: log not empty after full drain"
-    for r in s.layout.regions:
-      doAssert (not r.pending) and r.pendingScroll == 0,
-        "commit: region still pending/scrolling after drain"
+  assertDrained(s)
 
   finishCommit(s)
 

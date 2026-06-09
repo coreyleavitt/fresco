@@ -58,7 +58,8 @@ suite "InlineScreen slice 13b: PTY committed-scrollback":
       discard close(master)
       discard close(slave)
 
-    let r = s.newRegion(0, 0, 4, 20)
+    # Bottom-anchored: h=5, pinnedHeaderRows=1, liveZoneHeight=4 → region at row 1.
+    let r = s.newRegion(1, 0, 4, 20)
     r.set(["LIVE-CONTENT"])
     r.markDirty()
 

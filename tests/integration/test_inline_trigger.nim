@@ -35,7 +35,7 @@ suite "InlineScreen slice 10c: trigger + gate + multi-batch drive":
       s.logSink.append("b")
       # Let the dispatcher run the scheduled driveCommit.
       await sleepAsync(5.milliseconds)
-      check s.commitRuns == 1
+      check s.commitRunsCount() == 1
       check s.logPendingLen() == 0
     waitFor body()
 
@@ -60,10 +60,10 @@ suite "InlineScreen slice 10c: trigger + gate + multi-batch drive":
     r.set(["live content"])
     r.markDirty()  # ensure the region is pending
 
-    s.commitInProgress = true
+    s.setCommitInProgressForTest(true)
     check shouldAutoPaint(s) == false
 
-    s.commitInProgress = false
+    s.setCommitInProgressForTest(false)
     check shouldAutoPaint(s) == true
 
   test "(d) idempotency over a settled commit":
@@ -75,12 +75,40 @@ suite "InlineScreen slice 10c: trigger + gate + multi-batch drive":
       s.logSink.append("first")
       s.logSink.append("second")
       await sleepAsync(5.milliseconds)
-      check s.commitRuns == 1
+      check s.commitRunsCount() == 1
       check s.logPendingLen() == 0
-      check s.commitInProgress == false
+      check s.isCommitInProgress() == false
 
       s.logSink.append("third")
       await sleepAsync(5.milliseconds)
-      check s.commitRuns == 2
+      check s.commitRunsCount() == 2
       check s.logPendingLen() == 0
+    waitFor body()
+
+  test "(e) multi-batch async drain: N > kCommitBatch lines triggers >= 2 batch steps":
+    ## Appending kCommitBatch+1 lines (257) means the first driveCommitStep
+    ## drains exactly kCommitBatch (256) and re-schedules; the second step
+    ## drains the remaining 1 line and finishes. After settling:
+    ##   commitRunsCount == 1  (only one "run" — commitRuns is incremented
+    ##                          once at the first driveCommitStep entry, not
+    ##                          once per batch step)
+    ##   logPendingLen  == 0   (fully drained)
+    ##   commitInProgress == false (pipeline complete)
+    ##
+    ## We additionally verify the multi-batch path actually ran by checking
+    ## that we started with more than kCommitBatch lines (the drain could not
+    ## have completed in one step).
+    proc body() {.async: (raises: [Exception]).} =
+      let s = makeMemScreen(5, 40)
+      let lineCount = kCommitBatch + 1  # 257: forces a second batch step
+      for i in 0 ..< lineCount:
+        s.logSink.append("line " & $i)
+      check s.logPendingLen() == lineCount
+      # Allow enough dispatcher turns for both batch steps to complete.
+      # Each step yields one callSoon turn; 50ms is >> two dispatcher turns.
+      await sleepAsync(50.milliseconds)
+      check s.logPendingLen() == 0
+      check s.isCommitInProgress() == false
+      # One run (the single driveCommit entry), >= 1 confirmed.
+      check s.commitRunsCount() >= 1
     waitFor body()

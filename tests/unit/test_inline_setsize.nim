@@ -115,24 +115,19 @@ suite "InlineScreen slice 12: setSize":
     let oldWidth = s.layout.width
 
     # Simulate a commit burst in flight
-    s.commitInProgress = true
+    s.setCommitInProgressForTest(true)
 
     # Call setSize — must stage, not apply immediately
     s.setSize(8, 20)
 
-    check s.hasStagedSize == true
-    check s.stagedW == 20
-    check s.stagedH == 8
-    check s.layout.width == oldWidth  # geometry NOT mutated mid-burst
+    # Geometry must NOT be mutated mid-burst (verify via layout dimensions).
+    check s.layout.width == oldWidth
 
-    # Simulate burst completion: clear commitInProgress and apply staged size.
-    # We call finishCommit (or simulate its logic).
-    s.commitInProgress = false
-    if s.hasStagedSize:
-      s.hasStagedSize = false
-      applySizeNow(s, s.stagedH, s.stagedW)
+    # finishCommit applies the staged size; call it after clearing the gate.
+    s.setCommitInProgressForTest(false)
+    # finishCommit reads hasStagedSize/stagedH/stagedW internally and applies.
+    finishCommit(s)
 
-    check s.hasStagedSize == false
     check s.layout.width == 20
     check s.layout.height == 8
 
@@ -147,7 +142,8 @@ suite "InlineScreen slice 12: setSize":
   # ---------------------------------------------------------------------------
   test "7. Resize does not re-emit already-committed content":
     let s = makeTermScreen(10, 40)
-    let r = s.newRegion(0, 0, 9, 40)
+    # Bottom-anchored: h=10, pinnedHeaderRows=1, liveZoneHeight=9 → region at row 1.
+    let r = s.newRegion(1, 0, 9, 40)
     r.set(["live content"])
 
     # Append and commit — drains the log; TerminalSink captures committed bytes.
