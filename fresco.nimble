@@ -74,6 +74,7 @@ task test, "run all tests":
     "tests/unit/test_inline_commit.nim",
     "tests/unit/test_inline_setsize.nim",
     "tests/unit/test_inline_tail_buffer.nim",
+    "tests/unit/test_inline_lifecycle.nim",
   ]
   let integrationTests = @[
     "tests/integration/test_termios_pty.nim",

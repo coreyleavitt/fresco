@@ -11,9 +11,10 @@
 ##     `appendLine` + `commit`, scrolling up into native terminal history.
 ##     The live prompt repaints at the bottom.
 ##   - Backspace: removes the last character from the line buffer.
-##   - Ctrl-C / Ctrl-D: quit cleanly. `teardownFlush` is called on exit to
-##     emit any buffered committed lines that haven't been flushed yet,
-##     demonstrating the teardown contract.
+##   - Ctrl-C / Ctrl-D: quit cleanly. The `withInlineScreen` lifecycle
+##     template guarantees teardownFlush is called on every exit path
+##     (normal return, exception, or graceful SIGTERM/SIGINT via the watch
+##     task) — zero consumer plumbing required.
 ##
 ## Scope: this is a visual demo, not a full line editor. There is no cursor
 ## movement within the line, no kill-line, no history navigation — only
@@ -34,8 +35,8 @@ import chronos
 import fresco/input as fi
 import fresco/events
 import fresco/inline_screen
+import fresco/inline_teardown
 import fresco/render/sink/terminal
-import fresco/terminal/termios
 
 # ---------------------------------------------------------------------------
 # App
@@ -90,18 +91,17 @@ proc app(stream: InputStream, s: InlineScreen[TerminalSink])
       discard  # ignore function keys, arrows, etc.
 
 proc main() {.async: (raises: [CancelledError, Exception]).} =
-  withCbreak:
-    let sink = newTerminalSink()   # defaults to STDERR_FILENO
-    let s = newInlineScreen(sink, 24, 80, pinnedHeaderRows = 2)
-
+  ## withInlineScreen owns all three teardown tiers:
+  ##   tier-1 (finally): teardownFlush on normal return or exception.
+  ##   tier-2 (graceful signal): watchTeardownSignals wakes on SIGTERM/INT,
+  ##     calls teardownFlush in normal context, then restoreAllAndReraise.
+  ##   tier-3 (crash): static tail buffer armed on the output fd; crash handler
+  ##     emits last committed bytes async-signal-safely.
+  ## No manual teardown plumbing needed.
+  withInlineScreen(newTerminalSink(), 24, 80, 2, s):
     let stream = fi.newInputStream(cint(0))
     fi.start(stream)
     defer: fi.stop(stream)
-
     await app(stream, s)
-
-    # Teardown contract: flush any buffered committed lines that didn't make
-    # it through the async commit pipeline before we exit.
-    s.teardownFlush()
 
 waitFor main()

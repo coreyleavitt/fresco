@@ -458,6 +458,16 @@ proc teardownPipeReadFd*(): cint {.gcsafe.} =
   ## Return the read end of the teardown self-pipe.
   teardownPipe[0]
 
+proc inlineTailArmed*(): bool {.gcsafe, raises: [].} =
+  ## True when the static inline-tail buffer is currently armed.
+  ## Test seam: lets tests assert arm/disarm pairing without reading private state.
+  sigTailActive != 0
+
+proc gracefulArmed*(): bool {.gcsafe, raises: [].} =
+  ## True when the graceful SIGTERM/INT teardown is currently armed.
+  ## Test seam: lets tests assert arm/disarm pairing without reading private state.
+  sigGracefulArmed != 0
+
 proc drainTeardownPipe*() {.gcsafe, raises: [].} =
   ## Non-blocking drain of the teardown self-pipe. Clears any byte(s)
   ## written by gracefulSignalHandler. Mirrors winchByte drain in screen.nim.
