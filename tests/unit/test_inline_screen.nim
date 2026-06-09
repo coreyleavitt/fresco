@@ -18,6 +18,11 @@ import fresco/screen
 import fresco/inline_screen
 import intonaco/reactive
 
+# Helper: make a fresh MemorySink InlineScreen
+proc makeMemScreen11(h, w: int, pinnedHeaderRows = 1): InlineScreen[MemorySink] =
+  let sink = newMemorySink()
+  newInlineScreen(sink, h, w, pinnedHeaderRows)
+
 suite "InlineScreen slice 7: pinned-region regression":
 
   test "paint via InlineScreen[MemorySink] matches Screen[MemorySink] output":
@@ -181,3 +186,50 @@ suite "InlineScreen slice 7: enqueue + buffer via LogSink":
     check s.logPendingLen() == 1
     ls2.append("from ls2")
     check s.logPendingLen() == 2
+
+suite "InlineScreen slice 11 B: bindScrollback":
+
+  test "B9 overflow routing: pushed items beyond liveZoneHeight spill to log":
+    # liveZoneHeight = h - pinnedHeaderRows = 3 - 1 = 2
+    let s = makeMemScreen11(3, 40)
+    let c = collectionC[string]()
+    bindScrollback(s.logSink, s.liveZoneHeight, c, proc(x: string): string = x)
+    c.push("a")
+    c.push("b")
+    c.push("c")  # overflow: len=3, liveHeight=2 → 1 spilled ("a")
+    c.push("d")  # overflow: len=4, liveHeight=2 → 2 spilled ("a","b")
+    # "a" and "b" spilled; "c" and "d" in live window
+    check s.logPendingLen() == 2
+    let batch = s.logDrainBatch(10)
+    check batch == @["a", "b"]
+
+  test "B10 sanitization applies through bindScrollback":
+    let s = makeMemScreen11(3, 40)
+    let c = collectionC[string]()
+    bindScrollback(s.logSink, s.liveZoneHeight, c, proc(x: string): string = x)
+    c.push("x\ny")  # will overflow immediately (len=1, liveHeight=2: no overflow yet)
+    c.push("z")     # len=2, liveHeight=2: still no overflow
+    c.push("w")     # len=3, liveHeight=2: overflow=1, spill items[0]="x\ny" → sanitized "xy"
+    check s.logPendingLen() == 1
+    let batch = s.logDrainBatch(1)
+    check batch == @["xy"]
+
+  test "B11 no double-spill: newly-overflowed items only, never re-spills":
+    let s = makeMemScreen11(3, 40)
+    let c = collectionC[string]()
+    bindScrollback(s.logSink, s.liveZoneHeight, c, proc(x: string): string = x)
+    c.push("a")
+    c.push("b")
+    c.push("c")  # overflow=1, spill "a"
+    check s.logPendingLen() == 1
+    discard s.logDrainBatch(10)  # drain
+    c.push("d")  # overflow=2, but committed=1; only "b" newly spilled
+    check s.logPendingLen() == 1
+    let batch = s.logDrainBatch(10)
+    check batch == @["b"]  # not "a" again
+
+  test "B12 structural capability: append compiles, takeBatch does not compile":
+    let s = makeMemScreen11(5, 40)
+    let sink = s.logSink
+    check compiles(sink.append("x"))
+    check not compiles(sink.takeBatch(1))

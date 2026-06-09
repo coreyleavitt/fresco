@@ -40,6 +40,7 @@ import chronos
 import intonaco/reactive
 import ./render/layout
 import ./render/sink
+import ./terminal/ansi as ansiMod
 
 export layout.Region, layout.set, layout.markDirty, layout.setRow,
        layout.scrollUp, layout.rows, layout.resizeRows
@@ -130,9 +131,10 @@ type
 
 proc append*(s: LogSink, line: string) =
   ## Enqueue a committed line into the log.
-  # slice 11: sanitize here (strip \n/\r/C0-controls/motion-CSI/state-OSC,
-  # keep SGR) before enqueueing.
-  s.log.pending.add(line)
+  ## Sanitizes via `sanitizeLogLine` (single chokepoint): strips C0 controls,
+  ## non-SGR CSI, non-OSC-8 OSC sequences. Neither appendLine nor bindScrollback
+  ## sanitize — all content passes through here.
+  s.log.pending.add(ansiMod.sanitizeLogLine(line))
   if s.log.notify != nil:
     s.log.notify()
 
@@ -162,6 +164,11 @@ proc logSink*[S: Sink](s: InlineScreen[S]): LogSink =
   ## screen's private ScrollbackLog. Binding captures this; disposing
   ## the screen's scope tears down the binding.
   LogSink(log: s.log)
+
+proc appendLine*[S: Sink](s: InlineScreen[S], line: string) =
+  ## Imperative one-shot enqueue for banners, prompts, and other committed
+  ## content. Routes through `logSink.append` (the single sanitize chokepoint).
+  s.logSink.append(line)
 
 # ---------------------------------------------------------------------------
 # Auto-paint gate predicate (private layout helper)
@@ -446,3 +453,53 @@ proc runAutoPaint*[S: Sink](s: InlineScreen[S]) {.async.} =
     await sleepAsync(AutoPaintInterval)
     if shouldAutoPaint(s):
       paint(s)
+
+# ---------------------------------------------------------------------------
+# bindScrollback — reactive overflow spill into LogSink
+# ---------------------------------------------------------------------------
+
+proc bindScrollbackImpl[T](sink: LogSink, liveHeight: Dynamic[int],
+    c: CollectionSignal[T], fmt: proc(x: T): string {.closure.}) =
+  ## Internal (non-gcsafe) implementation. bindScrollback is the public shim.
+  ##
+  ## Semantics (v0, append-growth focused):
+  ##   - Track `committed` = count of items already spilled to scrollback.
+  ##   - On any delta, re-evaluate overflow = max(0, items.len - liveHeight.get()).
+  ##   - If overflow > committed: spill items[committed ..< overflow] via sink.append.
+  ##   - Shrink/remove/clear do NOT rewrite committed history (terminal owns scrollback).
+  ##
+  ## Reads liveHeight.get() at call time — handles resize without re-binding.
+  var committed = 0
+
+  proc spill() =
+    let items = c.get()
+    let overflow = max(0, items.len - liveHeight.get())
+    if overflow > committed:
+      for i in committed ..< overflow:
+        sink.append(fmt(items[i]))
+      committed = overflow
+
+  spill()  # initial evaluation
+
+  eachDelta c, d:
+    spill()
+
+proc bindScrollback*[T](sink: LogSink, liveHeight: Dynamic[int],
+    c: CollectionSignal[T],
+    fmt: proc(x: T): string {.closure.}) {.gcsafe.} =
+  ## Spill overflow items from `c` into `sink` as the collection grows past
+  ## `liveHeight`. Items beyond the last `liveHeight` entries are committed to
+  ## scrollback via `sink.append` (single-writer sanitize chokepoint).
+  ##
+  ## v0 limitation: shrink/clear/replace do NOT rewrite already-committed history.
+  ## The terminal owns scrollback; previously spilled content is permanent.
+  ##
+  ## gcsafe shim: fresco runs on a single chronos dispatcher; the cast is
+  ## sound (mirrors bindCollection's pattern).
+  {.cast(gcsafe).}:
+    bindScrollbackImpl(sink, liveHeight, c, fmt)
+
+template bindScrollback*[T](sink: LogSink, liveHeight: Dynamic[int],
+    c: CollectionSignal[T]) =
+  ## Convenience overload using `$T` as the formatter (mirrors bindCollection).
+  bindScrollback(sink, liveHeight, c, proc(x: T): string {.gcsafe.} = $x)

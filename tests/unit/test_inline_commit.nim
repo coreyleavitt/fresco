@@ -122,3 +122,28 @@ suite "InlineScreen slice 10+10b: inline commit pipeline":
     let bytes = commit(s)
     check bytes == ""
     check s.logPendingLen() == 1
+
+suite "InlineScreen slice 11 A3: appendLine":
+
+  test "appendLine with embedded newline stores single sanitized line":
+    # appendLine routes through append → sanitize; embedded \n yields "xy" not two lines.
+    let (s, _) = makeScreen(5, 40)
+    let r = s.newRegion(0, 0, 4, 40)
+    r.set(["live"])
+    appendLine(s, "x\ny")
+    check s.logPendingLen() == 1
+    let batch = s.logDrainBatch(1)
+    check batch == @["xy"]
+
+  test "appendLine commit + idempotency: second commit does not re-emit the line":
+    # After commit drains the line, a second commit with no new appends emits nothing.
+    let (s, _) = makeScreen(5, 40)
+    let r = s.newRegion(0, 0, 4, 40)
+    r.set(["live"])
+    appendLine(s, "hi")
+    let bytes1 = commit(s)
+    check bytes1.find("hi\n") >= 0
+    check s.logPendingLen() == 0
+    let bytes2 = commit(s)
+    # Second commit with empty log must not re-emit "hi".
+    check bytes2.find("hi\n") < 0

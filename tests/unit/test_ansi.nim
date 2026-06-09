@@ -219,3 +219,39 @@ suite "clipToWidth":
     # Must contain the OSC-8 close (no SGR was open, so no SGR reset)
     check clipped.contains(linkClose)
     check displayWidth(clipped) == 3
+
+suite "sanitizeLogLine":
+
+  test "C0 control bytes are stripped (newline, CR, tab, backspace, BEL)":
+    check sanitizeLogLine("a\nb") == "ab"
+    check sanitizeLogLine("x\ty") == "xy"
+    check sanitizeLogLine("a\rb") == "ab"
+    check sanitizeLogLine("a\bb") == "ab"
+    check sanitizeLogLine("a\x07b") == "ab"
+
+  test "SGR CSI sequences are kept":
+    check sanitizeLogLine("\x1b[31mred\x1b[0m") == "\x1b[31mred\x1b[0m"
+
+  test "motion CSI stripped, surrounding text kept":
+    check sanitizeLogLine("a\x1b[2Hb") == "ab"
+    check sanitizeLogLine("a\x1b[2Jb") == "ab"
+
+  test "title OSC stripped (BEL and ST terminated)":
+    check sanitizeLogLine("a\x1b]0;title\x07b") == "ab"
+    check sanitizeLogLine("a\x1b]0;title\x1b\\b") == "ab"
+
+  test "OSC-8 hyperlinks kept":
+    let osc8 = "\x1b]8;;https://x\x1b\\link\x1b]8;;\x1b\\"
+    check sanitizeLogLine(osc8) == osc8
+
+  test "plain UTF-8 passes through unchanged":
+    check sanitizeLogLine("héllo") == "héllo"
+    check sanitizeLogLine("日本") == "日本"
+
+  test "DEL (0x7F) is stripped":
+    check sanitizeLogLine("a\x7fb") == "ab"
+
+  test "idempotence: sanitize(sanitize(x)) == sanitize(x)":
+    let mixed = "abc\x1b[31mred\x1b[0m\n\t\x1b]0;title\x07\x1b]8;;http://x\x1b\\link\x1b]8;;\x1b\\"
+    let once = sanitizeLogLine(mixed)
+    check sanitizeLogLine(once) == once

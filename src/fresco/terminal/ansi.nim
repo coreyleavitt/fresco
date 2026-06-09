@@ -202,6 +202,94 @@ proc physicalRows*(line: string, width: int): int =
   let dw = max(0, displayWidth(line))
   result = max(1, (dw + width - 1) div width)
 
+proc sanitizeLogLine*(s: string): string =
+  ## Return a sanitized version of `s` safe to commit to native terminal
+  ## scrollback (printed raw via ``print + \n``).
+  ##
+  ## Keeps:
+  ##   - printable bytes (>= 0x20, except DEL 0x7F)
+  ##   - CSI sequences whose final byte is 'm' (SGR — color/bold/etc.)
+  ##   - OSC-8 hyperlinks (``ESC ] 8 ; … ST/BEL``) — content markup
+  ##
+  ## Strips:
+  ##   - All C0 controls 0x00..0x1F (including \n \r \t \b BEL), EXCEPT ESC
+  ##   - DEL 0x7F
+  ##   - Non-SGR CSI (cursor motion, erase, scroll, mode, …)
+  ##   - All OSC other than OSC-8 (title, clipboard, palette, …)
+  ##   - SS2/SS3, DCS, PM, APC and any other ESC-introduced sequences
+  ##   - Lone/trailing ESC with no valid continuation
+  var i = 0
+  while i < s.len:
+    let b = s[i]
+    if b == '\x1b':
+      inc i
+      if i >= s.len: break  # lone trailing ESC → strip
+      case s[i]
+      of '[':
+        # CSI: ESC [ params... final(0x40..0x7E)
+        let seqStart = i - 1  # points at ESC
+        inc i
+        while i < s.len and s[i].ord notin {0x40..0x7E}: inc i
+        if i < s.len:
+          let final = s[i]
+          inc i
+          if final == 'm':
+            # SGR — keep entire sequence
+            result.add s[seqStart ..< i]
+          # else: non-SGR CSI → strip (nothing added)
+        # if i >= s.len, sequence was truncated → strip
+      of ']':
+        # OSC: ESC ] payload BEL-or-ST
+        let seqStart = i - 1
+        inc i
+        let payloadStart = i
+        # Scan to terminator (BEL or ST = ESC \)
+        while i < s.len:
+          if s[i] == '\x07':
+            inc i; break
+          if s[i] == '\x1b' and i + 1 < s.len and s[i+1] == '\\':
+            i += 2; break
+          inc i
+        # Derive terminator length to isolate the payload bytes.
+        var termLen = 0
+        if i >= 2 and s[i-1] == '\\': termLen = 2
+        elif i >= 1 and s[i-1] == '\x07': termLen = 1
+        let payloadSlice = s[payloadStart ..< i - termLen]
+        # OSC-8: payload begins with "8;" — keep (content markup).
+        # All other OSC (title, clipboard, palette, …) — strip.
+        let isOsc8 = payloadSlice.len >= 2 and payloadSlice[0] == '8' and payloadSlice[1] == ';'
+        if isOsc8:
+          result.add s[seqStart ..< i]
+        # else: non-OSC-8 OSC → strip
+      of 'N', 'O':
+        # SS2 (ESC N) / SS3 (ESC O): skip designator + 1 introduced char
+        inc i  # skip N or O
+        if i < s.len: inc i  # skip introduced char
+        # strip
+      of 'P', '^', '_':
+        # DCS (ESC P), PM (ESC ^), APC (ESC _): string sequence to ST/BEL
+        inc i
+        while i < s.len:
+          if s[i] == '\x07':
+            inc i; break
+          if s[i] == '\x1b' and i + 1 < s.len and s[i+1] == '\\':
+            i += 2; break
+          inc i
+        # strip
+      else:
+        # Two-byte ESC-x (DECSC, DECRC, etc.) → strip
+        inc i
+    elif b.ord == 0x7F:
+      # DEL → strip
+      inc i
+    elif b.ord < 0x20:
+      # C0 control (not ESC) → strip
+      inc i
+    else:
+      # Printable byte (including UTF-8 multibyte continuation bytes 0x80..0xFF)
+      result.add b
+      inc i
+
 proc clipToWidth*(s: string, width: int): string =
   ## Return a prefix of `s` whose display width is at most `width` columns.
   ## ANSI escape sequences are copied through verbatim and do not consume
