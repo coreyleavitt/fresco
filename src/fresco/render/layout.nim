@@ -108,6 +108,10 @@ proc scrollUp*(r: Region, n: int) =
   ## next sink commit interprets `pendingScroll` per its own
   ## semantics (TerminalSink emits DECSTBM; MemorySink shifts the
   ## captured buffer or falls back to repaint).
+  ## Zero-height guard: if the region has zero height, skip — a
+  ## wmFromEnd delta during a zero-height window must not leave a
+  ## stale pendingScroll that fires wrongly on grow-back.
+  if r.height == 0: return
   r.pendingScroll = n
 
 proc rows*(r: Region): lent seq[string] =

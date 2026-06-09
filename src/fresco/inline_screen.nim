@@ -124,6 +124,15 @@ type
       ## Incremented once per driveCommit invocation that actually drains
       ## (i.e. when logPendingLen > 0 at the top of driveCommit).
       ## Test-observable batch counter (slice 10c).
+    stagedH*: int
+      ## Staged height from a setSize call that arrived mid-burst.
+      ## Applied when the burst completes (finishCommit). Default: 0.
+    stagedW*: int
+      ## Staged width from a setSize call that arrived mid-burst.
+      ## Applied when the burst completes (finishCommit). Default: 0.
+    hasStagedSize*: bool
+      ## True iff a setSize arrived while commitInProgress was set.
+      ## Cleared and applied by finishCommit. Default: false.
 
 # ---------------------------------------------------------------------------
 # LogSink ops — append is the SOLE public door
@@ -210,6 +219,10 @@ proc scheduleCommit[S: Sink](s: InlineScreen[S])  # forward decl for notify
 
 proc driveCommitStep[S: Sink](s: InlineScreen[S]) {.gcsafe.}
 
+proc applySizeNow*[S: Sink](s: InlineScreen[S], h, w: int)  # forward decl for finishCommit
+
+proc finishCommit*[S: Sink](s: InlineScreen[S])  # forward decl for driveCommitStep
+
 proc scheduleCommit[S: Sink](s: InlineScreen[S]) =
   ## Idempotent: if already scheduled or a batch chain is in flight, return.
   ## A running driveCommit loops until logPendingLen==0 and will pick up
@@ -243,7 +256,7 @@ proc driveCommitStep[S: Sink](s: InlineScreen[S]) {.gcsafe.} =
   # Per-batch step: drain one batch.
   # Zero-height clamp: band not open; preserve pending, stop.
   if s.liveZoneHeight.get() <= 0:
-    s.commitInProgress = false
+    finishCommit(s)
     return
 
   discard commitOneBatch(s)
@@ -257,7 +270,7 @@ proc driveCommitStep[S: Sink](s: InlineScreen[S]) {.gcsafe.} =
       except Exception: discard
     callSoon(cb, nil)
   else:
-    s.commitInProgress = false
+    finishCommit(s)
 
 # ---------------------------------------------------------------------------
 # Constructors
@@ -292,6 +305,9 @@ proc newInlineScreen*[S: Sink](sink: S, size: Signal[(int, int)],
     inputRow: 0,
     inputCol: 0,
     commitRuns: 0,
+    stagedH: 0,
+    stagedW: 0,
+    hasStagedSize: false,
   )
   scr.log.notify = proc() {.gcsafe.} = scheduleCommit(scr)
   scr
@@ -330,6 +346,61 @@ proc width*[S: Sink](s: InlineScreen[S]): int {.inline.}  = s.layout.width
 proc newRegion*[S: Sink](s: InlineScreen[S],
     row, col, height, width: int): Region =
   newRegion(s.layout, row, col, height, width)
+
+# ---------------------------------------------------------------------------
+# Resize — setSize + deferred-write discipline (S3 slice 12)
+# ---------------------------------------------------------------------------
+
+proc applySizeNow*[S: Sink](s: InlineScreen[S], h, w: int) =
+  ## Immediately apply new dimensions to the layout, clamp all regions,
+  ## re-clip existing rows to the new width (the fix for screen.nim's
+  ## latent bug where resizeRows does not re-clip existing rows), mark
+  ## all regions pending, and write the reactive size signal.
+  ##
+  ## Must only be called when commitInProgress is false — it mutates
+  ## geometry. setSize enforces this via the deferred-write discipline.
+  mixin invalidate
+  s.layout.height = h
+  s.layout.width  = w
+  when compiles(s.sink.invalidate()):
+    s.sink.invalidate()
+  for r in s.layout.regions:
+    if r.row >= h:
+      r.height = 0
+    elif r.row + r.height > h:
+      r.height = h - r.row
+    if r.col >= w:
+      r.width = 0
+    elif r.col + r.width > w:
+      r.width = w - r.col
+    r.resizeRows(r.height)
+    # Re-clip existing rows to the new width — screen.nim's setSize omits
+    # this step (the latent bug). `let` from a lent return copies the seq,
+    # so iterating `cur` is safe while we mutate r.target via setRow.
+    let cur = r.rows
+    for i in 0 ..< cur.len:
+      r.setRow(i, cur[i])
+    r.pending = true
+  s.size.set((h, w))
+
+proc finishCommit*[S: Sink](s: InlineScreen[S]) =
+  ## Clear commitInProgress and, if a resize was staged during the burst,
+  ## apply it now on this clean turn.
+  s.commitInProgress = false
+  if s.hasStagedSize:
+    s.hasStagedSize = false
+    applySizeNow(s, s.stagedH, s.stagedW)
+
+proc setSize*[S: Sink](s: InlineScreen[S], h, w: int) =
+  ## Resize the inline live band (width AND height). If a commit burst is
+  ## in flight (commitInProgress), STAGE the new size and apply it on the
+  ## next clean turn after the burst drains — never mutate geometry mid-batch.
+  if s.commitInProgress:
+    s.stagedH = h
+    s.stagedW = w
+    s.hasStagedSize = true
+    return
+  applySizeNow(s, h, w)
 
 # ---------------------------------------------------------------------------
 # Paint — identical to Screen[S] and AltScreen[S]
@@ -419,7 +490,7 @@ proc commit*[S: Sink](s: InlineScreen[S]): string {.discardable.} =
   # Zero-height clamp: if the live band is 0 rows, the committed output has
   # nowhere to spill (no band to scroll from). Preserve pending, return empty.
   if s.liveZoneHeight.get() <= 0:
-    s.commitInProgress = false
+    finishCommit(s)
     return ""
 
   # Batch loop: synchronous full-drain via the shared commitOneBatch body.
@@ -433,7 +504,7 @@ proc commit*[S: Sink](s: InlineScreen[S]): string {.discardable.} =
       doAssert (not r.pending) and r.pendingScroll == 0,
         "commit: region still pending/scrolling after drain"
 
-  s.commitInProgress = false
+  finishCommit(s)
 
 # ---------------------------------------------------------------------------
 # Auto-paint + shouldAutoPaint predicate (slice 10c)
