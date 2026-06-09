@@ -43,6 +43,11 @@ import ./render/sink
 export layout.Region, layout.set, layout.markDirty, layout.setRow,
        layout.scrollUp, layout.rows, layout.resizeRows
 
+const kCommitBatch* = 256
+  ## Per-batch watermark for the inline commit pipeline. The synchronous
+  ## drain loop takes up to kCommitBatch lines per iteration; the async
+  ## multi-batch yield logic (slice 10c) uses this to bound work per tick.
+
 # ---------------------------------------------------------------------------
 # Private type: ScrollbackLog
 # ---------------------------------------------------------------------------
@@ -97,6 +102,12 @@ type
     commitInProgress*: bool
       ## Auto-paint gate: set when the pipeline begins, cleared after
       ## the final batch. runAutoPaint skips paint while set (S3).
+    inputRow*: int
+      ## Live band's declared cursor-home row (0-based). Set by the caller
+      ## to position the cursor after each commit. Default: 0.
+    inputCol*: int
+      ## Live band's declared cursor-home column (0-based). Set by the caller
+      ## to position the cursor after each commit. Default: 0.
 
 # ---------------------------------------------------------------------------
 # LogSink ops — append is the SOLE public door
@@ -146,13 +157,16 @@ proc newInlineScreen*[S: Sink](sink: S, size: Signal[(int, int)],
   let (h, w) = get(size)
   let log = ScrollbackLog(pending: @[])
   let ph = pinnedHeaderRows
-  # Derive liveZoneHeight reactively from size using the `dynamic` macro.
-  # `dynamic` auto-tracks reactive reads in the body at runtime — the right
-  # tool here since `size` is a closure-captured parameter, not a
-  # compile-time-listed dep. The result is Dynamic[int] (not Signal[int]);
-  # readable via `s.liveZoneHeight()` via the call operator.
+  # Use get(size) inside the `dynamic` body rather than the call operator
+  # `size()[0]`, because compilation units that import both inline_screen
+  # and fresco/render/sink/terminal (which transitively pulls in std/unicode
+  # via ansi.nim) introduce `unicode.size(Rune): int` into scope. The
+  # call-operator `()` then becomes ambiguous between `Signal.()` and
+  # `unicode.size`, causing an "attempting to call routine" error during
+  # generic instantiation. `get(size)[0]` resolves unambiguously because
+  # there is no competing `get` in unicode.
   dynamic liveZoneHeight:
-    max(0, size()[0] - ph)
+    max(0, get(size)[0] - ph)
   InlineScreen[S](
     layout: newLayout(h, w),
     log: log,
@@ -162,6 +176,8 @@ proc newInlineScreen*[S: Sink](sink: S, size: Signal[(int, int)],
     pinnedHeaderRows: pinnedHeaderRows,
     pendingCommit: false,
     commitInProgress: false,
+    inputRow: 0,
+    inputCol: 0,
   )
 
 proc newInlineScreen*[S: Sink](sink: S, h, w: int,
@@ -216,3 +232,72 @@ proc paint*[S: Sink](s: InlineScreen[S]) =
 proc screenView*[S: Sink](s: InlineScreen[S]): ScreenView =
   ## Project to the flat value object for screen-agnostic APIs.
   ScreenView(layout: s.layout, size: s.size)
+
+# ---------------------------------------------------------------------------
+# Inline commit pipeline (S3 slice 10+10b — synchronous)
+#
+# Drains the committed-line log in batches, runs each batch through the
+# byte-capture pipeline in `terminal.commitInline`, and writes the
+# resulting bytes to the sink. Returns the accumulated byte string (the
+# seam for tests). The async dirty-flag / callSoon scheduling is slice 10c.
+# ---------------------------------------------------------------------------
+
+proc commit*[S: Sink](s: InlineScreen[S]): string {.discardable.} =
+  ## Synchronous full-drain commit. Batch-loops until the log is empty.
+  ##
+  ## Pipeline order per round-3 CRITICALs (enforced inside commitInline):
+  ##   2. Pre-drain pendingScroll + cursorTo(liveTop, 1)
+  ##   4. Print committed lines raw (native scroll into history)
+  ##   5. Invalidate live-band renderer cache
+  ##   6. Repaint live band at unchanged rows
+  ##   7. cursor → inputRow/inputCol
+  ##
+  ## TerminalSink: commitInline computes the bytes (including physicalRows
+  ##   cursor-accounting assertion); writeAll writes them.
+  ## Other sinks: fall back to paint (live band only; committed lines not emitted).
+  ##
+  ## `mixin commitInline, writeAll` allows the generic to find the TerminalSink
+  ## procs at instantiation time (via the caller's import scope) without
+  ## inline_screen.nim importing terminal.nim (which would pull in posix and
+  ## conflict with the Signal call-operator resolution in the constructors).
+  mixin commitInline, writeAll
+  s.commitInProgress = true
+
+  # Zero-height clamp: if the live band is 0 rows, the committed output has
+  # nowhere to spill (no band to scroll from). Preserve pending, return empty.
+  if s.liveZoneHeight.get() <= 0:
+    s.commitInProgress = false
+    return ""
+
+  # Batch loop: synchronous full-drain.
+  while s.logPendingLen() > 0:
+    let batch = s.logDrainBatch(kCommitBatch)
+
+    # Compute liveTop = min r.row over all regions (0 if no regions).
+    var liveTop = 0
+    if s.layout.regions.len > 0:
+      liveTop = s.layout.regions[0].row
+      for r in s.layout.regions:
+        if r.row < liveTop:
+          liveTop = r.row
+
+    # Dispatch to the sink-appropriate batch handler.
+    # TerminalSink: commitInline handles the full pipeline (steps 2,4,5,6,7)
+    #   including the physicalRows cursor-accounting assertion.
+    # Other sinks (MemorySink etc.): no committed-line emit; repaint live band.
+    when compiles(s.sink.commitInline(s.layout, batch, liveTop, 0, 0)):
+      let bytes = s.sink.commitInline(s.layout, batch, liveTop,
+                                      s.inputRow, s.inputCol)
+      s.sink.writeAll(bytes)
+      result &= bytes
+    else:
+      s.paint()
+
+  when compileOption("assertions"):
+    doAssert s.logPendingLen() == 0,
+      "commit: log not empty after full drain"
+    for r in s.layout.regions:
+      doAssert (not r.pending) and r.pendingScroll == 0,
+        "commit: region still pending/scrolling after drain"
+
+  s.commitInProgress = false

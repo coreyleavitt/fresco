@@ -58,15 +58,12 @@ proc flush*(t: TerminalSink, layout: Layout): string =
     result &= t.renderer.render(r.row, r.col, r.rows)
     r.pending = false
 
-proc commit*(t: TerminalSink, layout: Layout) =
-  ## Compute the ANSI for the layout's current state and write it to
-  ## the sink's file descriptor. Handles partial writes and EINTR: a
-  ## fully-flushed render is a correctness property (a partial write
-  ## would tear an ANSI sequence mid-escape), so we loop until every
-  ## byte is committed or an unrecoverable error surfaces — at which
-  ## point the remainder is dropped silently. EAGAIN backs off via a
-  ## single retry; persistent backpressure also drops the remainder.
-  let bytes = t.flush(layout)
+proc writeAll*(t: TerminalSink, bytes: string) =
+  ## Write `bytes` to the sink's file descriptor with partial-write /
+  ## EINTR retry semantics. A fully-flushed write is a correctness
+  ## property (a partial write would tear an ANSI sequence mid-escape),
+  ## so we loop until every byte is written or an unrecoverable error
+  ## surfaces — at which point the remainder is dropped silently.
   if bytes.len == 0: return
   var written = 0
   while written < bytes.len:
@@ -77,3 +74,71 @@ proc commit*(t: TerminalSink, layout: Layout) =
       continue
     else:
       break
+
+proc commit*(t: TerminalSink, layout: Layout) =
+  ## Compute the ANSI for the layout's current state and write it to
+  ## the sink's file descriptor. Delegates to flush + writeAll.
+  t.writeAll(t.flush(layout))
+
+proc ensureRenderer(t: TerminalSink, layout: Layout) {.inline.} =
+  ## Size the renderer lazily, matching the flush lazy-init block.
+  if t.renderer == nil or
+     t.lastHeight != layout.height or
+     t.lastWidth  != layout.width:
+    t.renderer = newRenderer(layout.height, layout.width)
+    t.lastHeight = layout.height
+    t.lastWidth  = layout.width
+
+proc commitInline*(t: TerminalSink, layout: Layout, committed: seq[string],
+                   liveTop, inputRow, inputCol: int): string =
+  ## Compute-only inline commit pipeline. Returns the full ANSI byte string;
+  ## does NOT write to the fd (caller calls writeAll). Mutates the renderer
+  ## cache and region pending/pendingScroll fields.
+  ##
+  ## Step order (load-bearing — round-3 CRITICALs):
+  ##   2. Pre-drain pendingScroll + cursor-to-top of live band.
+  ##   4. Print committed lines raw (native scroll into history).
+  ##   5. Invalidate live-band cache AFTER committed emit, BEFORE repaint.
+  ##   6. Repaint live band at the regions' unchanged rows.
+  ##   7. Cursor → input point.
+
+  # Size the renderer lazily (same logic as flush).
+  ensureRenderer(t, layout)
+
+  # Step 2: pre-drain pendingScroll for each region, then cursor to liveTop.
+  for r in layout.regions:
+    if r.pendingScroll != 0:
+      result &= t.renderer.scrollUpRegion(
+        r.row, r.row + r.height - 1, r.pendingScroll)
+      r.pendingScroll = 0
+  # scrollUpRegion leaves cursor at (1,1); emit an explicit cursorTo before
+  # any committed-line print so position is well-defined (CRITICAL-2).
+  result &= cursorTo(liveTop + 1, 1)
+
+  # Step 4: print committed lines raw (unclipped — native scroll into history).
+  # Also compute the measured physical height for cursor accounting and
+  # debug assertions. With an explicit absolute cursorTo the final position
+  # is deterministic; measured feeds the debug doAssert and documents where
+  # native-scroll coherence relies on the cache invalidate, not cursor arithmetic.
+  var measured = 0
+  for line in committed:
+    measured += physicalRows(line, layout.width)
+    result &= line & "\n"
+  when compileOption("assertions"):
+    doAssert measured >= committed.len,
+      "commitInline: measured physical rows " & $measured &
+      " < committed.len " & $committed.len & " — physicalRows invariant violated"
+
+  # Step 5: invalidate the live-band renderer cache AFTER committed emit,
+  # BEFORE repaint (CRITICAL-1 — fresco owns only the band; external scroll
+  # has repositioned the terminal and cache rows no longer match what's on
+  # screen).
+  t.renderer.invalidate()
+
+  # Step 6: repaint the live band at the regions' UNCHANGED rows.
+  for r in layout.regions:
+    result &= t.renderer.render(r.row, r.col, r.rows)
+    r.pending = false
+
+  # Step 7: cursor → input point (1-based).
+  result &= cursorTo(inputRow + 1, inputCol + 1)

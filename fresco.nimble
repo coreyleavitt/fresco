@@ -71,6 +71,7 @@ task test, "run all tests":
     "tests/unit/test_altscreen_with.nim",
     "tests/unit/test_inline_screen.nim",
     "tests/unit/test_surface_discharge.nim",
+    "tests/unit/test_inline_commit.nim",
   ]
   let integrationTests = @[
     "tests/integration/test_termios_pty.nim",
