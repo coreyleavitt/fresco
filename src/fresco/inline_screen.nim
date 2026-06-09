@@ -67,7 +67,8 @@ import ./terminal/termios as termiosMod
 export timing.AutoPaintInterval
 
 export layout.Region, layout.set, layout.markDirty, layout.setRow,
-       layout.scrollUp, layout.rows, layout.resizeRows, layout.reclipRows
+       layout.scrollUp, layout.rows, layout.resizeRows, layout.reclipRows,
+       layout.reanchorBottom
 
 const kCommitBatch* = 256
   ## Per-batch watermark for the inline commit pipeline. The synchronous

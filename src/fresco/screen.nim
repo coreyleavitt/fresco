@@ -18,6 +18,7 @@ import ./render/sink
 import ./render/sink/terminal
 import ./render/timing
 import intonaco/reactive
+import ./inline_screen
 
 export timing.AutoPaintInterval
 
@@ -279,3 +280,37 @@ proc watchResizes*(s: TerminalScreen): Future[void] {.async.} =
   while true:
     await waitWinchByte()
     resize(s)
+
+proc watchResizes*(s: InlineScreen[TerminalSink]): Future[void] {.async.} =
+  ## Long-running task that drives `s.size` from SIGWINCH events.
+  ##
+  ## Modeled exactly on `watchResizes(TerminalScreen)`: sleeps on the
+  ## SIGWINCH self-pipe, re-queries the terminal size via `queryWinsize`,
+  ## and calls `s.setSize(h, w)`. Zero idle wakeups; immediate response.
+  ##
+  ## `installResizeHandler()` must have been called before this future is
+  ## awaited. Cancel the returned future to stop the loop.
+  ##
+  ## CONSUMER RESPONSIBILITY — re-anchoring after resize:
+  ##   This proc updates the layout dimensions and clamps region heights via
+  ##   `setSize`/`applySizeNow`, but does NOT re-anchor region rows to the
+  ##   new terminal bottom. Region composition (how many regions, what heights)
+  ##   is consumer-defined, so the consumer must call `reanchorBottom` after
+  ##   each resize to keep the band bottom-anchored and avoid
+  ##   `BandNotBottomAnchoredDefect` on the next `commit`.
+  ##
+  ##   Typical wiring pattern:
+  ##   ```nim
+  ##   let watcher = watchResizes(s)
+  ##   # ...in app loop, observe s.liveZoneHeight or eachChange(s.size):
+  ##   eachChange s.size:
+  ##     reanchorBottom(s.layout, [header, prompt])
+  ##   ```
+  ##   Or poll s.liveZoneHeight() after each key and call reanchorBottom when
+  ##   the height has changed.
+  doAssert winchPipe[0] >= 0,
+    "fresco: watchResizes requires installResizeHandler() first"
+  while true:
+    await waitWinchByte()
+    let (h, w) = queryWinsize(s.sink.fd)
+    s.setSize(h, w)

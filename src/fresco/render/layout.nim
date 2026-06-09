@@ -141,3 +141,36 @@ proc reclipRows*(r: Region) =
   let cur = r.rows
   for i in 0 ..< cur.len:
     r.setRow(i, cur[i])
+
+proc reanchorBottom*(layout: Layout, bandRegions: openArray[Region]) =
+  ## Restack a set of bottom-anchored band regions so the band's lowest
+  ## edge reaches `layout.height` after a terminal resize.
+  ##
+  ## `bandRegions` must be in top-to-bottom order. Each region's `row` is
+  ## recomputed so they stack contiguously and the lowest region's bottom
+  ## edge equals `layout.height` (satisfying the bottom-anchor contract
+  ## `max(r.row + r.height) == H`). Heights are NOT changed — only `row`
+  ## fields are updated.
+  ##
+  ## Degenerate cases:
+  ##   - Zero regions → no-op.
+  ##   - Sum of heights > layout.height → `startRow` clamps to 0; each
+  ##     region's `row` is assigned sequentially from 0, which may produce
+  ##     rows that overflow `layout.height`. This mirrors the zero-height
+  ##     clamp convention in `applySizeNow`: the caller should call
+  ##     `applySizeNow` (via `setSize`) BEFORE `reanchorBottom` so oversized
+  ##     regions have already been height-clamped.
+  ##   - A region with height == 0 contributes 0 rows but its `row` is still
+  ##     assigned (it occupies no vertical space).
+  ##
+  ## After this call, the next `commit` will NOT raise `BandNotBottomAnchoredDefect`
+  ## provided the sum of heights fits within `layout.height`.
+  if bandRegions.len == 0:
+    return
+  var totalH = 0
+  for r in bandRegions:
+    totalH += r.height
+  var row = max(0, layout.height - totalH)
+  for r in bandRegions:
+    r.row = row
+    row += r.height
