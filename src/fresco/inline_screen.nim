@@ -610,12 +610,14 @@ proc teardownFlush*[S: Sink](s: InlineScreen[S]) =
   let n = s.logPendingLen()
   if n > 0:
     let batch = s.logDrainBatch(n)   # drain ALL
-    when compiles(s.sink.writeAll("")):   # TerminalSink path
+    when compiles(s.sink.fd):   # TerminalSink path (has a real fd to write to)
       var bytes = ""
       for line in batch: bytes &= line & "\n"
       bytes &= "\n"
       s.sink.writeAll(bytes)
-    # else (MemorySink / no raw-write sink): drained but not emitted — no scrollback to flush to.
+    elif compiles(s.sink.committedRows):   # MemorySink capture path
+      for line in batch: s.sink.committedRows.add(line)
+    # else (unknown sink): drained but not emitted — no scrollback to capture.
   # Explicitly disarm the static tail buffer. On the graceful path this makes
   # the flushInlineTailNow() call inside restoreAllAndReraise a structural
   # no-op. On the crash path teardownFlush never runs, so the tail stays armed
