@@ -362,3 +362,148 @@ template withCbreak*(fd: cint, body: untyped) =
 
 template withCbreak*(body: untyped) =
   withCbreak(STDIN_FILENO, body)
+
+# ---------------------------------------------------------------------------
+# Tier-2 teardown contract: graceful SIGTERM/SIGINT → self-pipe → dispatcher
+# ---------------------------------------------------------------------------
+#
+# Layered on TOP of installSignalHandlers (which installs termiosSignalHandler
+# as the hard path). armGracefulTeardown saves the current INT/TERM handlers
+# (= termiosSignalHandler after withCbreak) and replaces them with
+# gracefulSignalHandler. On the FIRST signal the graceful handler writes one
+# byte to a self-pipe and returns — the chronos dispatcher wakes, calls
+# teardownFlush (normal context, full flush), then restoreAllAndReraise.
+# On a SECOND signal (escalation) or when not armed, the saved hard handler
+# is called directly (static-buffer flush + restore + die).
+#
+# async-signal-safety: gracefulSignalHandler does ONLY cint reads/writes and
+# one POSIX write() syscall — zero alloc, zero GC interaction.
+
+var teardownPipe       {.threadvar.}: array[2, cint]   # [read, write]
+var teardownPipeOpen   {.threadvar.}: cint   # 1 when the pipe fds are valid
+var sigGracefulArmed   {.threadvar.}: cint   # 1 while an inline lifecycle owns INT/TERM
+var sigGracefulPending {.threadvar.}: cint   # 1 once a first graceful signal is in flight
+var sigGracefulSig     {.threadvar.}: cint   # the delivered signal number
+var prevIntGraceful  {.threadvar.}: SigHandler   # saved prior INT handler
+var prevTermGraceful {.threadvar.}: SigHandler   # saved prior TERM handler
+
+proc restoreTermiosStack*() {.gcsafe, raises: [].} =
+  ## Restore the full termios snapshot stack (innermost-first). Shared by
+  ## the hard signal handler and the normal-context restoreAllAndReraise.
+  ## Safe to call from signal context (reads fixed arrays + cint, calls
+  ## tcSetAttr which is async-signal-safe per POSIX).
+  let top = min(snapshotDepth, MaxSignalSnapshots) - 1
+  for i in countdown(top, 0):
+    restoreTermios(snapshotStack[i])
+
+proc gracefulSignalHandler(sig: cint) {.noconv.} =
+  # async-signal-safe: cint reads/writes + one POSIX write() only.
+  if sigGracefulArmed == 0:
+    # Not armed — fall through to the saved prior handler.
+    if sig == SIGINT:
+      if prevIntGraceful != nil: prevIntGraceful(sig)
+      else: termiosSignalHandler(sig)
+    else:
+      if prevTermGraceful != nil: prevTermGraceful(sig)
+      else: termiosSignalHandler(sig)
+    return
+  if sigGracefulPending != 0:
+    # Escalation: second signal before dispatcher drained — hard path.
+    if sig == SIGINT:
+      if prevIntGraceful != nil: prevIntGraceful(sig)
+      else: termiosSignalHandler(sig)
+    else:
+      if prevTermGraceful != nil: prevTermGraceful(sig)
+      else: termiosSignalHandler(sig)
+    return
+  # First graceful signal: mark pending, record sig, wake dispatcher.
+  sigGracefulPending = 1
+  sigGracefulSig = sig
+  if teardownPipeOpen != 0:
+    var b = byte('t')
+    discard write(teardownPipe[1], addr b, 1)
+  # Return — do NOT die. The chronos dispatcher will run teardownFlush.
+
+proc armGracefulTeardown*() {.gcsafe, raises: [].} =
+  ## Open the teardown self-pipe (if not already open), reset the pending
+  ## flag, save the current SIGINT/SIGTERM handlers, and install the
+  ## graceful handler. Must be called AFTER installSignalHandlers (i.e.
+  ## inside withCbreak body) so the saved handlers are termiosSignalHandler.
+  if teardownPipeOpen == 0:
+    discard pipe(teardownPipe)
+    discard fcntl(teardownPipe[0], F_SETFL, O_NONBLOCK)
+    discard fcntl(teardownPipe[1], F_SETFL, O_NONBLOCK)
+    teardownPipeOpen = 1
+  sigGracefulPending = 0
+  prevIntGraceful  = cast[SigHandler](signal(SIGINT,  gracefulSignalHandler))
+  prevTermGraceful = cast[SigHandler](signal(SIGTERM, gracefulSignalHandler))
+  sigGracefulArmed = 1
+
+proc disarmGracefulTeardown*() {.gcsafe, raises: [].} =
+  ## Restore the saved INT/TERM handlers and close the self-pipe. Called
+  ## on normal teardown (after teardownFlush + restoreAllAndReraise returns
+  ## to withCbreak's finally, or on early exit without a signal).
+  sigGracefulArmed = 0
+  discard signal(SIGINT,  if prevIntGraceful  != nil: prevIntGraceful  else: SIG_DFL)
+  discard signal(SIGTERM, if prevTermGraceful != nil: prevTermGraceful else: SIG_DFL)
+  prevIntGraceful  = nil
+  prevTermGraceful = nil
+  sigGracefulPending = 0
+  if teardownPipeOpen != 0:
+    teardownPipeOpen = 0
+    for i in 0 .. 1:
+      discard posix.close(teardownPipe[i])
+
+proc teardownPipeReadFd*(): cint {.gcsafe.} =
+  ## Return the read end of the teardown self-pipe.
+  teardownPipe[0]
+
+proc drainTeardownPipe*() {.gcsafe, raises: [].} =
+  ## Non-blocking drain of the teardown self-pipe. Clears any byte(s)
+  ## written by gracefulSignalHandler. Mirrors winchByte drain in screen.nim.
+  var buf: array[64, byte]
+  while true:
+    let n = posix.read(teardownPipe[0], addr buf[0], buf.len)
+    if n <= 0: break
+
+proc consumeGracefulSig*(): cint {.gcsafe.} =
+  ## Return the signal number that triggered the graceful teardown.
+  sigGracefulSig
+
+proc restoreAllAndReraise*(sig: cint) {.gcsafe, raises: [].} =
+  ## Normal-context final exit: emit ?1049l if alt-screen active,
+  ## restore the full termios stack, then re-raise `sig` with SIG_DFL.
+  ## Called from the chronos watch task AFTER teardownFlush — this
+  ## bypasses withCbreak's finally, so we must do the terminal restore
+  ## ourselves. Normal context (not a signal handler) so no
+  ## async-signal-safety constraint, but we keep it simple.
+
+  # Flush the static inline tail (may have been drained by teardownFlush
+  # already; flushInlineTailNow is a no-op if sigTailLen == 0).
+  flushInlineTailNow()
+
+  # Leave alt-screen if entered.
+  if sigAltScreenActive != 0 and sigAltScreenFd >= 0:
+    var buf = AltScreenLeaveBytes
+    var remaining = buf.len
+    var offset = 0
+    while remaining > 0:
+      let n = posix.write(sigAltScreenFd, addr buf[offset], remaining)
+      if n > 0:
+        offset += n
+        remaining -= n
+      elif errno == EINTR:
+        continue
+      else:
+        break
+    sigAltScreenActive = 0
+
+  # Restore the termios stack.
+  restoreTermiosStack()
+
+  # Disarm the graceful handler (cleans up pipe).
+  disarmGracefulTeardown()
+
+  # Re-raise with default disposition.
+  discard signal(sig, SIG_DFL)
+  discard kill(getpid(), sig)
