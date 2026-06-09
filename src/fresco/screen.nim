@@ -16,7 +16,10 @@ import ./render
 import ./render/layout
 import ./render/sink
 import ./render/sink/terminal
+import ./render/timing
 import intonaco/reactive
+
+export timing.AutoPaintInterval
 
 # Re-export so consumers of Screen automatically see TerminalSink's
 # commit/invalidate/flush — required for the Sink concept to verify
@@ -25,7 +28,7 @@ import intonaco/reactive
 # be imported explicitly by their consumers.
 export terminal
 
-export layout.Region, layout.set, layout.markDirty, layout.setRow, layout.scrollUp, layout.rows, layout.resizeRows
+export layout.Region, layout.set, layout.markDirty, layout.setRow, layout.scrollUp, layout.rows, layout.resizeRows, layout.reclipRows
 
 # --- TIOCGWINSZ bindings --------------------------------------------------
 
@@ -123,12 +126,6 @@ proc paint*[S: Sink](s: Screen[S]) =
   ## sink it does whatever that sink's `commit` does.
   mixin commit
   s.sink.commit(s.layout)
-
-const AutoPaintInterval* = 33.milliseconds
-  ## Auto-paint cadence (~30fps). Each tick is microseconds + an
-  ## O(regions) flag check when nothing is dirty; the cost is far below
-  ## human-perceptible latency and far above what a busy main loop
-  ## generates in input events.
 
 proc anyPending(layout: Layout): bool =
   for r in layout.regions:
@@ -229,6 +226,7 @@ proc setSize*[S: Sink](s: Screen[S], height, width: int) =
     elif r.col + r.width > width:
       r.width = width - r.col
     r.resizeRows(r.height)
+    r.reclipRows()
     r.pending = true
   resizePending = false
   s.size.set((height, width))

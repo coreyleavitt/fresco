@@ -10,6 +10,13 @@
 ## `leave` via the `withAltScreen` exception-safe template, paired with
 ## `acquireAltScreenGrant` to obtain the compile-time capability witness.
 ##
+## Capability guard:
+##   `acquireAltScreenGrant` is called with a real `isatty` check (via
+##   `std/posix`) so the error path — AltScreenUnsupportedError — is
+##   exercised when the program is not attached to a terminal (e.g.
+##   redirected output). Hardcoding `true` teaches the anti-pattern of
+##   bypassing the fail-fast gate; this example models correct usage.
+##
 ## Keys: q or Ctrl-C quit — the alt-screen is restored (your original
 ## scrollback reappears) on every exit path including crashes, because
 ## `withAltScreen`'s `finally` always calls `leave()` and `withCbreak`'s
@@ -26,13 +33,12 @@
 
 {.experimental: "callOperator".}
 
-import std/[strformat, unicode]
+import std/[strformat, posix, unicode]
 import chronos
 import fresco
 import fresco/altscreen
 import fresco/render/sink/terminal
 import fresco/terminal/altscreen_cap
-import fresco/terminal/termios
 
 proc formatElapsed(ms: int): string =
   let totalSecs = ms div 1000
@@ -93,13 +99,22 @@ proc app(stream: InputStream, screen: AltScreen[TerminalSink])
     dispose(root)
 
 proc main() {.async: (raises: [Exception]).} =
-  withCbreak:
-    let sink = newTerminalSink()   # defaults to STDERR_FILENO
-    let cap  = acquireAltScreenGrant(true)
-    withAltScreen(sink, 24, 80, cap, s):
-      let stream = newInputStream(cint(0))
-      start(stream)
-      defer: stop(stream)
-      await app(stream, s)
+  # Acquire the alt-screen capability with a real isatty check so that
+  # running outside a terminal raises AltScreenUnsupportedError cleanly
+  # rather than silently ignoring the absence of ?1049h support.
+  let supportsAlt = isatty(STDERR_FILENO) != 0
+  let cap =
+    try:
+      acquireAltScreenGrant(supportsAlt)
+    except AltScreenUnsupportedError as e:
+      stderr.writeLine("fresco: " & e.msg)
+      quit(1)
+  let sink = newTerminalSink()   # defaults to STDERR_FILENO
+  # withAltScreen nests withCbreak internally — no manual withCbreak needed.
+  withAltScreen(sink, 24, 80, cap, s):
+    let stream = newInputStream(cint(0))
+    start(stream)
+    defer: stop(stream)
+    await app(stream, s)
 
 waitFor main()

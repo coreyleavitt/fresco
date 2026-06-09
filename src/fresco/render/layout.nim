@@ -128,3 +128,16 @@ proc resizeRows*(r: Region, n: int) =
   ## set/setRow procs handle that); this is truncation-only.
   if r.target.len > n:
     r.target.setLen(n)
+
+proc reclipRows*(r: Region) =
+  ## Re-clip every cached row in `r.target` to `r.width` display columns.
+  ##
+  ## Call this AFTER updating `r.width` (e.g. on a width-shrink resize) so
+  ## cached rows wider than the new width don't bleed horizontally or trip
+  ## the `doAssert displayWidth(line) <= r.width` guard in `setRowChecked`.
+  ##
+  ## `r.rows` returns a `lent seq[string]` which Nim copies into `cur` here,
+  ## so iterating `cur` while mutating `r.target` via `setRow` is safe.
+  let cur = r.rows
+  for i in 0 ..< cur.len:
+    r.setRow(i, cur[i])

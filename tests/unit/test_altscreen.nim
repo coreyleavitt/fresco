@@ -7,11 +7,12 @@
 ##
 ## Uses TerminalSink over a Unix pipe to capture exact bytes.
 
-import std/[posix, strutils, unittest]
+import std/[posix, strutils, unicode, unittest]
 import fresco/screen
 import fresco/altscreen
 import fresco/render/layout
 import fresco/render/sink/terminal
+import fresco/render/sink/memory
 import fresco/terminal/altscreen_cap
 import fresco/terminal/ansi
 
@@ -126,3 +127,56 @@ suite "AltScreen: resize invalidates and triggers full repaint":
     let after = readAvailable(rd)
     check after.len > 0         # full repaint emitted
     check "row1" in after
+
+# ---------------------------------------------------------------------------
+# H1 regression: width-shrink re-clip
+# ---------------------------------------------------------------------------
+
+suite "AltScreen: width-shrink setSize re-clips cached rows (H1)":
+
+  test "rows wider than new width are clipped after setSize width-shrink":
+    ## Regression for H1: before the fix, cached rows wider than the new
+    ## width were left unchanged by setSize, causing them to bleed beyond
+    ## the terminal column boundary on the next paint. After the fix,
+    ## every row's displayWidth <= the new region width.
+    var pipefds: array[2, cint]
+    doAssert pipe(pipefds) == 0
+    let rd = pipefds[0]; let wr = pipefds[1]
+    setNonblock(rd)
+    defer:
+      discard close(rd)
+      discard close(wr)
+
+    let s = makeAltScreen(wr, 3, 40)
+    let r = newRegion(s.layout, 0, 0, 3, 40)
+    # Set content that fills the original 40-column width.
+    r.set(@["AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",   # 38 A's — fits in 40
+            "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",   # 38 B's
+            "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"])  # 38 C's
+    s.enter()
+    s.paint()
+    discard readAvailable(rd)   # drain initial paint
+
+    # Shrink width from 40 → 10.
+    setSize(s, 3, 10)
+
+    # All cached rows must now be <= 10 display columns (re-clip applied).
+    for row in r.rows:
+      check displayWidth(row) <= 10
+
+  test "Screen.setSize width-shrink also re-clips cached rows":
+    ## Same invariant for Screen[S] (the other consumer of the bug).
+    ## Uses a MemorySink so there's no fd/pipe needed.
+    let sink = newMemorySink()
+    let s = newScreen(sink, 3, 40)
+    let r = newRegion(s.layout, 0, 0, 3, 40)
+    r.set(@["AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+            "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+            "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"])
+    s.paint()
+
+    # Shrink width from 40 → 10.
+    setSize(s, 3, 10)
+
+    for row in r.rows:
+      check displayWidth(row) <= 10

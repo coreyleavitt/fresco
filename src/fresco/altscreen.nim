@@ -28,8 +28,10 @@ import ./terminal/termios as termios_mod
 import intonaco/reactive
 import std/posix
 
+export termios_mod.withCbreak
+
 export layout.Region, layout.set, layout.markDirty, layout.setRow,
-       layout.scrollUp, layout.rows, layout.resizeRows
+       layout.scrollUp, layout.rows, layout.resizeRows, layout.reclipRows
 
 type
   AltScreen*[S: Sink] = ref object
@@ -131,22 +133,30 @@ proc flush*(s: AltScreen[TerminalSink]): string =
 template withAltScreen*[S: Sink, C: GrantsAltScreenCap](
     sink: S, h, w: int, cap: C,
     screenIdent: untyped, body: untyped) =
-  ## Exception-safe alternate-screen scope.
+  ## Exception-safe alternate-screen scope. fresco owns both teardown tiers:
   ##
-  ## Guarantees ?1049l (leave) is emitted on every exit path — normal
-  ## return AND exception unwind. The template creates the AltScreen,
-  ## then as its FIRST action inside the `try` calls `enter()` (?1049h).
-  ## The `finally` unconditionally calls `leave()` (?1049l).
+  ##   tier-1 (normal / exception): `leave()` in `finally` — emits ?1049l
+  ##     on every exit path including exception unwind.
+  ##
+  ##   tier-3 (SIGSEGV/crash): `withCbreak` installs `termiosSignalHandler`
+  ##     for SIGINT/SIGTERM/SIGSEGV/SIGABRT/SIGBUS. The signal handler emits
+  ##     the async-signal-safe ?1049l (via `markAltScreenEntered`, called from
+  ##     `enter()`) and restores the saved termios before re-raising with
+  ##     default disposition. AltScreen does NOT install a tier-2 graceful
+  ##     self-pipe — that tier belongs to InlineScreen (which has a
+  ##     ScrollbackLog to flush). AltScreen has no committed data to flush.
   ##
   ## Ordering rationale:
+  ##   - `withCbreak` runs first so termiosSignalHandler is installed as the
+  ##     innermost signal handler before `enter()` arms the alt-screen state.
   ##   - `newAltScreen` has no terminal side-effects; safe before `try`.
-  ##   - `enter()` is the first statement *inside* `try` so that even a
-  ##     raise from `enter` hits `finally`. `leave()` on a screen that
-  ##     never completed `enter` is safe: it simply writes ?1049l, which
-  ##     is a harmless no-op when ?1049h was never emitted.
-  ##   - This closes the window where ?1049h is emitted but the `try` has
-  ##     not yet begun (a construct-then-enter-outside-try ordering would
-  ##     leak the alt buffer if enter raised between construction and try).
+  ##   - `enter()` is the first statement *inside* `try` so that even a raise
+  ##     from `enter` hits `finally`. `leave()` on a screen that never
+  ##     completed `enter` is safe: it simply writes ?1049l, which is a
+  ##     harmless no-op when ?1049h was never emitted.
+  ##   - This closes the window where ?1049h is emitted but the `try` has not
+  ##     yet begun (a construct-then-enter-outside-try ordering would leak the
+  ##     alt buffer if enter raised between construction and try).
   ##
   ## Hygiene: `screenIdent` is injected into the body scope via
   ## `{.inject.}` so the caller can name the binding freely.
@@ -155,11 +165,12 @@ template withAltScreen*[S: Sink, C: GrantsAltScreenCap](
   ##   withAltScreen(sink, h, w, cap, s):
   ##     s.paint()
   let screenIdent {.inject.} = newAltScreen(sink, h, w, cap)
-  try:
-    screenIdent.enter()
-    body
-  finally:
-    screenIdent.leave()
+  withCbreak:
+    try:
+      screenIdent.enter()
+      body
+    finally:
+      screenIdent.leave()
 
 # ---------------------------------------------------------------------------
 # Resize (SIGWINCH path)
@@ -184,5 +195,6 @@ proc setSize*[S: Sink](s: AltScreen[S], height, width: int) =
     elif r.col + r.width > width:
       r.width = width - r.col
     r.resizeRows(r.height)
+    r.reclipRows()
     r.pending = true
   s.size.set((height, width))
