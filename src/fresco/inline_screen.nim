@@ -466,6 +466,34 @@ proc commitOneBatch[S: Sink](s: InlineScreen[S]): string =
   else:
     s.paint()
 
+proc teardownFlush*[S: Sink](s: InlineScreen[S]) =
+  ## Best-effort teardown: emit any buffered committed lines RAW
+  ## (`line + "\n"`, cursor-unanchored) followed by a final `"\n"`, and
+  ## ABANDON the structured live-band repaint (repainting at Region.row
+  ## without knowing the post-interruption physical cursor would land the
+  ## band in the wrong rows — RFC teardown contract). The committed tail is
+  ## never lost; only the live-band frame is sacrificed.
+  ##
+  ## ASYNC-SIGNAL-SAFETY: this is an EXPLICIT-call contract invoked from the
+  ## consumer's NORMAL shutdown path (e.g. a chronos addSignal SIGTERM
+  ## handler that wakes the loop), NOT from the async signal handler itself —
+  ## draining heap `pending` strings + a write loop are not async-signal-safe.
+  ## The fatal-signal handler (slice 6b) does only the termios restore +
+  ## alt-screen leave, which ARE async-signal-safe. The lines are already
+  ## sanitized (LogSink.append chokepoint), so emit them as-is.
+  ##
+  ## MemorySink (no scrollback model): no-op.
+  mixin writeAll
+  let n = s.logPendingLen()
+  if n == 0: return
+  let batch = s.logDrainBatch(n)   # drain ALL
+  when compiles(s.sink.writeAll("")):   # TerminalSink path
+    var bytes = ""
+    for line in batch: bytes &= line & "\n"
+    bytes &= "\n"
+    s.sink.writeAll(bytes)
+  # else (MemorySink / no raw-write sink): drained but not emitted — no scrollback to flush to.
+
 proc commit*[S: Sink](s: InlineScreen[S]): string {.discardable.} =
   ## Synchronous full-drain commit. Batch-loops until the log is empty.
   ##
