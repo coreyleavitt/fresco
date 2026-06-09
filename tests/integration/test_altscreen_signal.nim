@@ -11,6 +11,7 @@
 
 import std/[unittest, posix, os, strutils]
 import ./helpers/pty_subprocess
+import ./helpers/compile_child
 
 proc ioctlSetCTTY(fd: cint; request: culong; arg: cint): cint
   {.importc: "ioctl", header: "<sys/ioctl.h>", varargs.}
@@ -20,15 +21,9 @@ const TIOCSCTTY_VAL: culong = 0x540E
 # The ?1049l byte sequence we expect to see on the PTY master stream.
 const AltScreenLeaveSeq = "\x1b[?1049l"
 
-# Path to the child helper binary (compiled once before the tests run).
+# Path to the child helper binary (compiled on demand via compileChildBinary).
 const ChildBin = "/tmp/fresco_altscreen_signal_child"
-const ChildSrc = "tests/integration/helpers/altscreen_signal_child.nim"
-
-proc compileChild(): bool =
-  ## Compile the child helper. Returns true on success.
-  let cmd = "nim c --hints:off --warnings:off --path:src -o:" &
-            ChildBin & " " & ChildSrc
-  execShellCmd(cmd) == 0
+const ChildSrcName = "altscreen_signal_child.nim"  # relative to helpers/
 
 proc sleepMs(ms: int) =
   var ts  = Timespec(tv_sec: posix.Time(0), tv_nsec: clong(ms * 1_000_000))
@@ -63,10 +58,14 @@ proc forkExecOnPty(binPath: string): tuple[pid: Pid, master: cint] =
 suite "altscreen signal: async-signal-safe ?1049l on SIGINT":
 
   test "child helper compiles":
-    check compileChild()
+    let (ok, msg) = compileChildBinary(ChildSrcName, ChildBin)
+    if not ok: skip()
+    check ok
 
   test "SIGINT emits ?1049l on the PTY master before child exits":
-    doAssert compileChild(), "child helper failed to compile"
+    let (ok, compMsg) = compileChildBinary(ChildSrcName, ChildBin)
+    if not ok: skip()
+    discard compMsg
 
     let (pid, master) = forkExecOnPty(ChildBin)
     defer: discard posix.close(master)

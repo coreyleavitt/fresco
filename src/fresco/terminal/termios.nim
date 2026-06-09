@@ -4,9 +4,12 @@
 ##
 ##   1. `withCbreak` restores the saved termios on every exit path
 ##      including exceptions, via `try/finally`.
-##   2. While inside `withCbreak`, SIGINT / SIGTERM / SIGSEGV handlers
-##      are installed that restore termios *before* the signal is
-##      re-raised with default disposition.
+##   2. While inside `withCbreak`, SIGINT / SIGTERM / SIGSEGV /
+##      SIGABRT / SIGBUS handlers are installed that restore termios
+##      *before* the signal is re-raised with default disposition.
+##      SIGABRT fires on doAssert/abort(); SIGBUS on unaligned/mmap
+##      faults — both can leave the terminal in raw mode without
+##      these handlers.
 ##
 ## Saving against a non-TTY fd (e.g. /dev/null) is not an error: the
 ## snapshot just carries `valid = false` and restore becomes a no-op.
@@ -85,6 +88,8 @@ type SigHandler = proc(sig: cint) {.noconv.}
 var prevSigInt  {.threadvar.}: SigHandler
 var prevSigTerm {.threadvar.}: SigHandler
 var prevSigSegv {.threadvar.}: SigHandler
+var prevSigAbrt {.threadvar.}: SigHandler
+var prevSigBus  {.threadvar.}: SigHandler
 
 # --- async-signal-safe alt-screen leave -------------------------------------
 #
@@ -129,44 +134,66 @@ proc markAltScreenLeft*() {.gcsafe, raises: [].} =
 # On SIGSEGV/SIGABRT/SIGBUS the handler does one raw write — no heap read,
 # no alloc, no GC call. Same trust model as the alt-screen const byte buffer.
 #
-# Layout:
-#   sigTailBuf  — fixed byte array; holds the serialized tail
-#   sigTailLen  — valid byte count [0..InlineTailCap)
-#   sigTailFd   — output fd (-1 when disarmed)
-#   sigTailActive — 1 when an inline screen is armed
+# Layout (double-buffer design — M2 TOCTOU fix):
+#   sigTailBufs[0..1]  — two fixed byte arrays; only one is "active" at a time
+#   sigTailLens[0..1]  — valid byte count for each buffer
+#   sigTailActive      — index of the buffer currently live for the handler (0 or 1)
+#   sigTailArmed       — 1 when an inline screen is armed
+#   sigTailFd          — output fd (-1 when disarmed)
+#
+# setInlineTail writes into the INACTIVE buffer (1 - sigTailActive), sets its
+# length, then stores sigTailActive as the single last atomic flip. The crash
+# handler reads sigTailActive → buffer + length — always a complete, consistent
+# snapshot (old or new, never a hybrid of both).
 
 const InlineTailCap* = 8192
-  ## Maximum bytes held in the static crash-flush tail buffer.
+  ## Maximum bytes held in each static crash-flush tail buffer slot.
   ## On overflow the OLDEST bytes are dropped so the NEWEST committed
   ## output survives into the crash handler's single raw write.
 
-var sigTailBuf    {.threadvar.}: array[InlineTailCap, byte]
-var sigTailLen    {.threadvar.}: cint
+var sigTailBufs   {.threadvar.}: array[2, array[InlineTailCap, byte]]
+var sigTailLens   {.threadvar.}: array[2, cint]
+var sigTailActive {.threadvar.}: cint   ## index of the live buffer (0 or 1)
+var sigTailArmed  {.threadvar.}: cint   ## 1 when an inline screen is armed
 var sigTailFd     {.threadvar.}: cint
-var sigTailActive {.threadvar.}: cint
 
 proc armInlineTail*(fd: cint) {.gcsafe, raises: [].} =
   ## Arm the static tail buffer for `fd`. Called by `withInlineScreen` /
   ## armInlineTailBuffer after the screen is constructed.
-  sigTailFd     = fd
-  sigTailLen    = 0
-  sigTailActive = 1
+  ## Resets both buffer slots so no stale bytes from a previous session
+  ## can bleed through.
+  sigTailFd      = fd
+  sigTailLens[0] = 0
+  sigTailLens[1] = 0
+  sigTailActive  = 0
+  sigTailArmed   = 1
 
 proc disarmInlineTail*() {.gcsafe, raises: [].} =
   ## Disarm the tail buffer. Called on normal teardown so the crash
   ## handler does not emit stale bytes from a previous session.
-  sigTailActive = 0
-  sigTailFd     = -1
-  sigTailLen    = 0
+  ## After this call inlineTailArmed() returns false and
+  ## setInlineTail() is a no-op.
+  sigTailArmed   = 0
+  sigTailFd      = -1
+  sigTailLens[0] = 0
+  sigTailLens[1] = 0
 
 proc setInlineTail*(lines: openArray[string]) {.gcsafe, raises: [].} =
   ## REBUILD the tail buffer from `lines` (no incremental update — a full
   ## rebuild avoids any desync between the mirror and the real pending seq).
   ## Each line is followed by 0x0A (newline). On overflow the OLDEST bytes
   ## are dropped so the buffer holds the LAST InlineTailCap bytes.
-  ## No-op when disarmed (sigTailActive == 0). Alloc-free: writes directly
+  ## No-op when disarmed (sigTailArmed == 0). Alloc-free: writes directly
   ## into the fixed array byte-by-byte.
-  if sigTailActive == 0: return
+  ##
+  ## TOCTOU safety (double-buffer): writes into the INACTIVE slot
+  ## (1 - sigTailActive), commits the length, then flips sigTailActive last.
+  ## The crash handler always reads a complete, consistent snapshot — old or
+  ## new, never a hybrid of the two.
+  if sigTailArmed == 0: return
+
+  # Select the INACTIVE slot to write into.
+  let inactive = 1 - sigTailActive
 
   # First pass: measure total length so we know whether to truncate.
   var total = 0
@@ -174,25 +201,26 @@ proc setInlineTail*(lines: openArray[string]) {.gcsafe, raises: [].} =
     total += s.len + 1   # +1 for '\n'
 
   if total == 0:
-    sigTailLen = 0
+    sigTailLens[inactive] = 0
+    # Atomic flip: make the (now-empty) inactive slot the live one.
+    sigTailActive = inactive
     return
 
   if total <= InlineTailCap:
-    # Fits entirely: fill from position 0.
+    # Fits entirely: fill inactive slot from position 0.
     var pos = 0
     for s in lines:
       for ch in s:
-        sigTailBuf[pos] = ch.byte
+        sigTailBufs[inactive][pos] = ch.byte
         inc pos
-      sigTailBuf[pos] = 0x0A
+      sigTailBufs[inactive][pos] = 0x0A
       inc pos
-    sigTailLen = cint(pos)
+    sigTailLens[inactive] = cint(pos)
   else:
     # Overflow: keep only the LAST InlineTailCap bytes.
-    # Build into a temp offset into conceptual space then copy the tail window.
     # We walk through the serialized sequence twice:
     #   1st pass: find the byte-offset where the surviving tail starts.
-    #   2nd pass: fill sigTailBuf from that offset.
+    #   2nd pass: fill sigTailBufs[inactive] from that offset.
     let dropBytes = total - InlineTailCap
     # Walk through lines to find which line/byte we start keeping from.
     var bytesSeen = 0
@@ -210,9 +238,10 @@ proc setInlineTail*(lines: openArray[string]) {.gcsafe, raises: [].} =
     if not found:
       # All lines fit in drop zone — should not happen given total > InlineTailCap
       # but be safe.
-      sigTailLen = 0
+      sigTailLens[inactive] = 0
+      sigTailActive = inactive
       return
-    # Fill sigTailBuf with the surviving tail.
+    # Fill inactive slot with the surviving tail.
     var pos = 0
     for li in startLine ..< lines.len:
       let s = lines[li]
@@ -223,32 +252,41 @@ proc setInlineTail*(lines: openArray[string]) {.gcsafe, raises: [].} =
       while byteInLine < lineLen and pos < InlineTailCap:
         if byteInLine >= skip:
           if byteInLine < s.len:
-            sigTailBuf[pos] = s[byteInLine].byte
+            sigTailBufs[inactive][pos] = s[byteInLine].byte
           else:
-            sigTailBuf[pos] = 0x0A
+            sigTailBufs[inactive][pos] = 0x0A
           inc pos
         inc byteInLine
-    sigTailLen = cint(pos)
+    sigTailLens[inactive] = cint(pos)
+
+  # Atomic flip: the inactive slot is now complete; make it the live one.
+  sigTailActive = inactive
 
 # --- test seams (no real SIGSEGV needed) ------------------------------------
 
 proc inlineTailSnapshot*(): string {.gcsafe.} =
-  ## Return the current tail buffer contents as a string (for test assertions).
-  ## Reads sigTailBuf[0 ..< sigTailLen] into a new Nim string.
-  if sigTailLen <= 0: return ""
-  result = newString(sigTailLen)
-  for i in 0 ..< sigTailLen:
-    result[i] = chr(sigTailBuf[i])
+  ## Return the current live tail buffer contents as a string (for test assertions).
+  ## Reads sigTailBufs[sigTailActive][0 ..< sigTailLens[sigTailActive]] into a new Nim string.
+  if sigTailArmed == 0: return ""
+  let idx = sigTailActive
+  let n = sigTailLens[idx]
+  if n <= 0: return ""
+  result = newString(n)
+  for i in 0 ..< n:
+    result[i] = chr(sigTailBufs[idx][i])
 
 proc flushInlineTailNow*() {.gcsafe, raises: [].} =
   ## Runs ONLY the handler's tail-write block against sigTailFd, WITHOUT
   ## termios restore or re-raise. Lets tests point sigTailFd at a pipe and
   ## assert the exact bytes the crash handler would emit, deterministically.
-  if sigTailActive != 0 and sigTailFd >= 0 and sigTailLen > 0:
-    var remaining = int(sigTailLen)
+  let idx = sigTailActive
+  let tailLen = sigTailLens[idx]
+  if sigTailArmed != 0 and sigTailFd >= 0 and tailLen > 0:
+    sigTailArmed = 0  # test-and-clear FIRST — prevents double-emit on re-entrant call
+    var remaining = int(tailLen)
     var offset = 0
     while remaining > 0:
-      let n = posix.write(sigTailFd, addr sigTailBuf[offset], remaining)
+      let n = posix.write(sigTailFd, addr sigTailBufs[idx][offset], remaining)
       if n > 0:
         offset += n
         remaining -= n
@@ -256,7 +294,6 @@ proc flushInlineTailNow*() {.gcsafe, raises: [].} =
         continue
       else:
         break
-    sigTailActive = 0
 
 proc termiosSignalHandler(sig: cint) {.noconv.} =
   # --- Tier-3 teardown contract: flush the pre-serialized inline tail -------
@@ -268,11 +305,16 @@ proc termiosSignalHandler(sig: cint) {.noconv.} =
   # exclusive, so ordering between the two blocks is moot.
   #
   # ASYNC-SIGNAL-SAFE: cint reads, fixed array addr, raw POSIX write().
-  if sigTailActive != 0 and sigTailFd >= 0 and sigTailLen > 0:
-    var tailRemaining = int(sigTailLen)
+  # Double-buffer: read sigTailActive once; that slot is always complete
+  # (setInlineTail flips it only after the inactive slot is fully written).
+  let tailIdx = sigTailActive
+  let tailLen = sigTailLens[tailIdx]
+  if sigTailArmed != 0 and sigTailFd >= 0 and tailLen > 0:
+    sigTailArmed = 0  # test-and-clear FIRST — prevents double-emit on re-entrant signal
+    var tailRemaining = int(tailLen)
     var tailOffset = 0
     while tailRemaining > 0:
-      let n = posix.write(sigTailFd, addr sigTailBuf[tailOffset], tailRemaining)
+      let n = posix.write(sigTailFd, addr sigTailBufs[tailIdx][tailOffset], tailRemaining)
       if n > 0:
         tailOffset += n
         tailRemaining -= n
@@ -280,7 +322,6 @@ proc termiosSignalHandler(sig: cint) {.noconv.} =
         continue
       else:
         break
-    sigTailActive = 0  # prevent double-emit on nested signal
 
   # Emit ?1049l FIRST (before termios restore) so the terminal returns to
   # the primary buffer before we hand control back to cooked mode. Only
@@ -318,13 +359,17 @@ proc termiosSignalHandler(sig: cint) {.noconv.} =
   discard kill(getpid(), sig)
 
 proc installSignalHandlers*(s: TermiosSnapshot) {.gcsafe, raises: [].} =
-  ## Register restore-on-fatal-signal hooks for SIGINT/SIGTERM/SIGSEGV.
-  ## Nested install calls push onto a stack so the original termios
-  ## of each scope is preserved through fatal-signal restore. Snapshots
-  ## beyond MaxSignalSnapshots (16) are silently *not stored*, but the
-  ## depth counter still increments — pairing with uninstall stays
-  ## correct even at extreme nesting. Deep nesting is not a real
-  ## workload; the bound exists to keep this signal-safe (no alloc).
+  ## Register restore-on-fatal-signal hooks for SIGINT/SIGTERM/SIGSEGV/
+  ## SIGABRT/SIGBUS. Nested install calls push onto a stack so the
+  ## original termios of each scope is preserved through fatal-signal
+  ## restore. Snapshots beyond MaxSignalSnapshots (16) are silently
+  ## *not stored*, but the depth counter still increments — pairing
+  ## with uninstall stays correct even at extreme nesting. Deep nesting
+  ## is not a real workload; the bound exists to keep this signal-safe
+  ## (no alloc).
+  ##
+  ## SIGABRT covers Nim's doAssert/abort(); SIGBUS covers unaligned/mmap
+  ## faults. Both previously dumped core with the terminal in raw mode.
   if snapshotDepth < MaxSignalSnapshots:
     snapshotStack[snapshotDepth] = s
   inc snapshotDepth
@@ -334,6 +379,8 @@ proc installSignalHandlers*(s: TermiosSnapshot) {.gcsafe, raises: [].} =
     prevSigInt  = cast[SigHandler](signal(SIGINT,  termiosSignalHandler))
     prevSigTerm = cast[SigHandler](signal(SIGTERM, termiosSignalHandler))
     prevSigSegv = cast[SigHandler](signal(SIGSEGV, termiosSignalHandler))
+    prevSigAbrt = cast[SigHandler](signal(SIGABRT, termiosSignalHandler))
+    prevSigBus  = cast[SigHandler](signal(SIGBUS,  termiosSignalHandler))
 
 proc uninstallSignalHandlers*() {.gcsafe, raises: [].} =
   ## Pop one nest level; restore the caller's prior handlers (or
@@ -349,7 +396,12 @@ proc uninstallSignalHandlers*() {.gcsafe, raises: [].} =
       if prevSigTerm != nil: prevSigTerm else: SIG_DFL)
     discard signal(SIGSEGV,
       if prevSigSegv != nil: prevSigSegv else: SIG_DFL)
+    discard signal(SIGABRT,
+      if prevSigAbrt != nil: prevSigAbrt else: SIG_DFL)
+    discard signal(SIGBUS,
+      if prevSigBus  != nil: prevSigBus  else: SIG_DFL)
     prevSigInt = nil; prevSigTerm = nil; prevSigSegv = nil
+    prevSigAbrt = nil; prevSigBus = nil
 
 template withCbreak*(fd: cint, body: untyped) =
   let snap = enterCbreak(fd)
@@ -458,10 +510,17 @@ proc teardownPipeReadFd*(): cint {.gcsafe.} =
   ## Return the read end of the teardown self-pipe.
   teardownPipe[0]
 
+proc cbreakDepth*(): int {.gcsafe, raises: [].} =
+  ## Current nesting depth of active `withCbreak` scopes (i.e. how many
+  ## cbreak snapshots are on the signal-handler stack). Test seam: lets
+  ## tests assert that withCbreak (and therefore withAltScreen post-H5)
+  ## correctly installs/uninstalls the signal handlers.
+  snapshotDepth
+
 proc inlineTailArmed*(): bool {.gcsafe, raises: [].} =
   ## True when the static inline-tail buffer is currently armed.
   ## Test seam: lets tests assert arm/disarm pairing without reading private state.
-  sigTailActive != 0
+  sigTailArmed != 0
 
 proc gracefulArmed*(): bool {.gcsafe, raises: [].} =
   ## True when the graceful SIGTERM/INT teardown is currently armed.
@@ -488,8 +547,12 @@ proc restoreAllAndReraise*(sig: cint) {.gcsafe, raises: [].} =
   ## ourselves. Normal context (not a signal handler) so no
   ## async-signal-safety constraint, but we keep it simple.
 
-  # Flush the static inline tail (may have been drained by teardownFlush
-  # already; flushInlineTailNow is a no-op if sigTailLen == 0).
+  # CRASH-PATH tail flush. On the graceful (tier-2) path teardownFlush MUST
+  # have been called before this proc and must have explicitly disarmed the
+  # inline tail via disarmInlineTail() — making this call a structural no-op.
+  # On the crash (tier-3) path (SIGSEGV/SIGABRT/SIGBUS) teardownFlush never
+  # ran and the tail is still armed, so flushInlineTailNow() emits it.
+  # Either way: no double-emit and nothing silently dropped.
   flushInlineTailNow()
 
   # Leave alt-screen if entered.

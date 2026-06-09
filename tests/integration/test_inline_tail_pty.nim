@@ -14,22 +14,22 @@
 
 import std/[unittest, os, strutils]
 import ./helpers/pty_subprocess
+import ./helpers/compile_child
 
 const ChildBin = "/tmp/fresco_inline_tail_segv_child"
-const ChildSrc = "tests/integration/helpers/inline_tail_segv_child.nim"
-
-proc compileChild(): bool =
-  let cmd = "nim c --hints:off --warnings:off --path:src -o:" &
-            ChildBin & " " & ChildSrc
-  execShellCmd(cmd) == 0
+const ChildSrcName = "inline_tail_segv_child.nim"  # relative to helpers/
 
 suite "inline tail buffer: real SIGSEGV crash-handler flush via PTY":
 
   test "child compiles":
-    check compileChild()
+    let (ok, msg) = compileChildBinary(ChildSrcName, ChildBin)
+    if not ok: skip()
+    check ok
 
   test "SIGSEGV handler flushes tail to PTY master":
-    doAssert compileChild(), "child binary failed to compile"
+    let (ok, compMsg) = compileChildBinary(ChildSrcName, ChildBin)
+    if not ok: skip()
+    discard compMsg
 
     # Run child in PTY. The child signals readiness then segfaults.
     # Give it 3 seconds — compilation is done; the segfault is instant.

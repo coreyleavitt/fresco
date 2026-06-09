@@ -8,7 +8,7 @@
 ##   5. Triggers a genuine SIGSEGV (null dereference).
 ##
 ## The crash handler fires:
-##   - flushes sigTailBuf via raw write to STDERR
+##   - flushes the static tail buffer via raw write to STDERR
 ##   - restores termios (no-op since we didn't enter cbreak)
 ##   - re-raises SIGSEGV with SIG_DFL → child exits with signal
 
