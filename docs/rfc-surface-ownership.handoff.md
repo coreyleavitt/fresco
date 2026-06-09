@@ -105,6 +105,61 @@ Round 3 found 5 CRITICALs, all in S3, all clear-best (no forks). The headline: *
 - (Prior) Concept abstractions for the widget surface are a phantom — explicit value objects beat Nim concepts when nothing polymorphises. Define our own minimal cap rather than block on an unbuilt sibling RFC.
 
 ## Review ledger (stage 4)
+Round 1 — 5 reviewers (correctness/quality/security/design/test) over `d1adcda..HEAD`, 52 raw findings; verified the headline Critical + 2 security Highs against source.
+
+**Fix-loop round 1 COMPLETE — all Critical + High + Medium addressed. Suite 691 → 739 OK (+48 tests), zero failures (UNCOMMITTED in working tree).** Mandate: fix through Medium, leave Low. Per-cluster (sonnet subagents, serial):
+- C1 (Critical): rebuilt bottom-anchored after user approval — see C1 row.
+- ansi cluster: H2 + M7-sanitizer-tests → 716 OK.
+- signal cluster: H4, M2 (double-buffer), M6, M5a, M8, M7-signal → 720 OK.
+- teardown/encap cluster: H3, M4, M10, M1, M3, M5b → 734 OK.
+- altscreen cluster: H1 (shared `reclipRows`), H5, M11 → 738 OK.
+- cleanup cluster: M9 (`render/timing.nim`, `ensureRenderer` dedup) + multi-batch/exception-path/re-entrancy test gaps → 739 OK.
+
+**Round 2 re-review DONE.** Security+correctness independently CONFIRMED the round-1 fixes sound (double-buffer flip, SIGABRT/SIGBUS wiring, H3 unregister ordering, C1 bounds, timing.nim no-cycle). New findings: Design #2 (High, unenforced bottom-anchor), Design #1/#4 + Security #1 (Medium), Security #2/#3 + correctness bandRows-empty (Low). **All fixed → 755 OK (+16).**
+- Sec#1: `clipToWidth` C1 body-scan completion + fast-path bypass when C1 present.
+- Sec#2: test-and-clear `sigTailArmed` (reentrancy double-emit window).
+- Sec#3: honor 8-bit ST `0x9C` as string-seq terminator.
+- Design#1: factored `withInlineScreenImpl` (all 3 overloads share it; H3 comment now present).
+- Design#4: `setCommitInProgressForTest` gated under `when defined(frescoTesting)` (nimble test task passes `-d:frescoTesting`).
+- Design#2: `commitOneBatch` fail-fast — band must be bottom-anchored (`max(r.row+r.height)==layout.height`), else AssertionDefect; ~9 existing tests corrected to bottom-anchor placement.
+- Design#3: DOWNGRADED to Low — doc-only clarification of `liveZoneHeight` two-mode semantics (no rename; name is coherent for the reactive `bindScrollback` purpose).
+
+**Round 3 re-review DONE — FLOOR REACHED (0 Critical/High/Medium).** Security+correctness and design both confirmed the round-2 fixes clean, nothing above Low. Verified: the Design-2 guard is a real `raise` (NOT `doAssert` → survives `-d:danger`); `Defect` is exempt from `{.raises.}` so it works in the async `driveCommitStep` path (a `ValueError` would NOT compile there — so the design reviewer's ValueError suggestion was infeasible).
+- **Final fix (inline, control loop):** replaced `AssertionDefect` with a dedicated exported `BandNotBottomAnchoredDefect = object of Defect` — names the consumer-contract violation correctly while staying `raises:[]`-compatible and `-d:danger`-proof. Tests updated. **755 OK, exit 0.**
+
+**STAGE 4 (/code-review) COMPLETE.** 3 review rounds, 1 Critical + 5 High + 11 Medium fixed, suite 691 → 755 OK (+64 tests). Work is UNCOMMITTED in the working tree pending user approval to commit.
+
+### Remaining Lows (mandate = leave Low; address opportunistically / before REPL migration)
+- `liveZoneHeight` name residually misleading for the imperative consumer (doc'd both modes; rename deferred — flag before amoxtli REPL migration).
+- Multi-batch async test asserts `commitRunsCount>=1` (full-drain proven) not `>=2` (multi-batch step not directly asserted).
+- `clipToWidth` fast-path C1 scan is over-conservative for valid UTF-8 U+0080–U+009F (bypasses fast path; full loop still correct — pre-existing, not a regression).
+- Design-2 anchor check runs per-batch (redundant within one commit) — could gate on a `commit`-scoped flag; not worth the state.
+- `newRegion` doesn't reject non-bottom-anchored placement at allocation time (collective property — only checkable at commit; deferred-failure is acceptable, message is actionable).
+- Round-1 leftovers: L1 dead `altScreenGrant` field + "zero-size" comment; L2 `Region.set` unconditional `pending`; L4 stray `posix` import / stale comment; L5 `AltScreen` lacks `runAutoPaint` / `commitInline` duck-typed. (L3 `measured` dead work — MOOT: the C1 rewrite removed `physicalRows`/`measured` from `commitInline`.)
+
+Statuses below: `fixed` = regression test green in the +48; `open` = still to do.
+
 | id | sev | finding | status | proof / reason |
 |----|-----|---------|--------|----------------|
-| —  | —   | (stage 4 not started) | — | — |
+| C1 | Critical | InlineScreen committed lines never reach native scrollback for the common case + geometry-contract defect (documented bottom-anchored, implemented top-anchored: example placed regions at row 0). PTY "scrollback" tests asserted raw-byte ORDER only → green but never verified the invariant. | **fixed** (698 OK) | Rebuilt bottom-anchored (user-approved): `commitInline` now emits a relative-flow newline stream (committed raw → band rows clipped, last row no trailing `\n` ⇒ exactly N scrolls) so committed content scrolls into native history ABOVE the band; band repaints at `[liveTop..H-1]`. Regions bottom-anchored; `inline_prompt.nim` prompt moved to bottom. New `test_scrollback_screenmodel.nim` SEEDS above-band `HIST-row-i` history + asserts preserved-in-scrollback + band-at-bottom + no-dup (killed the blank-grid blind spot of the first attempt). First sonnet attempt (row-1 + scroll-at-bottom) was REJECTED: clobbered above-band history, forced committed off-screen. `liveZoneHeight` left as-is (guard only; naming confusion is separate). |
+| H1 | High | `AltScreen.setSize` (and `Screen.setSize`) omit the width-shrink re-clip that `InlineScreen.applySizeNow` performs → wrap-bleed in release / `doAssert displayWidth<=width` crash in assertions on width shrink | open | altscreen.nim:168 vs inline_screen.nim:364; 3 reviewers converged |
+| H2 | High | `sanitizeLogLine` passes 8-bit C1 controls (0x80–0x9F) → 8-bit CSI/OSC-52 terminal injection on C1-capable terminals; sanitizer is the trust boundary. Fix must be rune-aware (naive 0x80–0x9F strip corrupts UTF-8 continuation bytes) | open | ansi.nim:288-291 (read & confirmed); clipToWidth has same else-branch |
+| H3 | High | `teardownPipeRegistered` set once, never reset; `disarmGracefulTeardown` is in a different module so cannot reset it → 2nd `withInlineScreen` lifecycle skips `register()` on the new pipe fd, graceful SIGTERM/INT hangs forever, terminal left raw | open | inline_teardown.nim:30,38-40 (read & confirmed) |
+| H4 | High | SIGABRT & SIGBUS not installed though the three-tier contract + termios.nim:129 comment claim crash coverage → Nim `doAssert`/`abort()` (SIGABRT) strands terminal in raw+alt-screen, no tail flush. Directly undercuts the S5 "no best-effort" teardown contract | open | termios.nim:336 installs only INT/TERM/SEGV |
+| H5 | High | `withAltScreen` does not wrap `withCbreak` (asymmetric with `withInlineScreen`) → caller gets enter/leave but no signal restore unless they manually add `withCbreak`; example only works by luck | open | altscreen.nim withAltScreen vs inline_teardown.nim:120 |
+| M1 | Medium | Internal pipeline state exported (`pendingCommit`,`commitInProgress`,`stagedH/W`,`hasStagedSize`,`commitRuns`,`logDrainBatch`) → consumer can break single-writer/gate invariants the type should forbid; route test observability through narrow seams | open | inline_screen.nim field list |
+| M2 | Medium | TOCTOU in `setInlineTail`: byte-fill loop then `sigTailLen=` assignment; crash mid-fill emits hybrid/cross-session tail bytes (garbled diagnostics, no injection) | open | termios.nim:162-231 vs :271-283 |
+| M3 | Medium | `except Exception: discard` in `driveCommitStep` reschedule swallows Defect; sibling site catches `CatchableError` | open | inline_screen.nim:274 |
+| M4 | Medium | `doAssert teardownPipeReadFd() != 0 or true` is vacuous — dead ordering guard; should be `doAssert gracefulArmed()` | open | inline_teardown.nim:65 (4 reviewers) |
+| M5 | Medium | `teardownFlush` docstring "best-effort"/"ABANDON repaint" contradicts RFC tier-1 "complete flush"; + two commit entry points (`commit` vs `driveCommitStep`) with divergent bookkeeping/asserts | open | inline_teardown.nim:476; inline_screen.nim commit/driveCommitStep |
+| M6 | Medium | Tier-2 double-flush coordination is coincidental: `restoreAllAndReraise`→`flushInlineTailNow` is a no-op only because `teardownFlush` happened to zero `sigTailLen`; make it structural (disarm in teardownFlush) | open | termios.nim:493 / inline_screen.nim:497 |
+| M7 | Medium | Test gaps: sanitizer escape-classes DCS/PM/APC/SS2/SS3 + lone/truncated ESC/CSI untested + no proptest; double-signal escalation assertion is weak OR (passes on no-hang); SIGINT graceful path untested; multi-batch N>256 untested; tail-buffer at-capacity boundary untested; withInlineScreen exception-path arm/disarm not asserted | open | test_ansi/test_inline_graceful_pty/test_inline_trigger/test_inline_tail_buffer/test_inline_lifecycle |
+| M8 | Medium | PTY signal-child binaries compiled at test-time via `execShellCmd` with relative `--path:src`, no `skip()` when `nim` absent, stale-binary risk → CI portability + false-green for the entire tier-2 signal path | open | test_altscreen_signal/test_inline_tail_pty/test_inline_graceful_pty |
+| M9 | Medium | Duplicated logic: `ensureRenderer` ≡ `flush` lazy-init block; `AutoPaintInterval` const declared in inline_screen.nim AND screen.nim with a "must match" comment | open | terminal.nim:44-49/83-90; inline_screen.nim:53/screen.nim:127 |
+| M10 | Medium | `withInlineScreen` wraps only the `h,w` overload, not the reactive `Signal[(int,int)]` constructor → reactive-resize (SIGWINCH) path cannot use the lifecycle template | open | inline_teardown.nim:76 |
+| M11 | Medium | Example `acquireAltScreenGrant(true)` hardcodes always-capable → teaches bypassing the fail-fast capability gate the type exists to enforce | open | examples/altscreen_app.nim |
+| L1 | Low | `AltScreenCapWitness.altScreenGrant` dead exported field + inaccurate "zero-size" comment | open | altscreen_cap.nim:29-33 |
+| L2 | Low | `Region.set` marks `pending=true` unconditionally even when no row changed → spurious repaint (`setRow` is correctly conditional) | open | layout.nim:52 |
+| L3 | Low | `measured` accumulated unconditionally in `commitInline`, read only under `when compileOption("assertions")` → dead O(n) work in release | open | terminal.nim:123-131 |
+| L4 | Low | `import std/posix` unused in inline_teardown.nim; stale "slice 5b will enforce" comment in altscreen.nim:49 | open | — |
+| L5 | Low | `AltScreen` lacks `runAutoPaint` (undocumented asymmetry with InlineScreen); `commitInline` dispatched via `when compiles` duck-type rather than a named Sink extension point | open | altscreen.nim; inline_screen.nim:467 |
