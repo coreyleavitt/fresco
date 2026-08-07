@@ -509,6 +509,21 @@ proc runHeadless*(screen: InlineScreen[MemorySink],
   ## both are true. Use `result.settled()` for the one-expression "clean
   ## run" check.
   ##
+  ## Precedence: a captured commit-driver Defect supersedes result
+  ## reporting (R2-M1, round-2 stage-4). The "both recorded" guarantee
+  ## above holds ONLY absent a `pendingDefect` (H2, round-1 stage-4) on
+  ## `screen` — the final `screen.teardownFlush()` call below re-raises
+  ## any such Defect synchronously, before `result.appError`/`rows`/
+  ## `committedRows` are populated, so `runHeadless` itself raises instead
+  ## of returning a `HeadlessResult` in that case. This is deliberate: a
+  ## captured Defect means a programming error (e.g. a stale, non-bottom-
+  ## anchored band), and the run's results are meaningless against that —
+  ## fail-fast wins over "both recorded". Accepted residual: a screen
+  ## dropped after a Defect capture with no further call to any of
+  ## `paint`/`LogSink.append`/`appendLine`/`teardownFlush`/`commit`
+  ## silently loses the stored Defect — inherent to deferred capture, not
+  ## fixed by this round.
+  ##
   ## Use this overload when the consumer is an InlineScreen-based app
   ## (e.g., amoxtli's REPL) and the test needs to assert on committed
   ## scrollback output in addition to the live band.

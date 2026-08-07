@@ -104,7 +104,12 @@ template withInlineScreenImpl(sink: untyped, s: untyped, body: untyped) =
   ##
   ##   tier-1 (normal / exception): `teardownFlush(s)` in `finally` — runs in
   ##     full normal context; all heap operations valid; committed lines always
-  ##     flushed on every exit path.
+  ##     flushed on every exit path. `teardownFlush` may itself re-raise a
+  ##     Defect the async commit driver captured mid-run (H2/R2-M1, stage-4);
+  ##     the `finally` block catches it and completes ALL remaining cleanup
+  ##     (tier-2/3 disarming below) before re-raising it at the end, so a
+  ##     captured Defect never leaves the watch task, self-pipe registration,
+  ##     or the tail buffer in an unclean state.
   ##
   ##   tier-2 (graceful SIGTERM/INT): `armGracefulTeardown` + `watchTeardownSignals`
   ##     — the watch task awaits the self-pipe byte, calls `teardownFlush`, then
@@ -138,7 +143,20 @@ template withInlineScreenImpl(sink: untyped, s: untyped, body: untyped) =
     try:
       body
     finally:
-      teardownFlush(s)
+      # R2-M1 (round-2 stage-4): teardownFlush now re-raises a pending
+      # Defect (H2, round-1 stage-4) as its LAST statement, AFTER draining
+      # — but a raise mid-`finally` still skips every finally statement
+      # AFTER the raising call. Catch it here instead of letting it fly:
+      # run every remaining cleanup step (watch-task cancel, self-pipe
+      # unregister, graceful/tail disarm) unconditionally first, THEN
+      # re-raise at the very end of the finally block. The Defect still
+      # surfaces deterministically out of this scope (fail-fast preserved)
+      # — only the ordering relative to cleanup changes.
+      var pendingTeardownDefect: ref Defect = nil
+      try:
+        teardownFlush(s)
+      except Defect as d:
+        pendingTeardownDefect = d
       when compiles(sink.fd):
         if not watchFut.finished: watchFut.cancelSoon()
         # H3: unregister the pipe fd from the chronos dispatcher BEFORE
@@ -153,6 +171,8 @@ template withInlineScreenImpl(sink: untyped, s: untyped, body: untyped) =
           teardownPipeRegistered = false
         disarmGracefulTeardown()
         disarmInlineTail()
+      if pendingTeardownDefect != nil:
+        raise pendingTeardownDefect
 
 template withInlineScreen*[S: Sink](sink: S, h, w: int, pinnedHeaderRows: int,
                                     s: untyped, body: untyped) =

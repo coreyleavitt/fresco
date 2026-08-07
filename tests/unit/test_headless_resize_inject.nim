@@ -289,3 +289,76 @@ suite "H2: BandNotBottomAnchoredDefect capture — does not escape into the disp
       check r.row + r.height == s.layout.height
 
     waitFor body()
+
+# ---------------------------------------------------------------------------
+# Suite 4: R2-M1 (round-2 stage-4) — teardownFlush drains BEFORE re-raising
+# a stashed Defect; a compound failure (app crash + captured Defect)
+# supersedes result reporting in runHeadless.
+# ---------------------------------------------------------------------------
+#
+# R2-M1: teardownFlush's re-raise of a pendingDefect used to be its FIRST
+# statement, voiding its own "zero bytes dropped" drain guarantee whenever a
+# Defect was pending (tail lines buffered since the capture were never
+# drained). Fixed by moving the re-raise to the LAST statement — drain and
+# disarm always run first. Test 1 proves the drain observably happens (the
+# lines land in committedRows) even though teardownFlush still raises. Test
+# 2 proves the documented precedence: a captured Defect supersedes
+# HeadlessResult reporting even when the app ALSO crashed.
+
+suite "R2-M1: teardownFlush drains pending lines before re-raising a stashed Defect":
+
+  test "pendingDefect + pending tail lines: teardownFlush raises the Defect AND the drain happened first":
+    ## Direct unit test of teardownFlush's internal ordering — no dispatcher
+    ## turns involved. appendLine buffers two lines into the log (the async
+    ## commit driver is only scheduled via callSoon, never actually run,
+    ## since nothing here awaits/polls the dispatcher); setPendingDefectForTest
+    ## stashes a Defect the way the real async driver would after capturing
+    ## one. teardownFlush must still fully drain those buffered lines into
+    ## sink.committedRows (the observable proof of "drain happened first")
+    ## before re-raising the stashed Defect.
+    let sink = newMemorySink()
+    let s = newInlineScreen(sink, 10, 40)
+    s.appendLine("line1")
+    s.appendLine("line2")
+    check s.logPendingLen() == 2  # nothing drained yet — no dispatcher turn ran
+
+    let d = newException(BandNotBottomAnchoredDefect, "R2-M1 test defect")
+    s.setPendingDefectForTest(d)
+
+    expect BandNotBottomAnchoredDefect:
+      s.teardownFlush()
+
+    check sink.committedRows == @["line1", "line2"]
+    check s.logPendingLen() == 0
+
+  test "compound failure under runHeadless: app crashes AND a Defect is captured — the Defect propagates, not the HeadlessResult":
+    ## Same stale-band recipe as the H2 suite above (resize w/o reanchor +
+    ## post-resize appendLine under settleDrain, forcing the async driver to
+    ## run and capture the Defect during the per-event drain) — except this
+    ## app ALSO raises after the appendLine call, so BOTH facts are true:
+    ## the app future fails AND a Defect is captured. Per the documented
+    ## precedence (R2-M1): the captured Defect supersedes result reporting.
+    ## runHeadless's own teardownFlush() call re-raises it before appError/
+    ## rows/committedRows are ever populated, so the Defect propagates out
+    ## of runHeadless itself rather than landing in a returned HeadlessResult.
+    proc body() {.async: (raises: [Exception]).} =
+      let sink = newMemorySink()
+      let s = newInlineScreen(sink, 10, 40)
+      let r = s.newRegion(1, 0, 9, 40)
+      check r.row + r.height == s.layout.height
+
+      proc app(stream: InputStream) {.async: (raises: [Exception]).} =
+        let key = await stream.nextKey()
+        discard key
+        # Region is now stale: lowestEdge=10, new H=15. No reanchor.
+        s.appendLine("post-resize, no reanchor, then crash")
+        raise newException(ValueError, "app crashed after triggering the stale band")
+
+      let events = @[
+        resizeEv(15, 40),
+        keyEv(atomKey(kEscape)),
+      ]
+      discard await runHeadless(s, app, events = events, settle = settleDrain())
+
+    expect BandNotBottomAnchoredDefect:
+      waitFor body()

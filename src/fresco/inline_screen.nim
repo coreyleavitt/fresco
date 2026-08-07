@@ -490,6 +490,15 @@ when defined(frescoTesting):
     ## into invariant-critical state does not exist in production binaries.
     s.commitInProgress = v
 
+  proc setPendingDefectForTest*[S: Sink](s: InlineScreen[S], d: ref Defect) =
+    ## Forcibly set pendingDefect. Test seam ONLY (R2-M1, round-2 stage-4)
+    ## — lets a test stash a Defect directly, without driving the real
+    ## stale-band async-capture path, to test `reraisePendingDefect`'s
+    ## entry points (and their ordering relative to other work, e.g.
+    ## teardownFlush's drain) in isolation. Same production-absence
+    ## contract as setCommitInProgressForTest above.
+    s.pendingDefect = d
+
 # ---------------------------------------------------------------------------
 # Geometry helpers
 # ---------------------------------------------------------------------------
@@ -674,7 +683,10 @@ proc commitOneBatch[S: Sink](s: InlineScreen[S]): string =
 proc teardownFlush*[S: Sink](s: InlineScreen[S]) =
   ## Teardown flush: fully drain any buffered committed lines RAW
   ## (`line + "\n"`, cursor-unanchored) followed by a final `"\n"`.
-  ## GUARANTEE: the committed tail is fully drained — zero bytes dropped.
+  ## GUARANTEE: the committed tail is fully drained — zero bytes dropped —
+  ## even when a Defect is pending (R2-M1, round-2 stage-4: draining and
+  ## disarming run unconditionally, BEFORE the pending-Defect re-raise; see
+  ## that re-raise's own doc comment below for why the ordering matters).
   ## The live-band frame is intentionally NOT repainted: the physical cursor
   ## position is unknown at teardown time, so repainting at Region.row would
   ## land the band in the wrong rows.
@@ -699,13 +711,25 @@ proc teardownFlush*[S: Sink](s: InlineScreen[S]) =
   ## concurrently in the same process/thread.
   ##
   ## H2 (round-1 stage-4): re-raises any Defect previously captured by the
-  ## async commit driver BEFORE draining, so it surfaces here synchronously
-  ## and deterministically. This is the harness's own end-of-run call (see
-  ## headless/runner.nim), so it is the guaranteed re-raise point on every
-  ## runHeadless exit path — a Defect captured mid-run can never outlive
-  ## the originating caller's waitFor.
+  ## async commit driver AFTER draining and disarming (round-2 M1 — see
+  ## below), so it surfaces here synchronously and deterministically. This
+  ## is the harness's own end-of-run call (see headless/runner.nim), so it
+  ## is the guaranteed re-raise point on every runHeadless exit path — a
+  ## Defect captured mid-run can never outlive the originating caller's
+  ## waitFor.
+  ##
+  ## R2-M1 (round-2 stage-4 code review, 2026-08-07): the re-raise used to
+  ## be this proc's FIRST statement, which voided the "zero bytes dropped"
+  ## guarantee below exactly when a pendingDefect was stashed — any tail
+  ## lines buffered since the capture were never drained, and the tail
+  ## buffer was never disarmed. The re-raise is now the LAST statement:
+  ## draining and disarming always complete first, and the Defect (still a
+  ## real re-raise, still fail-fast) surfaces only once that work is done.
+  ## Callers that themselves need to run cleanup after teardownFlush (e.g.
+  ## withInlineScreenImpl's `finally`, see inline_teardown.nim) must not
+  ## assume this call cannot raise — see that module for how it sequences
+  ## its own cleanup around the possibility.
   mixin writeAll
-  s.reraisePendingDefect()
   let n = s.logPendingLen()
   if n > 0:
     let batch = s.logDrainBatch(n)   # drain ALL
@@ -729,6 +753,7 @@ proc teardownFlush*[S: Sink](s: InlineScreen[S]) =
   # teardown untouched.
   when compiles(s.sink.fd):
     termiosMod.disarmInlineTail()
+  s.reraisePendingDefect()
 
 proc commit*[S: Sink](s: InlineScreen[S]): string {.discardable.} =
   ## Synchronous full-drain commit. Batch-loops until the log is empty.
