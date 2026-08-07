@@ -637,22 +637,25 @@ proc commitOneBatch[S: Sink](s: InlineScreen[S]): string =
   if s.liveZoneHeight.get() <= 0:
     return ""
 
-  let batch = s.logDrainBatch(kCommitBatch)
-  if batch.len == 0:
-    return ""
-  # Mirror the now-smaller pending seq into the tail buffer after the drain.
-  # M11 (round-1 stage-4): TerminalSink only — `s` is in scope here (unlike
-  # LogSink.append), so this gates directly on the sink type instead of
-  # needing the mirrorTail closure.
-  when compiles(s.sink.fd):
-    termiosMod.setInlineTail(s.log.pending)
-
   # Design-2: fail-fast on a non-bottom-anchored band.
   # The bottom-anchor contract requires that committed content spills from the
   # top of the live band upward into native scrollback. If regions exist but
   # the band's lowest edge does NOT reach the terminal bottom, the terminal
   # has nowhere for committed lines to spill — the scrollback model breaks.
   # Invariant: max(r.row + r.height) over all regions == s.layout.height.
+  #
+  # R3-1 (round-3 stage-4): this check MUST run before the destructive
+  # `logDrainBatch` pop below, not after. The check depends only on
+  # `s.layout.regions` geometry — never on the batch about to be drained —
+  # so evaluating it first costs nothing. Evaluating it after the pop (the
+  # pre-fix order) meant a raise here discarded the just-popped batch: the
+  # async driver (`driveCommitStep`) catches this Defect and stores it on
+  # `s.pendingDefect` without the batch ever having been written anywhere,
+  # and by then it was no longer in `s.log.pending` either — teardownFlush's
+  # later drain (see its own "zero bytes dropped" guarantee below) had
+  # nothing left to recover. Checking first means a raise here never pops
+  # anything: the batch stays in `s.log.pending` for teardownFlush (or a
+  # later commitOneBatch, once the caller reanchors) to drain intact.
   if s.layout.regions.len > 0:
     var lowestEdge = 0
     for r in s.layout.regions:
@@ -665,6 +668,16 @@ proc commitOneBatch[S: Sink](s: InlineScreen[S]): string =
         "lowest region must reach terminal row " & $s.layout.height &
         " (got " & $lowestEdge & "). " &
         "Place regions at rows H-bandHeight .. H-1 (0-based).")
+
+  let batch = s.logDrainBatch(kCommitBatch)
+  if batch.len == 0:
+    return ""
+  # Mirror the now-smaller pending seq into the tail buffer after the drain.
+  # M11 (round-1 stage-4): TerminalSink only — `s` is in scope here (unlike
+  # LogSink.append), so this gates directly on the sink type instead of
+  # needing the mirrorTail closure.
+  when compiles(s.sink.fd):
+    termiosMod.setInlineTail(s.log.pending)
 
   # Compute liveTop = min r.row over all regions (0 if no regions).
   var liveTop = 0
@@ -693,6 +706,16 @@ proc teardownFlush*[S: Sink](s: InlineScreen[S]) =
   ## even when a Defect is pending (R2-M1, round-2 stage-4: draining and
   ## disarming run unconditionally, BEFORE the pending-Defect re-raise; see
   ## that re-raise's own doc comment below for why the ordering matters).
+  ## R2-M1 alone was not sufficient on the REAL async-capture path: until
+  ## R3-1 (round-3 stage-4), `commitOneBatch` popped its batch off
+  ## `s.log.pending` BEFORE checking the bottom-anchor invariant that
+  ## raises `BandNotBottomAnchoredDefect` — a raise there discarded the
+  ## just-popped batch before it was ever written anywhere AND before it
+  ## was back in `s.log.pending` for this proc to find. Fixed by moving
+  ## that check ahead of the pop (see `commitOneBatch`'s own comment) so a
+  ## captured Defect never costs a batch: it is either still sitting in
+  ## `s.log.pending` for this drain to recover, or was already emitted by
+  ## an earlier successful batch.
   ## The live-band frame is intentionally NOT repainted: the physical cursor
   ## position is unknown at teardown time, so repainting at Region.row would
   ## land the band in the wrong rows.

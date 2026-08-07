@@ -434,3 +434,53 @@ suite "R2-M4: reraisePendingDefect's other blessed entry points":
         discard s.commit()
 
     waitFor body()
+
+# ---------------------------------------------------------------------------
+# Suite 6: R3-1 (round-3 stage-4) — commitOneBatch's bottom-anchor check must
+# run BEFORE the destructive pop, or the popped batch is lost on the real
+# capture path.
+# ---------------------------------------------------------------------------
+#
+# R3-1: commitOneBatch used to call s.logDrainBatch(kCommitBatch) (a
+# destructive pop off s.log.pending) BEFORE evaluating the bottom-anchor
+# check that raises BandNotBottomAnchoredDefect. When driveCommitStep
+# caught that Defect (the real async-capture path, not the
+# setPendingDefectForTest seam), the already-popped batch was gone —
+# never written anywhere, and no longer sitting in s.log.pending either —
+# so teardownFlush's later drain could not recover it. The existing
+# R2-M1 unit test only exercises the seam (stashes a Defect directly,
+# never calls the real commitOneBatch), so it could not see this: the
+# lines it asserts on were never popped by commitOneBatch in the first
+# place. This test drives the REAL capture path (resize-without-reanchor
+# + appendLine, pumped so driveCommitStep genuinely runs) and asserts the
+# appended line survives into committedRows once teardownFlush drains it.
+
+suite "R3-1: commitOneBatch's bottom-anchor check runs before the destructive pop":
+
+  test "resize WITHOUT reanchor + appendLine: the popped batch is not lost when the async driver captures the Defect":
+    proc body() {.async: (raises: [Exception]).} =
+      let sink = newMemorySink()
+      let s = newInlineScreen(sink, 10, 40)
+      let r = s.newRegion(1, 0, 9, 40)
+      doAssert r.row + r.height == s.layout.height
+
+      s.setSize(15, 40)  # grow, no reanchor: band now stale
+      s.appendLine("R3-1 not lost")  # schedules driveCommitStep via callSoon
+
+      # Let the callSoon-scheduled driveCommitStep actually run and capture
+      # the Defect via the REAL path (commitOneBatch raising inside the
+      # async driver) — not the setPendingDefectForTest seam.
+      await sleepAsync(20.milliseconds)
+
+      var raisedDefect = false
+      try:
+        s.teardownFlush()
+      except BandNotBottomAnchoredDefect:
+        raisedDefect = true
+
+      check raisedDefect
+      # The line must have survived the commitOneBatch pop-then-raise and
+      # been recovered by teardownFlush's own unconditional drain.
+      check sink.committedRows == @["R3-1 not lost"]
+
+    waitFor body()
