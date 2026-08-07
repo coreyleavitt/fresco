@@ -77,6 +77,19 @@ proc waitTeardownByte() {.async.} =
   # Drain whatever arrived (coalesced signals).
   drainTeardownPipe()
 
+proc captureTeardownDefect[S: Sink](s: InlineScreen[S]): ref Defect =
+  ## Run `teardownFlush`, capturing (rather than propagating) any Defect it
+  ## re-raises. Shared by `completeGracefulTeardown` and
+  ## `withInlineScreenImpl`'s `finally` — both apply the same doctrine
+  ## (cleanup/restore always completes first; a captured Defect, when
+  ## present, surfaces only afterward) and previously duplicated this exact
+  ## 5-line capture idiom (R4-4, round-4 stage-4 code review).
+  result = nil
+  try:
+    teardownFlush(s)
+  except Defect as d:
+    result = d
+
 proc completeGracefulTeardown*[S: Sink](s: InlineScreen[S], sig: cint) =
   ## Run the post-wakeup graceful-teardown sequence: drain (`teardownFlush`),
   ## ALWAYS restore terminal state (`restoreAll`), then either re-raise the
@@ -103,11 +116,7 @@ proc completeGracefulTeardown*[S: Sink](s: InlineScreen[S], sig: cint) =
   ## `watchTeardownSignals` as its own proc (rather than inlined) so a test
   ## can drive this exact sequence directly, without needing a real OS
   ## signal delivery or self-pipe write.
-  var pendingDefect: ref Defect = nil
-  try:
-    teardownFlush(s)
-  except Defect as d:
-    pendingDefect = d
+  let pendingDefect = captureTeardownDefect(s)
   restoreAll()
   if pendingDefect != nil:
     raise pendingDefect
@@ -202,11 +211,7 @@ template withInlineScreenImpl(sink: untyped, s: untyped, body: untyped) =
       # own cancellation propagation is a casualty of it in this one
       # compound scenario, not a separate bug. See the RFC's R3-3 addendum
       # (§2, after the R2-M1 addendum) for the residual-risk framing.
-      var pendingTeardownDefect: ref Defect = nil
-      try:
-        teardownFlush(s)
-      except Defect as d:
-        pendingTeardownDefect = d
+      let pendingTeardownDefect = captureTeardownDefect(s)
       when compiles(sink.fd):
         if not watchFut.finished: watchFut.cancelSoon()
         # H3: unregister the pipe fd from the chronos dispatcher BEFORE
