@@ -224,9 +224,16 @@ proc pushKey*(s: InputStream, ev: KeyEvent) =
   ## `start(stream)` needed. Any awaiter of `nextKey` will receive
   ## `ev` in FIFO order.
   ##
-  ## Caller must ensure the queue is unbounded or has space (the
-  ## default `queueSize = 0` is unbounded).
-  s.queue.putNoWait(ev)
+  ## Same bounded-queue overflow semantic as the fd read path's
+  ## `enqueue`: on a bounded stream (`queueSize > 0`, e.g. constructed
+  ## via `newInputStream(fd = -1, queueSize = N)` per
+  ## `headless/input`'s documented pattern for testing backpressure)
+  ## pushing past capacity silently drops `ev` and increments
+  ## `droppedEvents` instead of raising. The default `queueSize = 0`
+  ## is unbounded and never hits this branch.
+  try: s.queue.putNoWait(ev)
+  except AsyncQueueFullError:
+    inc s.droppedEvents
 
 proc start*(s: InputStream) =
   ## Put `fd` in cbreak + non-blocking mode and register the read hook

@@ -9,6 +9,7 @@ import std/unittest
 import chronos
 import fresco/events
 import fresco/headless/input
+import fresco/input as fresco_input
 
 suite "SyntheticInputStream: no-fd input substrate":
 
@@ -40,4 +41,25 @@ suite "SyntheticInputStream: no-fd input substrate":
       s.pushKey(charKey(Rune('z')))
       await f
       check received == Rune('z')
+    waitFor body()
+
+  test "M10: pushKey on a bounded queue drops overflow and counts droppedEvents":
+    # Regression for stage-4 M10: pushKey called queue.putNoWait(ev)
+    # with no exception handling, unlike the fd read path's `enqueue`
+    # which catches AsyncQueueFullError and bumps droppedEvents. A
+    # consumer following headless/input.nim's documented pattern for
+    # bounded synthetic streams (`newInputStream(fd = -1, queueSize =
+    # N)`) who pushed past capacity got an uncaught
+    # AsyncQueueFullError out of pushKey — breaking harness totality.
+    proc body() {.async: (raises: [Exception]).} =
+      let s = fresco_input.newInputStream(fd = -1, queueSize = 2)
+      s.pushKey(charKey(Rune('a')))
+      s.pushKey(charKey(Rune('b')))
+      s.pushKey(charKey(Rune('c')))   # overflow — must be dropped, not raise
+      s.pushKey(charKey(Rune('d')))   # overflow — must be dropped, not raise
+      check s.droppedEvents == 2
+      let a = await s.nextKey()
+      let b = await s.nextKey()
+      check a.rune == Rune('a')
+      check b.rune == Rune('b')
     waitFor body()
