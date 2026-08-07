@@ -601,3 +601,109 @@ suite "B12: representative fixed-settle test ported to settleDrain":
       check hr.settled()
 
     waitFor body()
+
+# -----------------------------------------------------------------------
+# F1: CancelGrace expiry is representable — via the shared race()-based
+# `teardownAppFut` routine (rfc-headless-quiescence.md, "the withTimeout
+# correction"), not `withTimeout`.
+#
+# `chronos.withTimeout` cancels its target on timeout but its own return
+# future resolves only once the target ACTUALLY finishes — for an app
+# that survives cancellation (catches `CancelledError` and re-awaits),
+# that is never, so a `withTimeout`-based teardown hangs the whole
+# `runHeadless` call rather than bounding anything. Both overloads now
+# race `appFut` against a plain timer instead, which resolves the instant
+# either side finishes regardless of cooperation. Totality is a harness
+# invariant, not a settle-mode-specific policy: the plain Layout overload
+# and the InlineScreen overload (both settle kinds) share ONE teardown
+# routine, so all three are exercised below.
+# -----------------------------------------------------------------------
+
+suite "F1: CancelGrace expiry is representable":
+
+  test "an app whose cancellation is swallowed leaves cancelGraceExpired true and settled() false (InlineScreen, settleDrain)":
+    ## The app catches `CancelledError` and keeps awaiting — it swallows
+    ## the cancel `teardownAppFut`'s `appFut.cancelSoon()` delivers to its
+    ## current `await` and loops back onto a fresh `sleepAsync`, so
+    ## `appFut` itself never finishes. Pre-F1 this hung the whole
+    ## `runHeadless` call (verified: `withTimeout`-based teardown never
+    ## returned, even bounded by an outer 2s `withTimeout` at the test
+    ## site — the outer wait itself only resolves once the INNER hang
+    ## resolves, which for this app is never). Post-F1, `teardownAppFut`
+    ## races `appFut` against plain timers, so `runHeadless` genuinely
+    ## returns within `timeout + CancelGrace` plus a near-instant final
+    ## drain (the screen is otherwise idle).
+    proc body() {.async: (raises: [Exception]).} =
+      let s = newInlineScreen(newMemorySink(), 10, 40)
+
+      proc app(stream: InputStream) {.async: (raises: [Exception]).} =
+        while true:
+          try:
+            await sleepAsync(10.seconds)
+          except CancelledError:
+            discard  # swallow the cancel and keep awaiting a fresh sleep
+
+      let fut = runHeadless(s, app, events = @[], timeout = 50.milliseconds,
+                            settle = settleDrain())
+      let ok = await fut.withTimeout(2.seconds)
+      check ok
+      let hr = fut.read()
+
+      check hr.cancelGraceExpired
+      check hr.appError.isNil       # Cancelled, not Failed — chronos distinguishes the two
+      check hr.settleFailures.len == 0
+      check not hr.settled()
+
+    waitFor body()
+
+  test "the same cancellation-surviving app also returns cancelGraceExpired true on the plain Layout overload (totality, not a settle-mode split)":
+    ## The plain Layout-based overload has no `Settle` union at all — it
+    ## is inherently the "fixed settle" case (rfc §Out of scope). Pre-F1
+    ## it built its own bare `try: await appFut except ...` tail with no
+    ## bound whatsoever; post-F1 it shares the exact same `teardownAppFut`
+    ## routine as the InlineScreen overload, so a cancellation-surviving
+    ## app returns here too, not just under `settleDrain`.
+    proc body() {.async: (raises: [Exception]).} =
+      proc app(stream: InputStream, layout: Layout) {.async: (raises: [Exception]).} =
+        while true:
+          try:
+            await sleepAsync(10.seconds)
+          except CancelledError:
+            discard  # swallow the cancel and keep awaiting a fresh sleep
+
+      let fut = runHeadless(app, inputs = @[], timeout = 50.milliseconds)
+      let ok = await fut.withTimeout(2.seconds)
+      check ok
+      let hr = fut.read()
+
+      check hr.cancelGraceExpired
+      check hr.appError.isNil
+      check hr.settleFailures.len == 0
+      check not hr.settled()
+
+    waitFor body()
+
+  test "a well-behaved app that honors cancellation promptly leaves cancelGraceExpired false and stays settled()":
+    ## Routine-teardown guard: an app that outlives the script and honors
+    ## a plain (cancellable) `sleepAsync` completes its cancellation well
+    ## inside the 100ms `CancelGrace` — the ordinary "app outlives the
+    ## script" shutdown path must stay invisible, exactly as it did before
+    ## this field existed.
+    proc body() {.async: (raises: [Exception]).} =
+      let s = newInlineScreen(newMemorySink(), 10, 40)
+
+      proc app(stream: InputStream) {.async: (raises: [Exception]).} =
+        await sleepAsync(10.seconds)
+
+      let fut = runHeadless(s, app, events = @[], timeout = 50.milliseconds,
+                            settle = settleDrain())
+      let ok = await fut.withTimeout(2.seconds)
+      check ok
+      let hr = fut.read()
+
+      check not hr.cancelGraceExpired
+      check hr.appError.isNil
+      check hr.settleFailures.len == 0
+      check hr.settled()
+
+    waitFor body()

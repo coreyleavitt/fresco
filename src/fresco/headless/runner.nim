@@ -75,11 +75,76 @@ type
       ## Drain-mode settle timeouts recorded instead of raised. Always
       ## empty for `settleFixed` runs and for the plain Layout-based
       ## overload (fixed-sleep only; no drain machinery).
+    cancelGraceExpired*: bool
+      ## True iff the post-cancel `CancelGrace` wait (below) elapsed with
+      ## `appFut` still not finished — the app's cancellation path is hung
+      ## or swallowed the cancel and kept running. Populated by BOTH
+      ## `runHeadless` overloads via the shared `teardownAppFut` routine
+      ## (rfc §Design 5, "the withTimeout correction" — totality is a
+      ## harness invariant, not a settle-mode-specific policy). A future
+      ## abandoned in this state is neither `Failed` nor `Cancelled`
+      ## (chronos: it is still `Pending`), so `appError` stays nil for it —
+      ## this field is the only witness.
 
 proc settled*(r: HeadlessResult): bool =
-  ## True iff the run hit no drain timeout and the app raised nothing —
-  ## the one-expression "clean run" assertion (rfc §Design 5).
-  r.appError.isNil and r.settleFailures.len == 0
+  ## True iff the run hit no drain timeout, the app raised nothing, and
+  ## the post-cancel grace never expired on a still-live app future — the
+  ## one-expression "clean run" assertion (rfc §Design 5).
+  r.appError.isNil and r.settleFailures.len == 0 and not r.cancelGraceExpired
+
+const CancelGrace* = 100.milliseconds
+  ## Bounds the post-cancel wait in `teardownAppFut` below, shared by BOTH
+  ## `runHeadless` overloads (rfc-headless-quiescence.md §Design 5,
+  ## "CancelGrace bound" — the round-2 "fixed path stays unbounded" note is
+  ## superseded; totality is a harness invariant, not a settle-mode-
+  ## specific policy). Cancellation-survival cannot be witnessed in
+  ## bounded time — nothing distinguishes "about to land" from "never
+  ## lands" — so this grace, like `drainToIdle`'s `drainTimeout`, is a
+  ## forced wall-clock deadline, not a derived one. A future still
+  ## unfinished after the grace is deliberately abandoned; the capture
+  ## proceeds regardless.
+
+proc teardownAppFut(appFut: Future[void], timeout: Duration): Future[bool]
+    {.async: (raises: [Exception]).} =
+  ## Shared post-script teardown for BOTH `runHeadless` overloads: wait up
+  ## to `timeout` for `appFut` to finish on its own, cancel it and wait up
+  ## to `CancelGrace` more, then give up. Returns `true` iff `appFut` is
+  ## still pending after the grace — the app is deliberately abandoned in
+  ## that case, never read again; the caller proceeds with capture
+  ## regardless (rfc §Design 5).
+  ##
+  ## `chronos.withTimeout` cannot implement this: on timeout it cancels
+  ## the target, but its OWN returned future resolves only once the
+  ## target future actually finishes — for an app whose cancellation is
+  ## swallowed, that is never, so a `withTimeout`-based version of this
+  ## routine hangs at the very first call instead of bounding anything
+  ## (discovered building this routine; see rfc-headless-quiescence.md,
+  ## "the withTimeout correction"). `race()` has no such coupling: it
+  ## resolves the instant EITHER argument finishes and never touches the
+  ## loser, so racing against a plain timer genuinely bounds the wait.
+  ## Never cancel the `race()` future itself — this codebase's own record
+  ## on chronos `race()` not propagating cancellation to children means
+  ## that would leave the loser dangling uncancelled; `race()` is always
+  ## awaited to completion, and the LOSING side is cancelled by hand
+  ## afterward so the timer heap stays clean.
+  if appFut.finished:
+    return false
+
+  let deadline = sleepAsync(timeout)
+  discard await race(appFut, deadline)
+  if not deadline.finished:
+    deadline.cancelSoon()
+
+  if appFut.finished:
+    return false
+
+  appFut.cancelSoon()
+  let grace = sleepAsync(CancelGrace)
+  discard await race(appFut, grace)
+  if not grace.finished:
+    grace.cancelSoon()
+
+  result = not appFut.finished
 
 type
   InlineEventKind* = enum
@@ -120,15 +185,19 @@ proc runHeadless*(app: HeadlessApp,
   ## return the captured rows.
   ##
   ## The app is expected to terminate on its own (e.g., by returning
-  ## when it sees a quit key). If it doesn't, the harness cancels it
-  ## at the timeout — the test still gets a HeadlessResult with the
-  ## state at cancellation.
+  ## when it sees a quit key). If it doesn't, the harness cancels it at
+  ## `timeout`, waits up to `CancelGrace` more (the shared `teardownAppFut`
+  ## routine — rfc §Design 5), then gives up — the test still gets a
+  ## `HeadlessResult` either way; `result.cancelGraceExpired` is true iff
+  ## the app was still pending after the grace.
   ##
   ## Fixed-sleep settling only (rfc-headless-quiescence.md §Out of
   ## scope): this overload has no `Settle`/drain-mode counterpart — a
   ## plain `Layout` has no commit batcher or InlineScreen-level idle
   ## probes to drain against. See `runHeadless(screen, app, events, ...)`
-  ## below for the drain-settling overload.
+  ## below for the drain-settling overload. This overload still does not
+  ## populate `appError`/`settleFailures` (out of scope; see rfc §Out of
+  ## scope) — only `cancelGraceExpired`, shared with that overload.
   let layout = newLayout(height, width)
   let sink = newMemorySink()
   let stream = newSyntheticInputStream()
@@ -139,14 +208,7 @@ proc runHeadless*(app: HeadlessApp,
     stream.pushKey(ev)
     await sleepAsync(perKeySettle)
 
-  if not appFut.finished:
-    # App didn't return on its own — wait up to `timeout`, then cancel.
-    discard await appFut.withTimeout(timeout)
-    if not appFut.finished:
-      appFut.cancelSoon()
-      try: await appFut
-      except CancelledError: discard
-      except CatchableError: discard
+  result.cancelGraceExpired = await teardownAppFut(appFut, timeout)
 
   sink.commit(layout)
   result.rows = sink.rows
@@ -285,14 +347,6 @@ proc settleDrain*(busy: BusyPredicate = nil,
   Settle(kind: skDrain, drain: DrainSpec(busy: busy, drainTimeout: drainTimeout,
                                         ignoreAnimations: ignoreAnimations))
 
-const CancelGrace* = 100.milliseconds
-  ## Bounds the post-cancel `await appFut` in drain mode (rfc-headless-
-  ## quiescence.md §Design 5): this codebase's own record on chronos
-  ## `race()` not propagating cancellation to children means an unbounded
-  ## wait after `cancelSoon()` can hang. A future still unfinished after
-  ## the grace is abandoned and the capture proceeds. The fixed path keeps
-  ## its existing unbounded `await appFut` — untouched by this bound.
-
 proc runHeadless*(screen: InlineScreen[MemorySink],
                   app: HeadlessInlineApp,
                   events: seq[InlineEvent] = @[],
@@ -341,10 +395,12 @@ proc runHeadless*(screen: InlineScreen[MemorySink],
   ## (e.g., amoxtli's REPL) and the test needs to assert on committed
   ## scrollback output in addition to the live band.
   ##
-  ## The plain `runHeadless(app, inputs, height, width, ...)` overload is
-  ## unchanged and handles plain Layout-based apps (fixed-sleep only; see
+  ## The plain `runHeadless(app, inputs, height, width, ...)` overload
+  ## handles plain Layout-based apps (fixed-sleep only; see
   ## rfc-headless-quiescence.md §Out of scope) — it does not populate
-  ## `appError`/`settleFailures`.
+  ## `appError`/`settleFailures`, but shares this overload's
+  ## `cancelGraceExpired` teardown (`teardownAppFut`, below): totality is
+  ## a harness invariant, not a settle-mode-specific policy.
   let stream = newSyntheticInputStream()
   let appFut = app(stream)
 
@@ -380,23 +436,10 @@ proc runHeadless*(screen: InlineScreen[MemorySink],
                                          site: sfEvent, eventIndex: idx)
         break
 
-  if not appFut.finished:
-    discard await appFut.withTimeout(timeout)
-    if not appFut.finished:
-      appFut.cancelSoon()
-      case settle.kind
-      of skFixed:
-        try: await appFut
-        except CancelledError: discard
-        except CatchableError: discard
-      of skDrain:
-        # CancelGrace bound: race()'s cancel does not propagate to
-        # children (this codebase's own documented hazard), so an
-        # unbounded wait here can hang. `withTimeout` never raises the
-        # underlying future's exception — it just reports whether `appFut`
-        # settled within the grace; a future still unfinished after it is
-        # abandoned and the capture proceeds regardless.
-        discard await appFut.withTimeout(CancelGrace)
+  # Shared teardown (rfc §Design 5, "the withTimeout correction"): same
+  # routine as the plain Layout overload, for both settle kinds — totality
+  # is a harness invariant, not a settle-mode-specific policy.
+  result.cancelGraceExpired = await teardownAppFut(appFut, timeout)
 
   case settle.kind
   of skFixed:
