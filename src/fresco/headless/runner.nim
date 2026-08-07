@@ -166,6 +166,16 @@ proc teardownAppFut(appFut: Future[void], timeout: Duration): Future[bool]
   ## still pending after the grace — the app is deliberately abandoned in
   ## that case, never read again; the caller proceeds with capture
   ## regardless (rfc §Design 5).
+  ##
+  ## Documented, accepted cost (M12, round-1 stage-4): abandoning `appFut`
+  ## leaves chronos's cancellation retry (`cancelSoon`'s `checktick`)
+  ## spinning on it every dispatcher tick for the rest of the process —
+  ## inert but not free, and never removed once added. Each abandonment
+  ## from a separate `runHeadless` call adds its own independent retry, so
+  ## a process that hits this path repeatedly (many timeout-path calls
+  ## across a suite) accumulates these monotonically, not just once (rfc
+  ## §"Residual, documented, not fork-patched" / "Accumulation across
+  ## calls").
   if await boundedAwait(appFut, timeout):
     return false
   appFut.cancelSoon()
