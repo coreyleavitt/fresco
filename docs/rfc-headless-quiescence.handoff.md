@@ -1,7 +1,8 @@
 # rfc-headless-quiescence — handoff
 
-- **Stage:** 3 tdd COMPLETE (all 13 slices landed; final suite 823 OK / 0 FAIL)   •   next: stage 4 code review
-- **Resume:** `/code-review docs/rfc-headless-quiescence.md scope — headless quiescence: src/fresco/headless/runner.nim, src/fresco/busy.nim, render/layout.nim anyPending, inline_screen.nim probes, intonaco accessors, chronos fork pendingCallbacksCount`
+- **Stage:** 4 code review   •   **Round:** 1 IN PROGRESS (2026-08-07): 5 review agents launched in parallel — correctness (drain machine/teardown totality), quality+test-coverage (incl. nimble registration, withTimeout mandate), security (standing), design & ergonomics (standing), cross-repo seams (intonaco accessors, chronos fork 3fc1b04 pendingCallbacksCount, dcDispatcher accounting). Awaiting reports; next: adversarial verify of Critical/High findings, then consolidated table to Corey. NO fixes before explicit approval.
+- **Baseline at review start:** fresco `4a0748f`, suite 828 OK / 0 FAILED, tree clean. Pre-review follow-ups F1/F2/F3 all resolved (see below).
+- **Resume:** `/code-review docs/rfc-headless-quiescence.md scope — headless quiescence: src/fresco/headless/runner.nim, src/fresco/busy.nim, render/layout.nim anyPending, inline_screen.nim probes, intonaco accessors, chronos fork pendingCallbacksCount` (if round 1 reports were lost, relaunch the 5 agents)
 - **Post-review follow-ups (recorded, not yet done):** fresco tag after review ships; amoxtli converges fresco+intonaco+chronos pins (out of scope here). (The formerly-listed upstream chronos issue is F3, resolved without filing — see below.)
 
 ## Pre-review follow-ups (Corey-approved 2026-08-07, before stage 4)
