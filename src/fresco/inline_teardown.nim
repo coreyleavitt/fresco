@@ -189,6 +189,19 @@ template withInlineScreenImpl(sink: untyped, s: untyped, body: untyped) =
       # re-raise at the very end of the finally block. The Defect still
       # surfaces deterministically out of this scope (fail-fast preserved)
       # — only the ordering relative to cleanup changes.
+      #
+      # R3-3 (round-3 stage-4, documented, deliberate): if `body` is
+      # cancelled, this `finally` runs with a `CancelledError` already
+      # in flight. The `raise pendingTeardownDefect` below then executes
+      # mid-unwind — Nim's raise-during-unwind semantics mean a NEW raise
+      # there REPLACES the in-flight exception, so the caller observes the
+      # Defect, never the CancelledError. This is the same precedence
+      # doctrine as everywhere else in this file (cleanup always
+      # completes first; a captured Defect, when present, wins the final
+      # outcome) applied to the cancellation case specifically — chronos's
+      # own cancellation propagation is a casualty of it in this one
+      # compound scenario, not a separate bug. See the RFC's R3-3 addendum
+      # (§2, after the R2-M1 addendum) for the residual-risk framing.
       var pendingTeardownDefect: ref Defect = nil
       try:
         teardownFlush(s)

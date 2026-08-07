@@ -488,3 +488,77 @@ suite "withInlineScreen R3-2: watchTeardownSignals restores termios before a cap
         check lflagBits(ptyFd) == before
 
     waitFor body()
+
+# ---------------------------------------------------------------------------
+# R3-4 (round-3 stage-4): the `except Defect` branch inside
+# withInlineScreenImpl's `finally` had zero direct coverage — every existing
+# test either has no pendingDefect, or drives it via teardownFlush directly
+# (H2/R2-M1 suites in test_headless_resize_inject.nim), never through the
+# withInlineScreenImpl lifecycle template itself.
+# ---------------------------------------------------------------------------
+
+suite "withInlineScreen R3-4: except Defect branch inside withInlineScreenImpl's finally":
+
+  test "a pendingDefect stashed before a normal body exit: finally completes ALL cleanup before the Defect propagates":
+    ## body exits normally (no explicit raise, no cancellation) with a
+    ## Defect stashed via the test seam. withInlineScreenImpl's finally
+    ## must still: (1) drain teardownFlush's buffered line, (2) run the
+    ## FULL tier-2/3 cleanup (graceful + tail disarm — TerminalSink, so
+    ## both are actually armed), (3) THEN propagate the Defect.
+    proc body() {.async: (raises: [CancelledError, Exception]).} =
+      let (pipeR, pipeW) = openPipe()
+      defer:
+        discard posix.close(pipeR)
+        discard posix.close(pipeW)
+
+      var raisedDefect = false
+      try:
+        withInlineScreen(newTerminalSink(pipeW), 5, 20, 1, s):
+          s.appendLine("R3-4 tail")
+          s.setPendingDefectForTest(
+            newException(BandNotBottomAnchoredDefect, "R3-4 test defect"))
+          # body exits normally here.
+      except BandNotBottomAnchoredDefect:
+        raisedDefect = true
+
+      check raisedDefect
+      check not gracefulArmed()
+      check not inlineTailArmed()
+      let received = readPipe(pipeR, 4096)
+      check received.contains("R3-4 tail")
+
+    waitFor body()
+
+# ---------------------------------------------------------------------------
+# R3-3 (round-3 stage-4, documented in inline_teardown.nim + the RFC's R3-3
+# addendum): a Defect raised in withInlineScreenImpl's finally while a
+# CancelledError is already in flight (body was cancelled) REPLACES the
+# CancelledError — deliberate precedence, now proven behaviorally here.
+# ---------------------------------------------------------------------------
+
+suite "withInlineScreen R3-3: a captured Defect supersedes an in-flight CancelledError":
+
+  test "cancelling the body while a pendingDefect is stashed: the Defect wins, not CancelledError":
+    proc body() {.async: (raises: [CancelledError, Exception]).} =
+      withInlineScreen(newMemorySink(), 5, 20, 1, s):
+        s.setPendingDefectForTest(
+          newException(BandNotBottomAnchoredDefect, "R3-3 test defect"))
+        # Never completes on its own — cancelled from outside below, so
+        # the finally runs with a CancelledError already propagating.
+        await sleepAsync(1.hours)
+
+    let fut = body()
+    check not fut.finished
+    fut.cancelSoon()
+
+    var raisedDefect = false
+    var raisedCancelled = false
+    try:
+      waitFor fut
+    except BandNotBottomAnchoredDefect:
+      raisedDefect = true
+    except CancelledError:
+      raisedCancelled = true
+
+    check raisedDefect
+    check not raisedCancelled
