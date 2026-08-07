@@ -1,6 +1,6 @@
 # rfc-headless-quiescence — handoff
 
-- **Stage:** 4 code review   •   **Round:** 1 IN PROGRESS (2026-08-07): 5 review agents launched in parallel — correctness (drain machine/teardown totality), quality+test-coverage (incl. nimble registration, withTimeout mandate), security (standing), design & ergonomics (standing), cross-repo seams (intonaco accessors, chronos fork 3fc1b04 pendingCallbacksCount, dcDispatcher accounting). Awaiting reports; next: adversarial verify of Critical/High findings, then consolidated table to Corey. NO fixes before explicit approval.
+- **Stage:** 4 code review   •   **Round:** 1 COMPLETE (2026-08-07): 5 reviewers reported; both High findings adversarially verified CONFIRMED (H1 also independently traced to an RFC-level gap, not impl drift; H2 confirmed incl. chronos-dispatcher no-Defect-handler trace + the project's own test comment admitting the hazard). Consolidated table presented to Corey — AWAITING APPROVAL/mandate. NO fixes yet. See Review ledger (stage 4) below.
 - **Baseline at review start:** fresco `4a0748f`, suite 828 OK / 0 FAILED, tree clean. Pre-review follow-ups F1/F2/F3 all resolved (see below).
 - **Resume:** `/code-review docs/rfc-headless-quiescence.md scope — headless quiescence: src/fresco/headless/runner.nim, src/fresco/busy.nim, render/layout.nim anyPending, inline_screen.nim probes, intonaco accessors, chronos fork pendingCallbacksCount` (if round 1 reports were lost, relaunch the 5 agents)
 - **Post-review follow-ups (recorded, not yet done):** fresco tag after review ships; amoxtli converges fresco+intonaco+chronos pins (out of scope here). (The formerly-listed upstream chronos issue is F3, resolved without filing — see below.)
@@ -52,7 +52,35 @@
 - Layout dirtiness NOT a wait clause → paint postcondition. Settle discriminated union. Primitive-raises/harness-reports failure semantics. reactiveIdle = invariant assertion (propagation provably synchronous incl. gDeferred). Scope: testing-only, NO flag, InlineScreen[MemorySink] as compile-time protection; intonaco accessors + probes general-purpose. settleFixed stays default until amoxtli migration. Screen/AltScreen deferral → fresco#114. animationsIdle polarity. stepsAsync(1) pump ≈ 2 polls.
 - Corrections vs amoxtli upstream request: gDeferred synchronous; commit flags module-private → probes; animationsPending→animationsIdle; (round 2 adds) "app-level predicate is exact" disproven by delivery gap.
 
-## Review ledger
+## Review ledger (stage 4)
+| id | sev | finding | status | proof / reason |
+|----|-----|---------|--------|----------------|
+| H1 | High | skDrain app-death short-circuit silently truncates event script; HeadlessResult cannot express "K of N events injected"; settled() reads true on successful early exit; skFixed asymmetric (no short-circuit at all). runner.nim:420-427 | open — **RFC-level gap (spec escalation)** | verifier CONFIRMED: code faithfully implements RFC:265 "if it failed, record appError" — success path deliberately silent in the spec itself; options: eventsInjected field vs sfAppDied SettleFailure variant |
+| H2 | High | BandNotBottomAnchoredDefect (inline_screen.nim:552, object of Defect :509) escapes the callSoon commit callback (:291-294/:322-325 catch only CatchableError) → propagates through chronos poll() (no Defect handler, verified) → process-fatal, possibly during a LATER test's dispatcher turn. Reachable: scripted ievResize → setSize (no auto-reanchor) + post-resize appendLine. Pre-existing (861a431), made trivially reachable by this RFC's resize injection; test_headless_resize_inject.nim:142-145 comment admits the hazard | open | verifier CONFIRMED with full source trace (sink-agnostic check; MemorySink not exempt) |
+| M1 | Med | boundedAwait timer cleanup is plain post-await (runner.nim:131-134), not defer — CancelledError at `await race` orphans the timer (self-fires, inert, but violates the file's own no-leaked-timers invariant; triggerable via the house .withTimeout(2s) wrapper) | open | self-verified by direct read |
+| M2 | Med | chronos-fork pendingCallbacksCount docstring overclaims exactness: loop.ticks (checktick cancel retries, idleAsync, stepsAsync chains) invisible between polls; drainToIdle single-read doesn't self-heal a false-idle. No shipped/tested path affected (delivery chain traced all-callSoon) | open | seam reviewer traced chain; fix = fork docstring + RFC accepted-risk note |
+| M3 | Med | Default-value triplication: drainToIdle convenience overload vs settleDrain repeat DrainSpec defaults verbatim (runner.nim:310-316, :345-349) — the drift class DrainSpec unification was built to kill | open | design reviewer; factor one DrainSpec constructor |
+| M4 | Med | Event-injection dispatch (ievKey/ievResize case) duplicated verbatim in skFixed and skDrain loops (runner.nim:411-438) | open | design reviewer; extract injectEvent |
+| M5 | Med | BusyGate.label diagnostically inert: dcBusy timeout never names the stuck gate; single-closure BusyPredicate forces hand-rolled multi-gate OR + manual re-probing (busy.nim:30-39, runner.nim:255-268); label usage also untested | open | design + quality reviewers |
+| M6 | Med | anyPending docstring claims AltScreen as third consumer; altscreen.nim never calls it (layout.nim:145-153) | open | quality reviewer, grep-verified |
+| M7 | Med | RFC:153 claims concurrent drains safe-by-construction; zero test spawns two concurrent drainToIdle futures | open | quality reviewer |
+| M8 | Med | RFC:155 cancellation contract of drainToIdle itself (CancelledError propagates without painting; deadline-timer defer runs) untested — F1 tests only cover appFut cancellation | open | quality reviewer |
+| M9 | Med | F2 negative-compile test covers only ReactiveRead; no ReactiveWrite witness (test_busy_gate.nim:84-100) | open | quality reviewer |
+| M10 | Med | pushKey (src/fresco/input.nim) lacks the AsyncQueueFullError handling enqueue has; headless/input.nim docstring invites bounded synthetic streams — overflow breaks totality + leaks appFut (not reachable via runHeadless itself, which is always unbounded) | open | security reviewer |
+| M11 | Med | Headless LogSink.append/teardownFlush unconditionally touch the process-global signal-tail buffer (setInlineTail/disarmInlineTail) — a headless test can clobber/disarm a concurrent real-terminal session's crash-tail in mixed suites | open | security reviewer |
+| M12 | Med | Abandoned appFuts accumulate permanent per-tick cancelSoon retries for process lifetime across repeated timeout-path runHeadless calls | open — candidate documented-accepted (already the RFC's recorded residual) | security reviewer; RFC residual-spin note covers mechanism, not accumulation |
+| L1 | Low | test_settle_drain wraps every runHeadless in .withTimeout(2s) post-F1 without a comment saying whether it's distrust or CI hygiene — models extra ceremony to consumers | open | design reviewer |
+| L2 | Low | test_drain_to_idle.nim:137 trailing `await appFut` unwrapped, breaking the file's bounded-wait idiom | open | quality reviewer |
+| L3 | Low | resizeEv doc comment claims "waits one dispatcher turn" — propagation is synchronous; misdescribes both settle paths (runner.nim:170-174) | open | correctness reviewer |
+| L4 | Low | chronosPreviewV5 would flip chronosStrictReentrancy → pendingCallbacksCount loses the -1 sentinel adjustment → dcDispatcher permanently non-idle, every drain raises; unguarded build-flag dependency | open | correctness reviewer; cheap defensive static guard or RFC note |
+| L5 | Low | Transient stale commitInProgress for one dispatcher turn after settleFixed teardown (second-batch continuation still queued); self-resolving, absent under settleDrain | open | security reviewer |
+| — | info | intonaco A2 test exercises "idle again" via stopFrameClock disposal, not natural completion — deliberate + documented in test header | noted | seam reviewer |
+
+Refuted/dropped in verification: none (both Highs confirmed; no findings dropped).
+
+Verified clean (round 1 highlights): totality/deadline-truth/single-clause-set-eval/settled()/event-indexing all confirmed; race() usage sound vs actual chronos signatures; intonaco accessors exact + export chain + polarity + pin chain verified; fork branch discipline verified (feat/pending-callbacks-count off upstream/master, fresco-pin clean merge); dcDispatcher check-site timing matches RFC claim; nimble registration complete; withTimeout mandate held at 39 sites; no stdout writes; no TODO/dead code; vocabulary conforms; anyPending consolidation clean; full suite green during review.
+
+## Review ledger (architect rounds 1-2)
 | round | lens | critical/high applied |
 |-------|------|----------------------|
 | 1 | depth | dirty-layout wait clause (critical→paint postcondition); timeout semantics split; stability-window honesty; busy contract; runAfterPropagation-spawn example |
