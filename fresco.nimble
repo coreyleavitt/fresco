@@ -82,6 +82,7 @@ task test, "run all tests":
     "tests/unit/test_surface_probes.nim",
     "tests/unit/test_intonaco_idle_reachable.nim",
     "tests/unit/test_drain_to_idle.nim",
+    "tests/unit/test_busy_gate.nim",
   ]
   let integrationTests = @[
     "tests/integration/test_termios_pty.nim",

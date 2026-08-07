@@ -15,7 +15,10 @@ import ../input
 import ../render/layout
 import ../render/sink/memory
 import ../inline_screen
+import ../busy
 import ./input as headless_input
+
+export busy
 
 type
   HeadlessApp* = proc(stream: InputStream, layout: Layout): Future[void]
@@ -177,12 +180,6 @@ proc runHeadless*(screen: InlineScreen[MemorySink],
 # ---------------------------------------------------------------------------
 
 type
-  BusyPredicate* = proc(): bool {.gcsafe, raises: [].}
-    ## Consumer-supplied "is my own async work still in flight" check.
-    ## Homed here for now — RFC slice B9 moves it to its own `busy.nim`
-    ## module (BusyGate lives there too) and `headless/runner` re-exports
-    ## it; the call-site shape (`nil` = no busy clause) does not change.
-
   DrainClause* = enum
     dcReactive    ## reactiveIdle() is false — invariant, not expected to
                   ## ever fail (model §1); see rfc §Design 3.
