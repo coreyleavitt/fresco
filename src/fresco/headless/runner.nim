@@ -338,11 +338,6 @@ proc newDrainSpec*(busy: BusyPredicate = nil, drainTimeout = 1.seconds,
   DrainSpec(busy: busy, gates: gates, drainTimeout: drainTimeout,
            ignoreAnimations: ignoreAnimations)
 
-proc anyGateBusy(gates: seq[BusyGate]): bool =
-  for g in gates:
-    if g.isBusy(): return true
-  false
-
 proc failingClauses(screen: InlineScreen[MemorySink], spec: DrainSpec): set[DrainClause] =
   ## Evaluate every wait clause exactly once against `screen` + `spec`.
   ## A clause disabled by `spec.ignoreAnimations` (or `spec.busy == nil`
@@ -356,7 +351,7 @@ proc failingClauses(screen: InlineScreen[MemorySink], spec: DrainSpec): set[Drai
     result.incl dcCommit
   if pendingCallbacksCount() != 0:
     result.incl dcDispatcher
-  if (spec.busy != nil and spec.busy()) or anyGateBusy(spec.gates):
+  if (spec.busy != nil and spec.busy()) or spec.gates.anyIt(it.isBusy()):
     result.incl dcBusy
 
 proc drainToIdle*(screen: InlineScreen[MemorySink],
