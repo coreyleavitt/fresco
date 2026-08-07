@@ -203,6 +203,8 @@ suite "S0b: resize injection via runHeadless":
 
       check sawKey
 
+    waitFor body()
+
 # ---------------------------------------------------------------------------
 # Suite 3: H2 (round-1 stage-4) — BandNotBottomAnchoredDefect capture
 # ---------------------------------------------------------------------------
@@ -285,7 +287,5 @@ suite "H2: BandNotBottomAnchoredDefect capture — does not escape into the disp
       check result.settled()
       check result.committedRows.contains("post-resize, reanchored")
       check r.row + r.height == s.layout.height
-
-    waitFor body()
 
     waitFor body()
