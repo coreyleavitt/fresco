@@ -16,9 +16,7 @@
 
 import std/[tables, unittest]
 import chronos
-import intonaco/journal/events
-import intonaco/journal/log
-import intonaco/reactive
+include intonaco/reactive_internal
 
 proc tick(): Future[void] {.async: (raises: [CancelledError]).} =
   await sleepAsync(0.milliseconds)

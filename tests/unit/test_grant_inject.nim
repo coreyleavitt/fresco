@@ -11,7 +11,7 @@
 
 import std/unittest
 import chronos
-import intonaco/reactive
+include intonaco/reactive_internal
 import ./xmodule_concept_caps
 
 suite "grant injection: per-cap overload inside task body":
