@@ -103,7 +103,9 @@ type
     busyLabels*: seq[string]      # M5 (round-1 stage-4): labels of the
                                    # `DrainSpec.gates` isBusy() at raise
                                    # time; @[] when dcBusy was driven only
-                                   # by `busy` (opaque closure, unnameable)
+                                   # by `busy` (opaque closure, unnameable).
+                                   # R2-M3: enforced correlation — non-empty
+                                   # implies dcBusy in failingClauses.
   DrainSpec* = object
     busy*: BusyPredicate          # see §4 (busy module)
     gates*: seq[BusyGate]         # M5: additional gates ORed into dcBusy;
@@ -150,7 +152,9 @@ while true:
   let failing = failingClauses(screen, spec)  # ONE evaluation, reused below
   if failing == {}: break                     # single idle read is sound (dcDispatcher is exact)
   if deadlineFut.finished:
-    let stuckLabels = spec.gates.filterIt(it.isBusy()).mapIt(it.label())  # M5
+    let stuckLabels =                                        # M5, gated R2-M3
+      if dcBusy in failing: spec.gates.filterIt(it.isBusy()).mapIt(it.label())
+      else: @[]
     var msg = "drain timeout; failing clauses: " & $failing
     if stuckLabels.len > 0: msg &= "; busy gates: " & stuckLabels.join(", ")
     var e = newException(DrainTimeoutError, msg)
@@ -228,6 +232,8 @@ Consumer pattern: `withBusy(gate): await state.callDaemon()` at each instrumente
 - `DrainTimeoutError.busyLabels*: seq[string]` (§3) / `SettleFailure.busyLabels*: seq[string]` (§5) — populated at raise time with the labels of the `gates` members that were `isBusy()` at that instant, and included in `DrainTimeoutError.msg` (e.g. `"...; busy gates: repl, decider"`) so the default `unittest` failure output names the stuck gate with zero consumer effort. `SettleFailure.busyLabels` mirrors `clauses`'s existing raise-to-report survival (same `DrainTimeoutError` → `SettleFailure` capture sites in §5's event loop), so a `settleDrain` consumer sees the stuck gate's name without re-probing its own gates after the fact.
 
 The asymmetry is inherent, not a bug: `busyLabels` is always `@[]` when a `dcBusy` timeout was driven purely by `spec.busy` (no `gates` set) — an opaque closure has nothing to name. `gates` is the diagnosable path; a closure assigned to `busy` (hand-rolled or via `anyBusy`) trades that diagnosability for flexibility, same as before this fix. Tests: `tests/unit/test_busy_gate.nim` (`anyBusy` combinator), `tests/unit/test_drain_to_idle.nim` (multi-gate `busyLabels` at the `DrainTimeoutError` level, `busy`+`gates` OR composition, closure-only asymmetry), `tests/unit/test_settle_drain.nim` (`busyLabels` surviving into a settle-mode `SettleFailure`).
+
+**R2-M3 addendum (round-2 stage-4 code review, 2026-08-07).** `stuckLabels` in the state machine above (§3) used to be computed unconditionally from `spec.gates`, correlated with `dcBusy in failingClauses` only by convention — nothing stopped a future edit (e.g. caching `stuckLabels` from an earlier iteration, or moving the message construction) from letting a timeout caused solely by another clause report "busy gates: ..." and imply false causation. Fixed by gating the computation itself on `dcBusy in failing`, making the invariant real at the (single) raise site instead of relying on the synchronous, no-intervening-`await` shape of the loop to keep the two consistent. `DrainTimeoutError.busyLabels`/`SettleFailure.busyLabels` now document the enforced correlation directly. Test: `tests/unit/test_drain_to_idle.nim`, "R2-M3" suite — a `dcCommit`-only timeout (forced via the `frescoTesting` `setCommitInProgressForTest` seam, not `dcBusy`) with an unrelated `BusyGate` held busy outside `spec.gates` asserts `busyLabels == @[]` and `"busy gates"` absent from `.msg`.
 
 ### 5. fresco: drain-settling `runHeadless`
 

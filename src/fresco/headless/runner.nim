@@ -64,6 +64,8 @@ type
       ## (no drain ever ran for that site) and whenever the timeout's
       ## `dcBusy` clause was driven only by `DrainSpec.busy`, which is
       ## opaque past the call boundary (see `DrainTimeoutError.busyLabels`).
+      ## R2-M3: inherits `DrainTimeoutError.busyLabels`'s enforced
+      ## correlation — non-empty here implies `dcBusy in clauses`.
     case site*: SettleFailureSite
     of sfEvent:
       eventIndex*: int   ## index into the `events` seq passed to runHeadless.
@@ -292,6 +294,15 @@ type
       ## purely by `busy` (no `gates` set) always raises with
       ## `busyLabels == @[]`. That asymmetry is inherent to a closure-typed
       ## predicate, not a bug; `gates` is the diagnosable path.
+      ##
+      ## R2-M3 (round-2 stage-4 code review, 2026-08-07): enforced
+      ## correlation with `failingClauses` — `busyLabels` is non-empty ONLY
+      ## IF `dcBusy in failingClauses`. Populated at the single raise site
+      ## in `drainToIdle` (below) by gating the label computation itself on
+      ## `dcBusy in failing`, rather than computing it unconditionally from
+      ## `spec.gates` and relying on convention to keep the two in sync. A
+      ## timeout caused solely by another clause (e.g. `dcDispatcher`) can
+      ## never report "busy gates: ..." implying false causation.
 
   DrainSpec* = object
     busy*: BusyPredicate
@@ -385,7 +396,15 @@ proc drainToIdle*(screen: InlineScreen[MemorySink],
       # `spec.busy` contributes nothing here since a `BusyPredicate`
       # closure is opaque past the call boundary (documented on
       # `DrainTimeoutError.busyLabels`).
-      let stuckLabels = spec.gates.filterIt(it.isBusy()).mapIt(it.label())
+      #
+      # R2-M3 (round-2 stage-4): gated on `dcBusy in failing` — labels are
+      # computed iff the dcBusy clause is actually among the failing
+      # clauses for THIS raise, making the busyLabels/failingClauses
+      # correlation (documented on DrainTimeoutError.busyLabels above) real
+      # at its one construction site instead of holding by convention.
+      let stuckLabels =
+        if dcBusy in failing: spec.gates.filterIt(it.isBusy()).mapIt(it.label())
+        else: @[]
       var msg = "drain timeout; failing clauses: " & $failing
       if stuckLabels.len > 0:
         msg &= "; busy gates: " & stuckLabels.join(", ")

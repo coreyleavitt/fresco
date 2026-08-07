@@ -281,6 +281,51 @@ suite "M5: DrainSpec.gates + DrainTimeoutError.busyLabels":
 
     waitFor body()
 
+suite "R2-M3: busyLabels correlation with dcBusy is enforced, not conventional":
+  ## Per rfc-headless-quiescence.md R2-M3 (round-2 stage-4 code review):
+  ## `stuckLabels`/`busyLabels` are populated iff `dcBusy` is actually
+  ## among the failing clauses at raise time — a timeout caused by another
+  ## clause entirely must never report a "busy gates" label, even when a
+  ## `BusyGate` happens to be busy at that moment for reasons unrelated to
+  ## THIS drain's `DrainSpec` (i.e. not a member of `spec.gates`).
+
+  test "a dcCommit-only timeout (dcBusy not failing) reports no busy gates, even while an unrelated gate is busy":
+    ## `setCommitInProgressForTest` (frescoTesting seam) holds dcCommit
+    ## failing forever without ever clearing it, so the deadline fires on
+    ## dcCommit alone — spec.gates is empty, so dcBusy never enters
+    ## failingClauses. `unrelatedGate` is held busy throughout via
+    ## `withBusy` but is NOT wired into this DrainSpec at all (representing
+    ## a gate busy "for unrelated reasons" elsewhere in the app) — proving
+    ## busyLabels/msg never leak a gate that isn't even part of the spec,
+    ## regardless of what else is busy in the process at raise time.
+    proc body() {.async: (raises: [Exception]).} =
+      let s = newInlineScreen(newMemorySink(), 5, 20)
+      discard s.newRegion(0, 0, 5, 20)
+      s.setCommitInProgressForTest(true)
+
+      let unrelatedGate = newBusyGate("unrelated")
+      proc holdBusyForever() {.async: (raises: [Exception]).} =
+        withBusy(unrelatedGate):
+          await sleepAsync(10.seconds)
+      asyncSpawn holdBusyForever()
+
+      let spec = DrainSpec(busy: nil, gates: @[], drainTimeout: 20.milliseconds)
+      let fut = drainToIdle(s, spec)
+      let ok = await fut.withTimeout(2.seconds)
+      check ok
+      check fut.failed()
+
+      try:
+        await fut
+        check false
+      except DrainTimeoutError as e:
+        check dcCommit in e.failingClauses
+        check dcBusy notin e.failingClauses
+        check e.busyLabels.len == 0
+        check "busy gates" notin e.msg
+
+    waitFor body()
+
 suite "B7: drainToIdle and ignoreAnimations":
   ## `dcAnimations` + `spec.ignoreAnimations` interaction: a live perpetual
   ## tween (duration far longer than any drainTimeout used here) is the
