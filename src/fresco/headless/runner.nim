@@ -145,14 +145,17 @@ proc boundedAwait(fut: Future[void], bound: Duration): Future[bool]
   ## itself — this codebase's own record on chronos `race()` not
   ## propagating cancellation to children means that would leave the
   ## loser dangling uncancelled; `race()` is always awaited to
-  ## completion, and the losing timer is cancelled by hand so the timer
-  ## heap stays clean.
+  ## completion, and the losing timer is cancelled by hand (via `defer`,
+  ## M1: a plain post-await statement would skip that cleanup if a
+  ## `CancelledError` lands on the `await race` itself) so the timer heap
+  ## stays clean on every exit path.
   if fut.finished:
     return true
   let timer = sleepAsync(bound)
+  defer:
+    if not timer.finished:
+      timer.cancelSoon()
   discard await race(fut, timer)
-  if not timer.finished:
-    timer.cancelSoon()
   return fut.finished
 
 proc teardownAppFut(appFut: Future[void], timeout: Duration): Future[bool]
