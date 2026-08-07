@@ -140,9 +140,16 @@ suite "S0b: resize injection via runHeadless":
         let key = await stream.nextKey()
         discard key
         # Do NOT appendLine or commit here: after resize the region is no
-        # longer bottom-anchored (lowestEdge=10 < new height=15), so the
-        # async commit driver would raise BandNotBottomAnchoredDefect.
-        # Post-resize log capture is tested after S0c adds the relayout helper.
+        # longer bottom-anchored (lowestEdge=10 < new height=15). Since H2
+        # (round-1 stage-4), appendLine in this state is safe to call — the
+        # async commit driver captures BandNotBottomAnchoredDefect instead of
+        # letting it escape into chronos's dispatcher, and re-raises it
+        # synchronously at the harness's own teardownFlush()/paint() call
+        # (see the "H2" suite below for the deterministic repro + the
+        # reanchored non-vacuity counterpart). This test stays a clean,
+        # defect-free baseline for the plain resize-and-capture behavior;
+        # post-resize log capture across a reanchor is covered by S0c
+        # (test_inline_reanchor.nim) and the H2 suite below.
 
       let events = @[
         resizeEv(15, 40),
@@ -195,5 +202,90 @@ suite "S0b: resize injection via runHeadless":
       discard await runHeadless(s, app, events = events)
 
       check sawKey
+
+# ---------------------------------------------------------------------------
+# Suite 3: H2 (round-1 stage-4) — BandNotBottomAnchoredDefect capture
+# ---------------------------------------------------------------------------
+#
+# H2: the async commit driver (driveCommitStep, scheduled via
+# scheduleCommit's callSoon) used to catch only CatchableError. A
+# BandNotBottomAnchoredDefect raised inside commitOneBatch during that
+# scheduled callback sailed straight through the {.raises: [].} callback
+# into chronos's poll() (no Defect handler there) and killed the process
+# on whatever dispatcher turn happened to run the callback — deterministic
+# neither in timing nor in which test paid for it. Fixed by having
+# driveCommitStep catch the Defect, store it on the screen, and have every
+# relevant synchronous entry point (paint, LogSink.append/appendLine,
+# teardownFlush, commit) re-raise it immediately.
+
+suite "H2: BandNotBottomAnchoredDefect capture — does not escape into the dispatcher":
+
+  test "resize WITHOUT reanchor + post-resize appendLine: Defect surfaces synchronously from runHeadless":
+    ## Script: grow-resize (10 -> 15) with NO reanchor, then — once the
+    ## trailing key event settles — the app calls appendLine. The band is
+    ## now stale (lowestEdge=10 != new H=15).
+    ##
+    ## settleDrain is used deliberately: drainToIdle's dcDispatcher/dcCommit
+    ## clauses force the pump to keep stepping until the async commit driver
+    ## (scheduled by appendLine's LogSink.append -> notify -> scheduleCommit
+    ## -> callSoon) actually RUNS before the per-event drain returns. That
+    ## makes the repro deterministic instead of racing chronos's callback
+    ## queue: pre-fix, BandNotBottomAnchoredDefect escapes uncaught from
+    ## deep inside that pump (driveCommitStep -> the callSoon callback ->
+    ## chronos poll(), which has no Defect handler) and crashes the process
+    ## right there — or, absent a forced pump like this one, on whatever
+    ## LATER dispatcher turn (possibly a different test) happens to run the
+    ## stray callback. Post-fix, driveCommitStep captures the Defect instead
+    ## of raising, and it resurfaces deterministically and synchronously at
+    ## teardownFlush() (the harness's own end-of-run drain) — still inside
+    ## THIS test's waitFor, never the dispatcher's.
+    proc body() {.async: (raises: [Exception]).} =
+      let sink = newMemorySink()
+      let s = newInlineScreen(sink, 10, 40)  # pinnedHeaderRows=1 (default)
+      let r = s.newRegion(1, 0, 9, 40)       # bottom-anchored: 1+9=10=H
+      check r.row + r.height == s.layout.height
+
+      proc app(stream: InputStream) {.async: (raises: [Exception]).} =
+        let key = await stream.nextKey()
+        discard key
+        # Region is now stale: lowestEdge=10, new H=15. No reanchor.
+        s.appendLine("post-resize, no reanchor")
+
+      let events = @[
+        resizeEv(15, 40),
+        keyEv(atomKey(kEscape)),
+      ]
+      discard await runHeadless(s, app, events = events, settle = settleDrain())
+
+    expect BandNotBottomAnchoredDefect:
+      waitFor body()
+
+  test "resize WITHOUT reanchor + reanchorBottom before appendLine: clean run, no Defect (non-vacuity)":
+    ## Companion positive test: identical script, except the app calls
+    ## reanchorBottom right after observing the resize (before appendLine).
+    ## Proves the H2 fix does not mask a REAL contract violation — a
+    ## correctly-reanchored band still commits cleanly through the same
+    ## async driver path that raises in the test above.
+    proc body() {.async: (raises: [Exception]).} =
+      let sink = newMemorySink()
+      let s = newInlineScreen(sink, 10, 40)
+      let r = s.newRegion(1, 0, 9, 40)
+
+      proc app(stream: InputStream) {.async: (raises: [Exception]).} =
+        let key = await stream.nextKey()
+        discard key
+        reanchorBottom(s.layout, [r])
+        s.appendLine("post-resize, reanchored")
+
+      let events = @[
+        resizeEv(15, 40),
+        keyEv(atomKey(kEscape)),
+      ]
+      let result = await runHeadless(s, app, events = events, settle = settleDrain())
+      check result.settled()
+      check result.committedRows.contains("post-resize, reanchored")
+      check r.row + r.height == s.layout.height
+
+    waitFor body()
 
     waitFor body()

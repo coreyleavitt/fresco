@@ -181,6 +181,19 @@ type
       ## True iff a setSize arrived while commitInProgress was set.
       ## Cleared and applied by finishCommit. Default: false.
       ## INTERNAL — no legitimate external write contract.
+    pendingDefect: ref Defect
+      ## H2 (round-1 stage-4): a Defect (e.g. BandNotBottomAnchoredDefect)
+      ## caught by the async commit driver (driveCommitStep) mid-burst.
+      ## Defects must never escape into chronos's callSoon callback — there
+      ## is no Defect handler in `poll()`, so an escaped Defect is
+      ## process-fatal on whatever dispatcher turn happens to run the
+      ## callback, possibly during an unrelated LATER test. Instead the
+      ## driver stores it here and returns cleanly; `reraisePendingDefect`
+      ## re-raises it synchronously at the next relevant public entry point
+      ## (paint, LogSink.append/appendLine, teardownFlush, commit) so it
+      ## always surfaces attributably, inside the originating caller's own
+      ## `waitFor`, never the dispatcher's. nil when nothing is pending.
+      ## INTERNAL — write access is reserved for the pipeline.
 
 # ---------------------------------------------------------------------------
 # LogSink ops — append is the SOLE public door
@@ -277,6 +290,18 @@ proc assertDrained[S: Sink](s: InlineScreen[S]) {.inline.} =
       doAssert (not r.pending) and r.pendingScroll == 0,
         "commit: region still pending/scrolling after drain"
 
+proc reraisePendingDefect[S: Sink](s: InlineScreen[S]) {.inline.} =
+  ## H2 (round-1 stage-4): re-raise (and clear) a Defect previously captured
+  ## by the async commit driver, if any. Called by every synchronous public
+  ## entry point that touches the commit machinery (paint, LogSink.append
+  ## via the notify closure, teardownFlush, commit) so a Defect caught
+  ## out-of-band by driveCommitStep resurfaces deterministically at the
+  ## next such call instead of staying silently buried on the screen.
+  if s.pendingDefect != nil:
+    let d = s.pendingDefect
+    s.pendingDefect = nil
+    raise d
+
 proc scheduleCommit[S: Sink](s: InlineScreen[S]) =
   ## Idempotent: if already scheduled or a batch chain is in flight, return.
   ## A running driveCommit loops until logPendingLen==0 and will pick up
@@ -313,7 +338,24 @@ proc driveCommitStep[S: Sink](s: InlineScreen[S]) {.gcsafe, raises: [].} =
     finishCommit(s)
     return
 
-  discard commitOneBatch(s)
+  try:
+    discard commitOneBatch(s)
+  except Defect as d:
+    # H2 (round-1 stage-4): commitOneBatch raised (e.g.
+    # BandNotBottomAnchoredDefect — the band went stale under a resize the
+    # consumer hasn't reanchored yet). This callback runs from callSoon, one
+    # dispatcher turn removed from any caller's stack — letting the Defect
+    # propagate here would sail straight into chronos's poll() (no Defect
+    # handler) and kill the process on whatever turn happens to run this
+    # callback, possibly during an unrelated LATER test. Capture instead:
+    # store it and finish the burst cleanly. reraisePendingDefect resurfaces
+    # it synchronously and deterministically at the next call to paint,
+    # LogSink.append/appendLine, teardownFlush, or commit — fail-fast
+    # semantics are preserved (the Defect still crashes the offending
+    # caller); only WHERE changes, not WHETHER.
+    s.pendingDefect = d
+    finishCommit(s)
+    return
 
   if s.logPendingLen() > 0:
     # More remain. Yield one dispatcher turn then continue.
@@ -363,8 +405,16 @@ proc newInlineScreen*[S: Sink](sink: S, size: Signal[(int, int)],
     stagedH: 0,
     stagedW: 0,
     hasStagedSize: false,
+    pendingDefect: nil,
   )
-  scr.log.notify = proc() {.gcsafe.} = scheduleCommit(scr)
+  scr.log.notify = proc() {.gcsafe.} =
+    # H2 (round-1 stage-4): LogSink.append is the sole public door into the
+    # log (appendLine and bindScrollback both funnel through it), so this
+    # closure is the entry point's synchronous re-raise site: a Defect
+    # captured by a previous async commit burst surfaces here, before a new
+    # commit is even scheduled, rather than staying silently buried.
+    reraisePendingDefect(scr)
+    scheduleCommit(scr)
   scr
 
 proc newInlineScreen*[S: Sink](sink: S, h, w: int,
@@ -484,8 +534,12 @@ proc setSize*[S: Sink](s: InlineScreen[S], h, w: int) =
 
 proc paint*[S: Sink](s: InlineScreen[S]) =
   ## Commit the pinned layout through the sink.
-  ## Byte-identical to Screen.paint / AltScreen.paint.
+  ## Byte-identical to Screen.paint / AltScreen.paint. Re-raises (H2,
+  ## round-1 stage-4) any Defect previously captured by the async commit
+  ## driver before painting, so it surfaces here synchronously and
+  ## deterministically instead of staying silently buried.
   mixin commit
+  s.reraisePendingDefect()
   s.sink.commit(s.layout)
 
 # ---------------------------------------------------------------------------
@@ -513,9 +567,21 @@ type
     ## breaks). This is a CONSUMER-CONTRACT violation (a programming error in the
     ## caller's region placement), not an internal fresco assertion — hence its
     ## own named `Defect` rather than `AssertionDefect`. It is a `Defect` so it
-    ## is exempt from the `{.raises.}` effect system (it can surface from the
-    ## `{.raises: [].}` async commit driver) and is NOT elided under `-d:danger`
-    ## (it is a real `raise`, not a `doAssert`).
+    ## is exempt from the `{.raises.}` effect system, and is NOT elided under
+    ## `-d:danger` (it is a real `raise`, not a `doAssert`).
+    ##
+    ## Surfacing (H2, round-1 stage-4): raised directly (propagates
+    ## synchronously to the caller) from the synchronous `commit*` path. From
+    ## the async multi-batch driver (`driveCommitStep`, scheduled via
+    ## `scheduleCommit`'s `callSoon`) it is instead CAUGHT and stored on the
+    ## screen — it must never escape into chronos's `callSoon` callback,
+    ## which has no Defect handler and would be process-fatal on whatever
+    ## dispatcher turn happens to run it, possibly during an unrelated LATER
+    ## test. It re-surfaces synchronously at the next call to `paint`,
+    ## `LogSink.append`/`appendLine`, `teardownFlush`, or `commit` — still a
+    ## real raised Defect, still fail-fast, just deterministically
+    ## attributed to whichever caller discovers it instead of an arbitrary
+    ## dispatcher turn.
 
 proc commitOneBatch[S: Sink](s: InlineScreen[S]): string =
   ## Drain one batch from the log through the sink. Returns the emitted bytes
@@ -598,7 +664,15 @@ proc teardownFlush*[S: Sink](s: InlineScreen[S]) =
   ##
   ## MemorySink (no scrollback model): still disarms the tail buffer so the
   ## structural invariant holds regardless of sink type.
+  ##
+  ## H2 (round-1 stage-4): re-raises any Defect previously captured by the
+  ## async commit driver BEFORE draining, so it surfaces here synchronously
+  ## and deterministically. This is the harness's own end-of-run call (see
+  ## headless/runner.nim), so it is the guaranteed re-raise point on every
+  ## runHeadless exit path — a Defect captured mid-run can never outlive
+  ## the originating caller's waitFor.
   mixin writeAll
+  s.reraisePendingDefect()
   let n = s.logPendingLen()
   if n > 0:
     let batch = s.logDrainBatch(n)   # drain ALL
@@ -639,6 +713,7 @@ proc commit*[S: Sink](s: InlineScreen[S]): string {.discardable.} =
   ## inline_screen.nim importing terminal.nim (which would pull in posix and
   ## conflict with the Signal call-operator resolution in the constructors).
   mixin commitInline, writeAll
+  s.reraisePendingDefect()
   s.commitInProgress = true
 
   # Zero-height clamp: if the live band is 0 rows, the committed output has
