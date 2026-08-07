@@ -424,8 +424,9 @@ template withCbreak*(body: untyped) =
 # (= termiosSignalHandler after withCbreak) and replaces them with
 # gracefulSignalHandler. On the FIRST signal the graceful handler writes one
 # byte to a self-pipe and returns — the chronos dispatcher wakes, calls
-# teardownFlush (normal context, full flush), then restoreAll + reraiseSignal
-# (composed by inline_teardown.nim's completeGracefulTeardown).
+# teardownFlush (normal context, full flush), then finishGracefulTeardown
+# (restoreAll, then raise a captured Defect or reraiseSignal — called by
+# inline_teardown.nim's completeGracefulTeardown).
 # On a SECOND signal (escalation) or when not armed, the saved hard handler
 # is called directly (static-buffer flush + restore + die).
 #
@@ -439,19 +440,6 @@ var sigGracefulPending {.threadvar.}: cint   # 1 once a first graceful signal is
 var sigGracefulSig     {.threadvar.}: cint   # the delivered signal number
 var prevIntGraceful  {.threadvar.}: SigHandler   # saved prior INT handler
 var prevTermGraceful {.threadvar.}: SigHandler   # saved prior TERM handler
-
-var restoreAllCompleted {.threadvar.}: cint
-  ## R4-5 (round-4 stage-4): loud-failure guard for `reraiseSignal`'s ordering
-  ## contract. `restoreAll` and `reraiseSignal` must both stay exported —
-  ## `inline_teardown.nim`'s `completeGracefulTeardown` is a different
-  ## module and needs to call them as two separate steps (to interpose a
-  ## captured Defect between them) — so Nim's module system can't make
-  ## "restore before reraise" a compile-time-checked property. This flag is
-  ## the strongest enforcement available: `armGracefulTeardown` resets it to
-  ## 0 at the start of each graceful-teardown cycle, `restoreAll` sets it to
-  ## 1 as its last statement, and `reraiseSignal` `doAssert`s it's set —
-  ## calling `reraiseSignal` before `restoreAll` in the same cycle is now a
-  ## loud crash instead of a silent skipped-restore.
 
 proc restoreTermiosStack*() {.gcsafe, raises: [].} =
   ## Restore the full termios snapshot stack (innermost-first). Shared by
@@ -501,7 +489,6 @@ proc armGracefulTeardown*() {.gcsafe, raises: [].} =
     discard fcntl(teardownPipe[1], F_SETFL, O_NONBLOCK)
     teardownPipeOpen = 1
   sigGracefulPending = 0
-  restoreAllCompleted = 0   # R4-5: fresh cycle — reraiseSignal's guard must re-arm
   prevIntGraceful  = cast[SigHandler](signal(SIGINT,  gracefulSignalHandler))
   prevTermGraceful = cast[SigHandler](signal(SIGTERM, gracefulSignalHandler))
   sigGracefulArmed = 1
@@ -559,7 +546,7 @@ proc consumeGracefulSig*(): cint {.gcsafe.} =
   ## Return the signal number that triggered the graceful teardown.
   sigGracefulSig
 
-proc restoreAll*() {.gcsafe, raises: [].} =
+proc restoreAll() {.gcsafe, raises: [].} =
   ## Normal-context restore: emit ?1049l if alt-screen active, restore the
   ## full termios stack, and disarm the graceful handler (cleans up the
   ## self-pipe). Called from the chronos watch task AFTER teardownFlush —
@@ -567,18 +554,12 @@ proc restoreAll*() {.gcsafe, raises: [].} =
   ## restore ourselves. Normal context (not a signal handler) so no
   ## async-signal-safety constraint, but we keep it simple.
   ##
-  ## R3-2 (round-3 stage-4): split out of the former `restoreAllAndReraise`
-  ## (deleted, R4-5 — zero production callers once this split landed) so a
-  ## caller that needs to surface a Nim exception (e.g. a captured Defect)
-  ## INSTEAD OF re-raising the OS signal can still run this restore
-  ## unconditionally first — see `completeGracefulTeardown` in
-  ## `inline_teardown.nim`, the only production caller of either half.
-  ##
-  ## Sets `restoreAllCompleted` as its LAST statement — `reraiseSignal`'s
-  ## ordering contract (this proc must run first) is enforced by a
-  ## `doAssert` on that flag, since `restoreAll`/`reraiseSignal` must both
-  ## stay exported for `completeGracefulTeardown` to call across the module
-  ## boundary, so Nim's visibility system can't enforce the ordering itself.
+  ## Private — the only caller is `finishGracefulTeardown` below, which
+  ## composes this with `reraiseSignal` in the correct order. R3-2
+  ## (round-3 stage-4) split this out of the former `restoreAllAndReraise`;
+  ## R5-M1 (round-5) collapsed the two halves back into one exported
+  ## composition and made both halves module-private, so the ordering is
+  ## now structural rather than runtime-checked.
 
   # CRASH-PATH tail flush. On the graceful (tier-2) path teardownFlush MUST
   # have been called before this proc and must have explicitly disarmed the
@@ -610,30 +591,31 @@ proc restoreAll*() {.gcsafe, raises: [].} =
   # Disarm the graceful handler (cleans up pipe).
   disarmGracefulTeardown()
 
-  # R4-5: last statement — marks the ordering contract satisfied for this
-  # graceful-teardown cycle. See the `restoreAllCompleted` declaration above.
-  restoreAllCompleted = 1
-
-proc reraiseSignal*(sig: cint) {.gcsafe, raises: [].} =
+proc reraiseSignal(sig: cint) {.gcsafe, raises: [].} =
   ## Re-deliver `sig` with default disposition — the final step of the
-  ## graceful teardown path, once `restoreAll` has already completed.
-  ## Split out of the former `restoreAllAndReraise` (R3-2, round-3 stage-4;
-  ## that composition proc itself deleted R4-5, round-4 — zero production
-  ## callers once `completeGracefulTeardown` started calling the halves
-  ## separately) so a caller can skip this specific step (and only this
-  ## step) when a captured Defect supersedes it, without also skipping the
-  ## restore.
-  ##
-  ## CONTRACT: must not be called before `restoreAll()` has completed in the
-  ## same graceful-teardown cycle — doing so would deliver the fatal signal
-  ## with the terminal still in raw mode. `restoreAll` and `reraiseSignal`
-  ## must both stay `*`-exported so `inline_teardown.nim`'s
-  ## `completeGracefulTeardown` (a different module) can call them as two
-  ## separate steps; Nim's module system has no "friend" mechanism to make
-  ## that ordering a compile-time property, so it's enforced here at
-  ## runtime instead, loudly: `doAssert restoreAllCompleted != 0`.
-  doAssert restoreAllCompleted != 0,
-    "fresco: reraiseSignal called before restoreAll completed for this " &
-    "graceful-teardown cycle — termios restore would be skipped"
+  ## graceful teardown path, once `restoreAll` has already run. Private —
+  ## the only caller is `finishGracefulTeardown` below, which always calls
+  ## `restoreAll()` first, so the ordering is structural (a single
+  ## composition over two private halves) rather than a runtime-checked
+  ## contract. See R5-M1 (round-5).
   discard signal(sig, SIG_DFL)
   discard kill(getpid(), sig)
+
+proc finishGracefulTeardown*(sig: cint; pendingDefect: ref Defect)
+    {.raises: [Defect].} =
+  ## The sole exported composition of the graceful-teardown finish sequence:
+  ## always restore the terminal, then either surface a captured Defect or
+  ## re-deliver the OS signal. Supersedes the round-4 runtime ordering guard
+  ## (a `restoreAllCompleted` threadvar + `doAssert` in `reraiseSignal`) —
+  ## per the compile-time-first non-negotiable, an invariant the module
+  ## system CAN make unrepresentable (private halves, one call site) should
+  ## not be left to a runtime check. `reraiseSignal`'s `kill(getpid(), sig)`
+  ## re-delivers the signal but this proc does not itself raise as a result
+  ## of that branch — the process typically dies from the re-delivered
+  ## signal before returning, but nothing here raises a Nim exception for
+  ## it. The only way this proc raises is `pendingDefect` being non-nil.
+  restoreAll()
+  if pendingDefect != nil:
+    raise pendingDefect
+  else:
+    reraiseSignal(sig)

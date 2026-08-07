@@ -92,8 +92,8 @@ proc captureTeardownDefect[S: Sink](s: InlineScreen[S]): ref Defect =
 
 proc completeGracefulTeardown*[S: Sink](s: InlineScreen[S], sig: cint) =
   ## Run the post-wakeup graceful-teardown sequence: drain (`teardownFlush`),
-  ## ALWAYS restore terminal state (`restoreAll`), then either re-raise the
-  ## captured Defect or re-deliver `sig`.
+  ## then `finishGracefulTeardown` — ALWAYS restore terminal state, then
+  ## either re-raise the captured Defect or re-deliver `sig`.
   ##
   ## R3-2 (round-3 stage-4): `teardownFlush` may itself re-raise a Defect
   ## the async commit driver captured mid-run (H2/R2-M1) — `watchTeardownSignals`
@@ -116,12 +116,13 @@ proc completeGracefulTeardown*[S: Sink](s: InlineScreen[S], sig: cint) =
   ## `watchTeardownSignals` as its own proc (rather than inlined) so a test
   ## can drive this exact sequence directly, without needing a real OS
   ## signal delivery or self-pipe write.
+  ##
+  ## R5-M1 (round-5): the restore-then-raise-or-reraise composition itself
+  ## now lives in `termios.nim`'s `finishGracefulTeardown` (a single
+  ## exported proc over two private halves) rather than being composed here
+  ## from two separately-exported halves.
   let pendingDefect = captureTeardownDefect(s)
-  restoreAll()
-  if pendingDefect != nil:
-    raise pendingDefect
-  else:
-    reraiseSignal(sig)
+  finishGracefulTeardown(sig, pendingDefect)
 
 proc watchTeardownSignals*[S: Sink](s: InlineScreen[S]) {.async.} =
   ## Watch the teardown self-pipe for a graceful SIGTERM or SIGINT.
