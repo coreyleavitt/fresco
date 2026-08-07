@@ -11,6 +11,7 @@
 import std/sequtils
 import std/strutils
 import chronos
+from chronos/config import chronosStrictReentrancy
 import intonaco/reactive
 import ../events
 import ../input
@@ -21,6 +22,19 @@ import ../busy
 import ./input as headless_input
 
 export busy
+
+when chronosStrictReentrancy:
+  {.error: "fresco's dcDispatcher clause (failingClauses below, via " &
+    "chronos's pendingCallbacksCount()) assumes the `not " &
+    "chronosStrictReentrancy` build: pendingCallbacksCount() subtracts " &
+    "the dispatcher's permanent SentinelCallback so an idle dispatcher " &
+    "reads exactly zero. Under chronosStrictReentrancy the sentinel is " &
+    "counted too, so pendingCallbacksCount() never reads zero and every " &
+    "drainToIdle call spins to its deadline instead of completing. This " &
+    "flips whenever chronosPreviewV5 is defined (chronosStrictReentrancy" &
+    "'s default) or chronosStrictReentrancy is set directly. Unsupported " &
+    "until dcDispatcher's exact-witness assumption is revisited — see " &
+    "rfc-headless-quiescence.md's chronos-fork due-diligence section.".}
 
 type
   # DrainClause / SettleFailureSite / SettleFailure declared here, ahead of
@@ -215,8 +229,14 @@ proc keyEv*(k: KeyEvent): InlineEvent =
 
 proc resizeEv*(h, w: int): InlineEvent =
   ## Construct a Resize event for a scripted InlineEvent stream.
-  ## The harness applies `s.setSize(h, w)` then waits one dispatcher
-  ## turn so reactive `liveZoneHeight` updates before the next event.
+  ## The harness applies `s.setSize(h, w)` directly — fully synchronous,
+  ## including the reactive `liveZoneHeight` update (`Signal.set`'s
+  ## propagation completes before `setSize` returns; there is no
+  ## dispatcher turn to wait out here). Whatever wait happens before the
+  ## NEXT event is injected comes from `settle` (`perKeySettle` under
+  ## `settleFixed`, `drainToIdle` under `settleDrain`), the same as for
+  ## any other event — not from this constructor or from resize handling
+  ## specifically.
   InlineEvent(kind: ievResize, resizeH: h, resizeW: w)
 
 proc runHeadless*(app: HeadlessApp,
@@ -531,12 +551,15 @@ proc runHeadless*(screen: InlineScreen[MemorySink],
   ## both are true. Use `result.settled()` for the one-expression "clean
   ## run" check.
   ##
-  ## Precedence: a captured commit-driver Defect supersedes result
-  ## reporting (R2-M1, round-2 stage-4). The "both recorded" guarantee
-  ## above holds ONLY absent a `pendingDefect` (H2, round-1 stage-4) on
-  ## `screen` — the re-raise fires at whichever blessed entry point next
-  ## runs post-capture (R3-5, round-3 stage-4: corrected — it is NOT
-  ## always the final `screen.teardownFlush()` call below). Under
+  ## Precedence (canonical statement: rfc-headless-quiescence.md §2 +
+  ## inline_screen.nim's `reraisePendingDefect` doc comment — a captured
+  ## Defect always supersedes whatever outcome a call was about to report,
+  ## once cleanup completes): here that means a captured commit-driver
+  ## Defect supersedes `HeadlessResult` reporting. The "both recorded"
+  ## guarantee above holds ONLY absent a `pendingDefect` (H2, round-1
+  ## stage-4) on `screen` — the re-raise fires at whichever blessed entry
+  ## point next runs post-capture (R3-5, round-3 stage-4: corrected — it is
+  ## NOT always the final `screen.teardownFlush()` call below). Under
   ## `settleFixed` that final `teardownFlush()` IS the guaranteed re-raise
   ## point. Under `settleDrain` it typically fires earlier: `drainToIdle`
   ## (called per-event and once more before the final capture, both
@@ -548,11 +571,8 @@ proc runHeadless*(screen: InlineScreen[MemorySink],
   ## before this proc ever reaches its final `teardownFlush()`/`paint()`
   ## lines. Either way, the re-raise fires before `result.appError`/`rows`/
   ## `committedRows` are populated, so `runHeadless` itself raises instead
-  ## of returning a `HeadlessResult` in that case. This is deliberate: a
-  ## captured Defect means a programming error (e.g. a stale, non-bottom-
-  ## anchored band), and the run's results are meaningless against that —
-  ## fail-fast wins over "both recorded". Accepted residual: a screen
-  ## dropped after a Defect capture with no further call to any of
+  ## of returning a `HeadlessResult` in that case. Accepted residual: a
+  ## screen dropped after a Defect capture with no further call to any of
   ## `paint`/`LogSink.append`/`appendLine`/`teardownFlush`/`commit`
   ## silently loses the stored Defect — inherent to deferred capture, not
   ## fixed by this round.

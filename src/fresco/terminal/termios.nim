@@ -602,7 +602,7 @@ proc reraiseSignal(sig: cint) {.gcsafe, raises: [].} =
   discard kill(getpid(), sig)
 
 proc finishGracefulTeardown*(sig: cint; pendingDefect: ref Defect)
-    {.raises: [Defect].} =
+    {.gcsafe, raises: [Defect].} =
   ## The sole exported composition of the graceful-teardown finish sequence:
   ## always restore the terminal, then either surface a captured Defect or
   ## re-deliver the OS signal. Supersedes the round-4 runtime ordering guard
