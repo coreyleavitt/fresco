@@ -539,13 +539,21 @@ proc consumeGracefulSig*(): cint {.gcsafe.} =
   ## Return the signal number that triggered the graceful teardown.
   sigGracefulSig
 
-proc restoreAllAndReraise*(sig: cint) {.gcsafe, raises: [].} =
-  ## Normal-context final exit: emit ?1049l if alt-screen active,
-  ## restore the full termios stack, then re-raise `sig` with SIG_DFL.
-  ## Called from the chronos watch task AFTER teardownFlush — this
-  ## bypasses withCbreak's finally, so we must do the terminal restore
-  ## ourselves. Normal context (not a signal handler) so no
+proc restoreAll*() {.gcsafe, raises: [].} =
+  ## Normal-context restore: emit ?1049l if alt-screen active, restore the
+  ## full termios stack, and disarm the graceful handler (cleans up the
+  ## self-pipe). Called from the chronos watch task AFTER teardownFlush —
+  ## this bypasses withCbreak's finally, so we must do the terminal
+  ## restore ourselves. Normal context (not a signal handler) so no
   ## async-signal-safety constraint, but we keep it simple.
+  ##
+  ## R3-2 (round-3 stage-4): split out of `restoreAllAndReraise` so a
+  ## caller that needs to surface a Nim exception (e.g. a captured Defect)
+  ## INSTEAD OF re-raising the OS signal can still run this restore
+  ## unconditionally first — see `completeGracefulTeardown` in
+  ## `inline_teardown.nim`, which is the only production caller of either
+  ## half. `restoreAllAndReraise` below is kept as the two-step composition
+  ## for any caller that genuinely wants both steps unconditionally.
 
   # CRASH-PATH tail flush. On the graceful (tier-2) path teardownFlush MUST
   # have been called before this proc and must have explicitly disarmed the
@@ -577,6 +585,20 @@ proc restoreAllAndReraise*(sig: cint) {.gcsafe, raises: [].} =
   # Disarm the graceful handler (cleans up pipe).
   disarmGracefulTeardown()
 
-  # Re-raise with default disposition.
+proc reraiseSignal*(sig: cint) {.gcsafe, raises: [].} =
+  ## Re-deliver `sig` with default disposition — the final step of the
+  ## graceful teardown path, once `restoreAll` has already completed.
+  ## Split out of `restoreAllAndReraise` (R3-2, round-3 stage-4) so a
+  ## caller can skip this specific step (and only this step) when a
+  ## captured Defect supersedes it, without also skipping the restore.
   discard signal(sig, SIG_DFL)
   discard kill(getpid(), sig)
+
+proc restoreAllAndReraise*(sig: cint) {.gcsafe, raises: [].} =
+  ## Composition of `restoreAll` + `reraiseSignal`, kept for callers that
+  ## want the unconditional two-step sequence `restoreAllAndReraise` has
+  ## always provided. `inline_teardown.nim`'s `completeGracefulTeardown`
+  ## (the sole production caller as of R3-2) calls the two halves
+  ## separately instead, so it can interpose a captured Defect between them.
+  restoreAll()
+  reraiseSignal(sig)

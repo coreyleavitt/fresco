@@ -10,9 +10,11 @@
 ##   asyncSpawn watchTeardownSignals(s)
 ##   # ... run app loop ...
 ##   # On SIGTERM/SIGINT: gracefulSignalHandler writes a byte to the self-pipe;
-##   # the chronos dispatcher wakes waitTeardownByte; teardownFlush runs in
-##   # normal context (full flush, never dropped); then restoreAllAndReraise
-##   # ends the process via re-raise with default disposition.
+##   # the chronos dispatcher wakes waitTeardownByte; completeGracefulTeardown
+##   # runs teardownFlush (full flush, never dropped) in normal context, ALWAYS
+##   # restores the terminal, then either re-raises a Defect teardownFlush
+##   # captured (R3-2, round-3 stage-4 — supersedes the signal) or ends the
+##   # process via signal re-raise with default disposition.
 ##
 ## Preferred usage (lifecycle template — fresco owns all three teardown tiers):
 ##   proc main() {.async.} =
@@ -75,14 +77,50 @@ proc waitTeardownByte() {.async.} =
   # Drain whatever arrived (coalesced signals).
   drainTeardownPipe()
 
+proc completeGracefulTeardown*[S: Sink](s: InlineScreen[S], sig: cint) =
+  ## Run the post-wakeup graceful-teardown sequence: drain (`teardownFlush`),
+  ## ALWAYS restore terminal state (`restoreAll`), then either re-raise the
+  ## captured Defect or re-deliver `sig`.
+  ##
+  ## R3-2 (round-3 stage-4): `teardownFlush` may itself re-raise a Defect
+  ## the async commit driver captured mid-run (H2/R2-M1) — `watchTeardownSignals`
+  ## used to call `teardownFlush(s)` with no guard at all, so that raise
+  ## skipped `restoreAllAndReraise` entirely: `chronos`'s async-macro Defect
+  ## handler (`asyncmacro.nim`'s `addDefect`) re-raises a Defect EAGERLY,
+  ## right where it's caught, rather than storing it on the future — so the
+  ## unguarded call let the exception fly straight past tier-2 termios
+  ## restore. That is the exact worst-case failure this library exists to
+  ## prevent (see CLAUDE.md's "Crash-safe termios restore" non-negotiable):
+  ## a captured Defect meant the terminal was left in raw mode on the FIRST
+  ## graceful SIGTERM/SIGINT, saved only by a second signal hitting the hard
+  ## handler's own restore.
+  ##
+  ## Fixed by mirroring `withInlineScreenImpl`'s precedence doctrine
+  ## (inline_screen.nim / inline_teardown.nim's `finally`): cleanup/restore
+  ## always completes first; a captured Defect, when present, supersedes the
+  ## signal re-raise (it never reaches `reraiseSignal`'s real
+  ## `kill(getpid(), sig)`) but never skips `restoreAll`. Split out of
+  ## `watchTeardownSignals` as its own proc (rather than inlined) so a test
+  ## can drive this exact sequence directly, without needing a real OS
+  ## signal delivery or self-pipe write.
+  var pendingDefect: ref Defect = nil
+  try:
+    teardownFlush(s)
+  except Defect as d:
+    pendingDefect = d
+  restoreAll()
+  if pendingDefect != nil:
+    raise pendingDefect
+  else:
+    reraiseSignal(sig)
+
 proc watchTeardownSignals*[S: Sink](s: InlineScreen[S]) {.async.} =
   ## Watch the teardown self-pipe for a graceful SIGTERM or SIGINT.
   ##
-  ## ONE graceful signal is terminal — no loop. On wake:
-  ##   1. teardownFlush(s) — drain all pending committed lines in normal
-  ##      context (full flush; never dropped; safe to alloc/GC).
-  ##   2. restoreAllAndReraise(consumeGracefulSig()) — restore the terminal
-  ##      and re-raise the signal with default disposition, ending the process.
+  ## ONE graceful signal is terminal — no loop. On wake, runs
+  ## `completeGracefulTeardown(s, consumeGracefulSig())` (see its own doc
+  ## comment for the full drain/restore/re-raise sequence and the R3-2
+  ## precedence fix).
   ##
   ## Spawn with `asyncSpawn` near the app loop, exactly like `watchResizes`.
   ## armGracefulTeardown() must have been called first so the self-pipe exists.
@@ -90,8 +128,7 @@ proc watchTeardownSignals*[S: Sink](s: InlineScreen[S]) {.async.} =
     "fresco: watchTeardownSignals requires armGracefulTeardown() first"
   await waitTeardownByte()
   # Normal context — full teardown pipeline is safe.
-  teardownFlush(s)
-  restoreAllAndReraise(consumeGracefulSig())
+  completeGracefulTeardown(s, consumeGracefulSig())
 
 # ---------------------------------------------------------------------------
 # withInlineScreen — three-tier teardown lifecycle
