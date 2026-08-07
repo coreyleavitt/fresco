@@ -338,9 +338,20 @@ suite "R2-M1: teardownFlush drains pending lines before re-raising a stashed Def
     ## app ALSO raises after the appendLine call, so BOTH facts are true:
     ## the app future fails AND a Defect is captured. Per the documented
     ## precedence (R2-M1): the captured Defect supersedes result reporting.
-    ## runHeadless's own teardownFlush() call re-raises it before appError/
-    ## rows/committedRows are ever populated, so the Defect propagates out
-    ## of runHeadless itself rather than landing in a returned HeadlessResult.
+    ##
+    ## R3-5 (round-3 stage-4: corrected — this used to say "runHeadless's own
+    ## teardownFlush() call re-raises it," which is not what actually happens
+    ## under settleDrain here): the keyEv event's own `await
+    ## drainToIdle(screen, settle.drain)` call (in runHeadless's skDrain loop)
+    ## is what surfaces it — its pump gives the app task the dispatcher turns
+    ## it needs to wake from `nextKey()`, appendLine (scheduling the async
+    ## commit driver), and raise; once every drain clause reads idle,
+    ## `drainToIdle`'s own trailing `screen.paint()` postcondition re-raises
+    ## the by-then-captured Defect. That raise is not a `DrainTimeoutError`,
+    ## so the loop's `except DrainTimeoutError` does not catch it — it
+    ## propagates straight out of `runHeadless`, well before the function
+    ## ever reaches its final `teardownFlush()`/`paint()` lines, landing here
+    ## rather than in a returned `HeadlessResult`.
     proc body() {.async: (raises: [Exception]).} =
       let sink = newMemorySink()
       let s = newInlineScreen(sink, 10, 40)
@@ -407,6 +418,11 @@ suite "R2-M4: reraisePendingDefect's other blessed entry points":
     s.setSize(15, 40)  # grow, no reanchor: band now stale
     s.appendLine("post-resize, no reanchor")  # schedules the async driver
 
+    # R3-5 (round-3 stage-4): deterministic, not a race with the timer —
+    # callSoon-scheduled callbacks (the async driver's) are always drained
+    # from the dispatcher's callback queue before a positive-duration timer
+    # (sleepAsync here) is allowed to complete, on every poll() turn. Any
+    # positive duration works; 20ms is not a tuned/minimum value.
     await sleepAsync(20.milliseconds)  # let the callSoon-scheduled driver run
 
     result = s

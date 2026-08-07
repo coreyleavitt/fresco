@@ -791,6 +791,16 @@ proc commit*[S: Sink](s: InlineScreen[S]): string {.discardable.} =
   ## module-level bottom-anchor contract. Committed content spills into the
   ## rows above the band and then into native terminal scrollback.
   ##
+  ## R3-5 (round-3 stage-4): like `paint`, this re-raises a pending Defect
+  ## (`reraisePendingDefect`, below) BEFORE draining anything — unlike
+  ## `teardownFlush`, which drains and disarms first and re-raises only as
+  ## its LAST statement (R2-M1). `teardownFlush` is the one blessed entry
+  ## point with a "zero bytes dropped" guarantee; `commit` makes no such
+  ## promise — a pending Defect here means whatever was already logged
+  ## before this call stays exactly where `logDrainBatch`/`commitOneBatch`
+  ## left it (R3-1's fix keeps that buffer intact on a stale-band raise),
+  ## for a later `teardownFlush` to recover.
+  ##
   ## Pipeline order (enforced inside commitInline):
   ##   2. Pre-drain pendingScroll for live-band regions.
   ##   3. cursorTo(liveTop+1, 1) + ED 0 — clear old band.

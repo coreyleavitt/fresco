@@ -378,6 +378,14 @@ proc drainToIdle*(screen: InlineScreen[MemorySink],
   ## near-zero drainTimeout can never raise, and a raise's `failingClauses`
   ## can never be the empty set (same evaluation reused, no re-evaluation
   ## divergence).
+  ##
+  ## R3-5 (round-3 stage-4): the trailing `screen.paint()` below is not
+  ## purely a postcondition — `paint` itself re-raises (and clears) any
+  ## Defect the async commit driver captured mid-run (H2/R2-M1), so a
+  ## pending Defect ends this pump right here, synchronously, before this
+  ## proc returns. This is the (often earlier-than-`teardownFlush`) point
+  ## where a compound failure surfaces under `settleDrain` — see the
+  ## `runHeadless(screen, ...)` overload's own Precedence doc comment below.
   let deadlineFut = sleepAsync(spec.drainTimeout)
   defer:
     if not deadlineFut.finished:
@@ -526,8 +534,19 @@ proc runHeadless*(screen: InlineScreen[MemorySink],
   ## Precedence: a captured commit-driver Defect supersedes result
   ## reporting (R2-M1, round-2 stage-4). The "both recorded" guarantee
   ## above holds ONLY absent a `pendingDefect` (H2, round-1 stage-4) on
-  ## `screen` — the final `screen.teardownFlush()` call below re-raises
-  ## any such Defect synchronously, before `result.appError`/`rows`/
+  ## `screen` — the re-raise fires at whichever blessed entry point next
+  ## runs post-capture (R3-5, round-3 stage-4: corrected — it is NOT
+  ## always the final `screen.teardownFlush()` call below). Under
+  ## `settleFixed` that final `teardownFlush()` IS the guaranteed re-raise
+  ## point. Under `settleDrain` it typically fires earlier: `drainToIdle`
+  ## (called per-event and once more before the final capture, both
+  ## above) unconditionally calls `screen.paint()` as its own postcondition
+  ## once every clause reads idle, and `paint()` re-raises a pending Defect
+  ## before painting — the surrounding `try/except DrainTimeoutError` in
+  ## the `skDrain` loop above does not catch a bare `Defect`, so it
+  ## propagates straight out of that `await drainToIdle(...)` call, well
+  ## before this proc ever reaches its final `teardownFlush()`/`paint()`
+  ## lines. Either way, the re-raise fires before `result.appError`/`rows`/
   ## `committedRows` are populated, so `runHeadless` itself raises instead
   ## of returning a `HeadlessResult` in that case. This is deliberate: a
   ## captured Defect means a programming error (e.g. a stale, non-bottom-
