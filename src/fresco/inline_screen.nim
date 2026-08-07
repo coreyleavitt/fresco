@@ -660,6 +660,25 @@ proc commit*[S: Sink](s: InlineScreen[S]): string {.discardable.} =
   finishCommit(s)
 
 # ---------------------------------------------------------------------------
+# Surface idle probes (RFC headless-quiescence, Design 2)
+#
+# Production-safe read-only observability (e.g. a devtools "surface settled"
+# indicator) as well as the wait clause `drainToIdle` (headless/runner.nim)
+# checks. commitIdle and surfaceIdle are kept separate rather than folded
+# into one predicate so a drain timeout's diagnostics can resolve commit-vs-
+# layout independently.
+# ---------------------------------------------------------------------------
+
+proc commitIdle*[S: Sink](s: InlineScreen[S]): bool =
+  ## True iff no commit batch is pending or in progress.
+  not s.pendingCommit and not s.commitInProgress
+
+proc surfaceIdle*[S: Sink](s: InlineScreen[S]): bool =
+  ## True iff the render surface has no work in flight and no unpainted
+  ## dirty regions. Production-safe read-only probe (observability).
+  s.commitIdle and not anyPending(s.layout)
+
+# ---------------------------------------------------------------------------
 # Auto-paint + shouldAutoPaint predicate (slice 10c)
 # ---------------------------------------------------------------------------
 

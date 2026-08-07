@@ -79,6 +79,7 @@ task test, "run all tests":
     "tests/unit/test_memory_sink_committed.nim",
     "tests/unit/test_headless_resize_inject.nim",
     "tests/unit/test_inline_reanchor.nim",
+    "tests/unit/test_surface_probes.nim",
   ]
   let integrationTests = @[
     "tests/integration/test_termios_pty.nim",
