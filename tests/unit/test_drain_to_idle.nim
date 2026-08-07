@@ -284,3 +284,111 @@ suite "B7: drainToIdle and ignoreAnimations":
         check dcAnimations notin e.failingClauses # despite the tween genuinely being live
 
     waitFor body()
+
+suite "B8: adversarial tests of the single-read machine":
+  ## Per rfc-headless-quiescence.md Slices/B8: the stability window and
+  ## backoff were DELETED in the stage-3 redesign (see "Why there is no
+  ## stability window or backoff") — a single idle read is sound because
+  ## `dcDispatcher` is an exact witness for framework-visible work. B8 adds
+  ## no production code; it is adversarial coverage proving that claim
+  ## against the machine as it stands.
+
+  test "a mid-drain clause flap (busy -> commit -> idle) is still caught: re-armed work is not lost":
+    ## A background task the framework CANNOT see on its own (model §6:
+    ## "app-level async the framework cannot see") sleeps a real 30ms, then
+    ## appends a committed line and flips `rearmed`. `busy` is defined as
+    ## exactly `not rearmed`, so it covers the whole 30ms span; the instant
+    ## it releases, the append has *already* happened (same synchronous
+    ## continuation), handing off to `dcCommit`/`dcDispatcher` for the one
+    ## remaining dispatcher hop to actually finish the commit. This is a
+    ## genuine clause handoff, not a single static condition: dcBusy is the
+    ## only thing keeping the loop open for the first ~30ms (nothing
+    ## framework-visible is pending yet — the task is plain-asleep), then
+    ## dcCommit/dcDispatcher take over for the tail. If the drain returned
+    ## before the 30ms elapsed (e.g. dcBusy silently ignored or read once
+    ## and cached), the assertion below — checked essentially immediately
+    ## after `drainToIdle` returns, well under 30ms of real wall-clock work
+    ## remaining — would observe `committedRows` still empty.
+    proc body() {.async: (raises: [Exception]).} =
+      let s = newInlineScreen(newMemorySink(), 5, 20)
+      discard s.newRegion(0, 0, 5, 20)
+      check s.surfaceIdle()
+
+      var rearmed = false
+      proc rearmTask() {.async: (raises: [Exception]).} =
+        await sleepAsync(30.milliseconds)
+        s.logSink.append("rearmed")  # framework-visible from this point on
+        rearmed = true               # ...and busy releases from this point on
+
+      asyncSpawn rearmTask()
+
+      proc busyPred(): bool {.gcsafe, raises: [].} =
+        not rearmed
+
+      let spec = DrainSpec(busy: busyPred, drainTimeout: 2.seconds)
+      let ok = await drainToIdle(s, spec).withTimeout(2.seconds)
+      check ok
+
+      check s.commitIdle()
+      check s.surfaceIdle()
+      check s.sink.committedRows == @["rearmed"]  # re-armed work landed, not lost
+
+    waitFor body()
+
+  test "sequential drainToIdle calls share no state: a timed-out drain does not affect the next":
+    ## First drain: a stuck busy predicate forces a DrainTimeoutError on a
+    ## small drainTimeout. Second drain: same screen, no busy clause,
+    ## otherwise-idle — must succeed promptly and correctly, unaffected by
+    ## the first drain's cancelled deadline timer or any other state the
+    ## first call might have left behind (the machine holds no counters or
+    ## shared state across calls by construction — this proves it).
+    proc body() {.async: (raises: [Exception]).} =
+      let s = newInlineScreen(newMemorySink(), 5, 20)
+      discard s.newRegion(0, 0, 5, 20)
+
+      proc stuckBusy(): bool {.gcsafe, raises: [].} = true
+      let spec1 = DrainSpec(busy: stuckBusy, drainTimeout: 20.milliseconds)
+      let fut1 = drainToIdle(s, spec1)
+      let ok1 = await fut1.withTimeout(2.seconds)
+      check ok1
+      check fut1.failed()
+      try:
+        await fut1
+        check false
+      except DrainTimeoutError as e:
+        check e.failingClauses == {dcBusy}
+
+      # Second drain on the same screen: no busy clause, nothing pending.
+      let start = Moment.now()
+      let ok2 = await drainToIdle(s).withTimeout(2.seconds)
+      let elapsed = Moment.now() - start
+      check ok2
+      check elapsed < 500.milliseconds  # not delayed by anything left over
+      check s.surfaceIdle()
+      check s.sink.rows.len == 5
+
+    waitFor body()
+
+  test "already-idle drain with a LARGE drainTimeout returns promptly (regression guard for the deleted window's stall mode)":
+    ## The deleted stability window re-confirmed idleness with a second
+    ## pump before returning; under the event-driven pump a "confirm idle"
+    ## pump on an already-idle screen blocks until the deadline (see RFC
+    ## "Why there is no stability window or backoff"). This guards
+    ## specifically against that regression at a LARGE drainTimeout (1s) —
+    ## B7's microscopic-timeout test (1ms) cannot distinguish "broke on
+    ## first read" from "waited a possibly-large fraction of a tiny
+    ## timeout"; only a large timeout makes a reintroduced wait visible.
+    proc body() {.async: (raises: [Exception]).} =
+      let s = newInlineScreen(newMemorySink(), 5, 20)
+      discard s.newRegion(0, 0, 5, 20)
+      check s.surfaceIdle()
+
+      let spec = DrainSpec(busy: nil, drainTimeout: 1.seconds)
+      let start = Moment.now()
+      let ok = await drainToIdle(s, spec).withTimeout(2.seconds)
+      let elapsed = Moment.now() - start
+      check ok
+      check elapsed < 200.milliseconds  # nowhere near the 1s drainTimeout
+      check s.sink.rows.len == 5
+
+    waitFor body()
