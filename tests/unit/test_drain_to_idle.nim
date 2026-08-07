@@ -138,7 +138,10 @@ suite "B6: drainToIdle waits for synthetic key delivery (model §7, the dcDispat
       # appFut is already finished here (keyReceived is only set after it
       # resumes and returns) — wrapped anyway to match this file's
       # `.withTimeout(2.seconds)` idiom (see file header) rather than
-      # leaving this the one unwrapped await; semantics unchanged.
+      # leaving this the one unwrapped await. NB withTimeout is not
+      # generally equivalent to a bare await (it completes true for a
+      # FAILED future instead of re-raising); equivalent here only because
+      # appFut is provably finished-successfully at this point.
       let appFutOk = await appFut.withTimeout(2.seconds)
       check appFutOk
 
