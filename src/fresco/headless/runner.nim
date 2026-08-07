@@ -75,6 +75,12 @@ proc runHeadless*(app: HeadlessApp,
   ## when it sees a quit key). If it doesn't, the harness cancels it
   ## at the timeout — the test still gets a HeadlessResult with the
   ## state at cancellation.
+  ##
+  ## Fixed-sleep settling only (rfc-headless-quiescence.md §Out of
+  ## scope): this overload has no `Settle`/drain-mode counterpart — a
+  ## plain `Layout` has no commit batcher or InlineScreen-level idle
+  ## probes to drain against. See `runHeadless(screen, app, events, ...)`
+  ## below for the drain-settling overload.
   let layout = newLayout(height, width)
   let sink = newMemorySink()
   let stream = newSyntheticInputStream()
@@ -106,77 +112,13 @@ type
     ## events. Layout and region setup happen in the app body via the
     ## caller-captured screen.
 
-proc runHeadless*(screen: InlineScreen[MemorySink],
-                  app: HeadlessInlineApp,
-                  events: seq[InlineEvent] = @[],
-                  timeout: Duration = 1.seconds,
-                  perKeySettle: Duration = 1.milliseconds
-                 ): Future[HeadlessResult] {.async: (raises: [Exception]).} =
-  ## Run `app` with a caller-supplied `InlineScreen[MemorySink]`. The
-  ## app sets up regions on `screen` and appends committed lines;
-  ## the harness drains the screen after the app finishes and surfaces
-  ## both `rows` (live band) and `committedRows` (scrollback) in
-  ## `HeadlessResult`.
-  ##
-  ## The `events` parameter is a unified Key|Resize stream (see
-  ## `InlineEvent`, `keyEv`, `resizeEv`). Key events are delivered to the
-  ## app via `pushKey`; Resize events call `s.setSize(h, w)` and then
-  ## yield one dispatcher turn (`perKeySettle`) so reactive
-  ## `liveZoneHeight` and any watchResizes-style relayout can react
-  ## before the next event. Passing `events = @[]` (the default) is
-  ## equivalent to the old `inputs = @[]` call.
-  ##
-  ## Use this overload when the consumer is an InlineScreen-based app
-  ## (e.g., amoxtli's REPL) and the test needs to assert on committed
-  ## scrollback output in addition to the live band.
-  ##
-  ## The existing `runHeadless(app, inputs, height, width, ...)` overload
-  ## is unchanged and handles plain Layout-based apps.
-  let stream = newSyntheticInputStream()
-  let appFut = app(stream)
-
-  for ev in events:
-    case ev.kind
-    of ievKey:
-      stream.pushKey(ev.key)
-      await sleepAsync(perKeySettle)
-    of ievResize:
-      screen.setSize(ev.resizeH, ev.resizeW)
-      # Yield one dispatcher turn so the reactive liveZoneHeight Dynamic
-      # (and any watchResizes-style subscriber) updates before the next event.
-      await sleepAsync(perKeySettle)
-
-  if not appFut.finished:
-    discard await appFut.withTimeout(timeout)
-    if not appFut.finished:
-      appFut.cancelSoon()
-      try: await appFut
-      except CancelledError: discard
-      except CatchableError: discard
-
-  # Final capture: drain any buffered committed lines + capture live band.
-  #
-  # teardownFlush drains pending log lines into sink.committedRows without
-  # checking the bottom-anchor contract — safe even after a resize event
-  # that leaves regions at stale positions. paint() re-renders the current
-  # live band into sink.rows.
-  #
-  # If the app already drained the log via s.commit(), teardownFlush is a
-  # no-op (log empty) and paint() still refreshes the live-band snapshot.
-  screen.teardownFlush()
-  screen.paint()
-
-  result.rows = screen.sink.rows
-  result.committedRows = screen.sink.committedRows
-
 # ---------------------------------------------------------------------------
-# drainToIdle — RFC headless-quiescence, slice B6 (single-read core).
-#
-# Deliberately deferred to later slices (see rfc-headless-quiescence.md
-# §Slices B7/B8): a `drainTimeout` deadline + `DrainTimeoutError` (B7), and
-# the stability window / backoff (B8). This slice's loop is the bare
-# single-read form: pump until one `failingClauses` read is empty, then
-# paint as a postcondition.
+# drainToIdle — RFC headless-quiescence, slice B6 (single-read core), B7
+# (deadline + DrainTimeoutError), B8 (adversarial coverage of the single-
+# read machine — no production code). Declared here, ahead of the
+# InlineScreen `runHeadless` overload below, because slice B10's `Settle`
+# union carries a `DrainSpec` payload and that overload's `settle:
+# Settle = settleFixed()` default needs both types already in scope.
 # ---------------------------------------------------------------------------
 
 type
@@ -271,3 +213,126 @@ proc drainToIdle*(screen: InlineScreen[MemorySink],
   ## Convenience overload; forwards a DrainSpec.
   drainToIdle(screen, DrainSpec(busy: busy, drainTimeout: drainTimeout,
                                 ignoreAnimations: ignoreAnimations))
+
+# ---------------------------------------------------------------------------
+# Settle — RFC headless-quiescence, slice B10.
+#
+# A discriminated union, mirroring `InlineEvent` above in this file: the
+# invalid combinations (`busy`/`drainTimeout` under fixed settling,
+# `perKeySettle` under drain) become unrepresentable instead of silently
+# ignored (rfc §Design 5, on-thesis for compile-time-first). `skDrain`'s
+# payload IS `DrainSpec` — the drain primitive's parameters and the
+# harness's drain-mode policy share one declaration, so they cannot drift.
+#
+# `settleFixed` stays the default (rfc §Design 5, "Default"): flipping it
+# is a deliberate future decision gated on amoxtli's migration, not
+# something this slice changes.
+# ---------------------------------------------------------------------------
+
+type
+  SettleKind* = enum skFixed, skDrain
+  Settle* = object
+    case kind*: SettleKind
+    of skFixed:
+      perKeySettle*: Duration
+    of skDrain:
+      drain*: DrainSpec
+
+proc settleFixed*(perKeySettle = 1.milliseconds): Settle =
+  Settle(kind: skFixed, perKeySettle: perKeySettle)
+
+proc settleDrain*(busy: BusyPredicate = nil,
+                  drainTimeout = 1.seconds,
+                  ignoreAnimations = false): Settle =
+  Settle(kind: skDrain, drain: DrainSpec(busy: busy, drainTimeout: drainTimeout,
+                                        ignoreAnimations: ignoreAnimations))
+
+proc runHeadless*(screen: InlineScreen[MemorySink],
+                  app: HeadlessInlineApp,
+                  events: seq[InlineEvent] = @[],
+                  timeout: Duration = 1.seconds,
+                  settle: Settle = settleFixed()
+                 ): Future[HeadlessResult] {.async: (raises: [Exception]).} =
+  ## Run `app` with a caller-supplied `InlineScreen[MemorySink]`. The
+  ## app sets up regions on `screen` and appends committed lines;
+  ## the harness drains the screen after the app finishes and surfaces
+  ## both `rows` (live band) and `committedRows` (scrollback) in
+  ## `HeadlessResult`.
+  ##
+  ## The `events` parameter is a unified Key|Resize stream (see
+  ## `InlineEvent`, `keyEv`, `resizeEv`). Key events are delivered to the
+  ## app via `pushKey`; Resize events call `s.setSize(h, w)`.
+  ##
+  ## `settle` (rfc-headless-quiescence.md §Design 5) selects how the
+  ## harness waits between injected events and before the final capture:
+  ##
+  ##   - `settleFixed(perKeySettle)` (the default — unchanged pre-B10
+  ##     behavior): sleep `perKeySettle` after each event; no wait before
+  ##     the final `teardownFlush()` + `paint()` capture beyond that.
+  ##   - `settleDrain(busy, drainTimeout, ignoreAnimations)`: after each
+  ##     event, `await drainToIdle(screen, settle.drain)` instead of a
+  ##     fixed sleep — deterministic quiescence instead of a guessed
+  ##     margin (rfc §Problem). One additional drain runs before the final
+  ##     capture regardless of `events.len` (so `events = @[]` still
+  ##     drains). B10 scope note: a `DrainTimeoutError` from either drain
+  ##     propagates out of `runHeadless` as an ordinary exception — B11
+  ##     adds `SettleFailure` recording + best-effort final-drain handling;
+  ##     this slice does not soften drain-mode failures.
+  ##
+  ## Use this overload when the consumer is an InlineScreen-based app
+  ## (e.g., amoxtli's REPL) and the test needs to assert on committed
+  ## scrollback output in addition to the live band.
+  ##
+  ## The plain `runHeadless(app, inputs, height, width, ...)` overload is
+  ## unchanged and handles plain Layout-based apps (fixed-sleep only; see
+  ## rfc-headless-quiescence.md §Out of scope).
+  let stream = newSyntheticInputStream()
+  let appFut = app(stream)
+
+  for ev in events:
+    case ev.kind
+    of ievKey:
+      stream.pushKey(ev.key)
+    of ievResize:
+      screen.setSize(ev.resizeH, ev.resizeW)
+    case settle.kind
+    of skFixed:
+      await sleepAsync(settle.perKeySettle)
+    of skDrain:
+      await drainToIdle(screen, settle.drain)
+
+  if not appFut.finished:
+    discard await appFut.withTimeout(timeout)
+    if not appFut.finished:
+      appFut.cancelSoon()
+      try: await appFut
+      except CancelledError: discard
+      except CatchableError: discard
+
+  case settle.kind
+  of skFixed:
+    discard
+  of skDrain:
+    # Final pre-capture drain (rfc §Design 5): runs unconditionally in
+    # drain mode, even when `events.len == 0` and the per-event loop above
+    # never ran. B10 scope: not yet best-effort (that's B11's
+    # `site = sfFinalDrain` recording) — a timeout here propagates like
+    # any other exception.
+    await drainToIdle(screen, settle.drain)
+
+  # Final capture: drain any buffered committed lines + capture live band.
+  #
+  # teardownFlush drains pending log lines into sink.committedRows without
+  # checking the bottom-anchor contract — safe even after a resize event
+  # that leaves regions at stale positions. paint() re-renders the current
+  # live band into sink.rows.
+  #
+  # If the app already drained the log via s.commit() (or, in drain mode,
+  # the final drainToIdle above already did via its own paint()),
+  # teardownFlush is a no-op (log empty) and paint() still refreshes the
+  # live-band snapshot.
+  screen.teardownFlush()
+  screen.paint()
+
+  result.rows = screen.sink.rows
+  result.committedRows = screen.sink.committedRows
