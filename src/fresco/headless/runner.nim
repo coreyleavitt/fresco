@@ -8,6 +8,8 @@
 ## harness owns the sink (memory) and synthetic stream; it does not
 ## know about the app's reactive setup.
 
+import std/sequtils
+import std/strutils
 import chronos
 import intonaco/reactive
 import ../events
@@ -54,6 +56,14 @@ type
     ## (round 2 of the RFC rejected `eventIndex = -1`; H1 applies the same
     ## discipline to the app-death case).
     clauses*: set[DrainClause]
+    busyLabels*: seq[string]
+      ## Labels of the `DrainSpec.gates` that were `isBusy()` at the
+      ## moment the underlying `DrainTimeoutError` was raised (M5,
+      ## round-1 stage-4) — mirrors `clauses`, sourced from
+      ## `DrainTimeoutError.busyLabels`. Always `@[]` on `sfScriptTruncated`
+      ## (no drain ever ran for that site) and whenever the timeout's
+      ## `dcBusy` clause was driven only by `DrainSpec.busy`, which is
+      ## opaque past the call boundary (see `DrainTimeoutError.busyLabels`).
     case site*: SettleFailureSite
     of sfEvent:
       eventIndex*: int   ## index into the `events` seq passed to runHeadless.
@@ -273,9 +283,25 @@ type
     failingClauses*: set[DrainClause]
       ## The clauses that were still failing at the deadline. Never empty
       ## on a raise — an idle-at-deadline read breaks instead (slice B7).
+    busyLabels*: seq[string]
+      ## Labels of `DrainSpec.gates` that were `isBusy()` at raise time
+      ## (M5, round-1 stage-4 code review): a `dcBusy` timeout used to
+      ## record only the enum tag, never which gate was stuck. Populated
+      ## ONLY from `gates` — a `DrainSpec.busy` closure is opaque past the
+      ## call boundary (nothing to name), so a `dcBusy` failure driven
+      ## purely by `busy` (no `gates` set) always raises with
+      ## `busyLabels == @[]`. That asymmetry is inherent to a closure-typed
+      ## predicate, not a bug; `gates` is the diagnosable path.
 
   DrainSpec* = object
     busy*: BusyPredicate
+    gates*: seq[BusyGate]
+      ## Additional busy gates ORed into the `dcBusy` clause (M5): `dcBusy`
+      ## fails iff `(busy != nil and busy()) or` any gate in `gates` is
+      ## `isBusy()`. Both `busy` and `gates` may be set at once — there is
+      ## no invalid combination. Unlike a gate folded into `busy` by hand
+      ## (or via `anyBusy`), a gate listed here is nameable in
+      ## `DrainTimeoutError.busyLabels` on timeout.
     drainTimeout*: Duration
       ## Bounds the drain (slice B7). `drainToIdle` arms a real
       ## `sleepAsync(drainTimeout)` timer once at entry — the same future
@@ -287,20 +313,30 @@ type
     ignoreAnimations*: bool
 
 proc newDrainSpec*(busy: BusyPredicate = nil, drainTimeout = 1.seconds,
-                   ignoreAnimations = false): DrainSpec =
+                   ignoreAnimations = false,
+                   gates: seq[BusyGate] = @[]): DrainSpec =
   ## Canonical `DrainSpec` constructor (M3, round-1 stage-4): the sole
-  ## place these three defaults are declared. `drainToIdle`'s convenience
+  ## place these defaults are declared. `drainToIdle`'s convenience
   ## overload and `settleDrain` both forward to this, so the defaults
   ## cannot drift out of sync between them — the same
   ## one-declaration-can't-drift argument that unified `DrainSpec` with
   ## `Settle.skDrain`'s payload in the first place (rfc §Design 3).
-  DrainSpec(busy: busy, drainTimeout: drainTimeout,
+  ## `gates` (M5, round-1 stage-4) added as a trailing defaulted param so
+  ## every existing positional call site (`newDrainSpec(busy, drainTimeout,
+  ## ignoreAnimations)`) keeps compiling unchanged.
+  DrainSpec(busy: busy, gates: gates, drainTimeout: drainTimeout,
            ignoreAnimations: ignoreAnimations)
+
+proc anyGateBusy(gates: seq[BusyGate]): bool =
+  for g in gates:
+    if g.isBusy(): return true
+  false
 
 proc failingClauses(screen: InlineScreen[MemorySink], spec: DrainSpec): set[DrainClause] =
   ## Evaluate every wait clause exactly once against `screen` + `spec`.
-  ## A clause disabled by `spec.ignoreAnimations` (or `spec.busy == nil`)
-  ## is never evaluated and never appears in the result.
+  ## A clause disabled by `spec.ignoreAnimations` (or `spec.busy == nil`
+  ## and `spec.gates == @[]`) is never evaluated and never appears in the
+  ## result.
   if not reactiveIdle():
     result.incl dcReactive
   if not spec.ignoreAnimations and not animationsIdle():
@@ -309,7 +345,7 @@ proc failingClauses(screen: InlineScreen[MemorySink], spec: DrainSpec): set[Drai
     result.incl dcCommit
   if pendingCallbacksCount() != 0:
     result.incl dcDispatcher
-  if spec.busy != nil and spec.busy():
+  if (spec.busy != nil and spec.busy()) or anyGateBusy(spec.gates):
     result.incl dcBusy
 
 proc drainToIdle*(screen: InlineScreen[MemorySink],
@@ -345,9 +381,17 @@ proc drainToIdle*(screen: InlineScreen[MemorySink],
     if failing == {}:
       break
     if deadlineFut.finished:
-      var e = newException(DrainTimeoutError,
-                           "drain timeout; failing clauses: " & $failing)
+      # M5 (round-1 stage-4): name the stuck `spec.gates` at raise time —
+      # `spec.busy` contributes nothing here since a `BusyPredicate`
+      # closure is opaque past the call boundary (documented on
+      # `DrainTimeoutError.busyLabels`).
+      let stuckLabels = spec.gates.filterIt(it.isBusy()).mapIt(it.label())
+      var msg = "drain timeout; failing clauses: " & $failing
+      if stuckLabels.len > 0:
+        msg &= "; busy gates: " & stuckLabels.join(", ")
+      var e = newException(DrainTimeoutError, msg)
       e.failingClauses = failing
+      e.busyLabels = stuckLabels
       raise e
     await stepsAsync(1)
   screen.paint()
@@ -355,9 +399,12 @@ proc drainToIdle*(screen: InlineScreen[MemorySink],
 proc drainToIdle*(screen: InlineScreen[MemorySink],
                   busy: BusyPredicate = nil,
                   drainTimeout = 1.seconds,
-                  ignoreAnimations = false): Future[void] =
-  ## Convenience overload; forwards a DrainSpec.
-  drainToIdle(screen, newDrainSpec(busy, drainTimeout, ignoreAnimations))
+                  ignoreAnimations = false,
+                  gates: seq[BusyGate] = @[]): Future[void] =
+  ## Convenience overload; forwards a DrainSpec. `gates` (M5) added as a
+  ## trailing defaulted param so existing positional/named call sites
+  ## keep compiling unchanged.
+  drainToIdle(screen, newDrainSpec(busy, drainTimeout, ignoreAnimations, gates))
 
 # ---------------------------------------------------------------------------
 # Settle — RFC headless-quiescence, slice B10.
@@ -388,8 +435,12 @@ proc settleFixed*(perKeySettle = 1.milliseconds): Settle =
 
 proc settleDrain*(busy: BusyPredicate = nil,
                   drainTimeout = 1.seconds,
-                  ignoreAnimations = false): Settle =
-  Settle(kind: skDrain, drain: newDrainSpec(busy, drainTimeout, ignoreAnimations))
+                  ignoreAnimations = false,
+                  gates: seq[BusyGate] = @[]): Settle =
+  ## `gates` (M5, round-1 stage-4) added as a trailing defaulted param so
+  ## existing positional/named call sites keep compiling unchanged.
+  Settle(kind: skDrain,
+        drain: newDrainSpec(busy, drainTimeout, ignoreAnimations, gates))
 
 proc injectEvent(stream: InputStream, screen: InlineScreen[MemorySink],
                  ev: InlineEvent) =
@@ -507,6 +558,7 @@ proc runHeadless*(screen: InlineScreen[MemorySink],
         await drainToIdle(screen, settle.drain)
       except DrainTimeoutError as e:
         settleFailures.add SettleFailure(clauses: e.failingClauses,
+                                         busyLabels: e.busyLabels,
                                          site: sfEvent, eventIndex: idx)
         break
 
@@ -529,6 +581,7 @@ proc runHeadless*(screen: InlineScreen[MemorySink],
       await drainToIdle(screen, settle.drain)
     except DrainTimeoutError as e:
       settleFailures.add SettleFailure(clauses: e.failingClauses,
+                                       busyLabels: e.busyLabels,
                                        site: sfFinalDrain)
 
   # Final capture: drain any buffered committed lines + capture live band.

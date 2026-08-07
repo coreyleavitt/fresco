@@ -462,6 +462,50 @@ suite "B11: a final-drain-only failure has an unrepresentable eventIndex":
 
     waitFor body()
 
+suite "M5: DrainSpec.gates labels survive into SettleFailure":
+  ## Per rfc-headless-quiescence.md M5 (round-1 stage-4 code review):
+  ## `DrainTimeoutError.busyLabels` must survive the settleDrain
+  ## capture-instead-of-raise path the same way `failingClauses` already
+  ## does — a settle-mode consumer sees the stuck gate's label without
+  ## re-probing its own gates.
+
+  test "a stuck DrainSpec.gates member surfaces its label in the recorded SettleFailure":
+    proc body() {.async: (raises: [Exception]).} =
+      let s = newInlineScreen(newMemorySink(), 10, 40)
+      let stuckGate = newBusyGate("decider")
+      var delivered: seq[int] = @[]
+
+      proc app(stream: InputStream) {.async: (raises: [Exception]).} =
+        var n = 0
+        while true:
+          let key = await stream.nextKey()
+          inc n
+          delivered.add n
+          if key.kind == kEscape:
+            return
+          if n == 1:
+            proc holdBusyForever() {.async: (raises: [Exception]).} =
+              withBusy(stuckGate):
+                await sleepAsync(10.seconds)
+            asyncSpawn holdBusyForever()
+
+      let events = @[keyEv(atomKey(kEnter)), keyEv(atomKey(kEscape))]
+      let fut = runHeadless(s, app, events = events, timeout = 100.milliseconds,
+                            settle = settleDrain(gates = @[stuckGate],
+                                                 drainTimeout = 30.milliseconds))
+      let ok = await fut.withTimeout(2.seconds)
+      check ok
+      let hr = fut.read()
+
+      check not hr.settled()
+      check hr.settleFailures.len >= 1
+      check hr.settleFailures[0].site == sfEvent
+      check hr.settleFailures[0].clauses == {dcBusy}
+      check hr.settleFailures[0].busyLabels == @["decider"]
+      check delivered == @[1]
+
+    waitFor body()
+
 # -----------------------------------------------------------------------
 # B12: resize under drain.
 #

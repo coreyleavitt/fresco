@@ -96,8 +96,14 @@ type
     dcReactive, dcAnimations, dcCommit, dcDispatcher, dcBusy
   DrainTimeoutError* = object of AsyncTimeoutError
     failingClauses*: set[DrainClause]
+    busyLabels*: seq[string]      # M5 (round-1 stage-4): labels of the
+                                   # `DrainSpec.gates` isBusy() at raise
+                                   # time; @[] when dcBusy was driven only
+                                   # by `busy` (opaque closure, unnameable)
   DrainSpec* = object
     busy*: BusyPredicate          # see §4 (busy module)
+    gates*: seq[BusyGate]         # M5: additional gates ORed into dcBusy;
+                                   # nameable in busyLabels on timeout
     drainTimeout*: Duration
     ignoreAnimations*: bool
 
@@ -118,8 +124,10 @@ proc drainToIdle*(screen: InlineScreen[MemorySink];
 proc drainToIdle*(screen: InlineScreen[MemorySink];
                   busy: BusyPredicate = nil;
                   drainTimeout = 1.seconds;
-                  ignoreAnimations = false): Future[void] =
-  ## Convenience overload; forwards a DrainSpec.
+                  ignoreAnimations = false;
+                  gates: seq[BusyGate] = @[]): Future[void] =
+  ## Convenience overload; forwards a DrainSpec. `gates` (M5) trails as a
+  ## defaulted param so existing call sites keep compiling unchanged.
 ```
 
 `DrainSpec` is the *same object* `Settle.skDrain` carries (§5) — the drain's parameters and the harness's drain-mode payload cannot drift because they are one declaration (round 2: the three loose parameters duplicated `skDrain`'s fields; unified).
@@ -136,9 +144,12 @@ while true:
   let failing = failingClauses(screen, spec)  # ONE evaluation, reused below
   if failing == {}: break                     # single idle read is sound (dcDispatcher is exact)
   if deadlineFut.finished:
-    var e = newException(DrainTimeoutError,
-                         "drain timeout; failing clauses: " & $failing)
+    let stuckLabels = spec.gates.filterIt(it.isBusy()).mapIt(it.label())  # M5
+    var msg = "drain timeout; failing clauses: " & $failing
+    if stuckLabels.len > 0: msg &= "; busy gates: " & stuckLabels.join(", ")
+    var e = newException(DrainTimeoutError, msg)
     e.failingClauses = failing
+    e.busyLabels = stuckLabels
     raise e
   await stepsAsync(1)  # event-driven: sleeps in select() until activity or the deadline timer
 screen.paint()
@@ -189,9 +200,28 @@ template withBusy*(g: BusyGate, body: untyped) =
   g.begin()
   try: body
   finally: g.finish()
+
+proc anyBusy*(gates: varargs[BusyGate]): BusyPredicate =
+  ## M5 (round-1 stage-4): a single predicate true iff ANY of `gates` is
+  ## busy. Materializes `gates` into a `seq` at construction time — the
+  ## returned closure captures that seq, never the `varargs`-backed
+  ## `openArray`, which is only valid for the call's duration.
+  let gs = @gates
+  result = proc(): bool {.gcsafe, raises: [].} =
+    for g in gs:
+      if g.isBusy(): return true
+    false
 ```
 
-Consumer pattern: `withBusy(gate): await state.callDaemon()` at each instrumented await point — leak-proof by construction, and the counter (vs a boolean) is correct under overlapping turns. The `converter` lets call sites write `settleDrain(busy = gate)` directly (precedent: the `Subscribable` converter in `reactive/binding.nim`). Every named use case is block-scoped; if a non-lexical span (begin at send, finish at response) ever materializes, re-exporting `begin`/`finish` with a `doAssert g.count > 0` guard is a one-line reversal — the hole is not shipped speculatively. The `label` is consumer-side diagnostics for multi-gate tests (the drain cannot see through a `BusyPredicate` closure, so a `dcBusy` timeout is traced by the test author asking each of *their* gates `isBusy`).
+Consumer pattern: `withBusy(gate): await state.callDaemon()` at each instrumented await point — leak-proof by construction, and the counter (vs a boolean) is correct under overlapping turns. The `converter` lets call sites write `settleDrain(busy = gate)` directly (precedent: the `Subscribable` converter in `reactive/binding.nim`). Every named use case is block-scoped; if a non-lexical span (begin at send, finish at response) ever materializes, re-exporting `begin`/`finish` with a `doAssert g.count > 0` guard is a one-line reversal — the hole is not shipped speculatively.
+
+**M5 resolution (round-1 stage-4 code review, 2026-08-07).** `label` shipped in the original design but was diagnostically inert: a `dcBusy` timeout recorded only the enum tag, never *which* gate was stuck, and `DrainSpec.busy` accepted only one closure, forcing multi-gate consumers to hand-roll `proc(): bool = g1.isBusy() or g2.isBusy()` and then manually re-probe each gate after a timeout to find the culprit. Three additions close the loop, all additive and source-compatible:
+
+- `anyBusy(gates: varargs[BusyGate]): BusyPredicate` (above) — the combinator consumers previously hand-rolled, for the case where a single closure is still what's wanted (e.g. assigning `DrainSpec.busy` directly).
+- `DrainSpec.gates*: seq[BusyGate]` (§3) — a second, structural path into the same `dcBusy` clause: `dcBusy` fails iff `(busy != nil and busy()) or` any gate in `gates` is busy, a plain OR with no invalid combination (both fields may be set at once). Unlike a gate folded into `busy` by hand or via `anyBusy`, a gate listed in `gates` stays *nameable* on timeout — a `BusyPredicate` closure is opaque past the call boundary, so `busy` alone can never be introspected this way regardless of what it wraps.
+- `DrainTimeoutError.busyLabels*: seq[string]` (§3) / `SettleFailure.busyLabels*: seq[string]` (§5) — populated at raise time with the labels of the `gates` members that were `isBusy()` at that instant, and included in `DrainTimeoutError.msg` (e.g. `"...; busy gates: repl, decider"`) so the default `unittest` failure output names the stuck gate with zero consumer effort. `SettleFailure.busyLabels` mirrors `clauses`'s existing raise-to-report survival (same `DrainTimeoutError` → `SettleFailure` capture sites in §5's event loop), so a `settleDrain` consumer sees the stuck gate's name without re-probing its own gates after the fact.
+
+The asymmetry is inherent, not a bug: `busyLabels` is always `@[]` when a `dcBusy` timeout was driven purely by `spec.busy` (no `gates` set) — an opaque closure has nothing to name. `gates` is the diagnosable path; a closure assigned to `busy` (hand-rolled or via `anyBusy`) trades that diagnosability for flexibility, same as before this fix. Tests: `tests/unit/test_busy_gate.nim` (`anyBusy` combinator), `tests/unit/test_drain_to_idle.nim` (multi-gate `busyLabels` at the `DrainTimeoutError` level, `busy`+`gates` OR composition, closure-only asymmetry), `tests/unit/test_settle_drain.nim` (`busyLabels` surviving into a settle-mode `SettleFailure`).
 
 ### 5. fresco: drain-settling `runHeadless`
 
@@ -210,7 +240,8 @@ type
 proc settleFixed*(perKeySettle = 1.milliseconds): Settle
 proc settleDrain*(busy: BusyPredicate = nil,
                   drainTimeout = 1.seconds,
-                  ignoreAnimations = false): Settle
+                  ignoreAnimations = false,
+                  gates: seq[BusyGate] = @[]): Settle   # gates: M5, trailing default
 
 proc runHeadless*(screen: InlineScreen[MemorySink],
                   app: HeadlessInlineApp,
@@ -241,6 +272,8 @@ type
   SettleFailureSite* = enum sfEvent, sfFinalDrain, sfScriptTruncated
   SettleFailure* = object
     clauses*: set[DrainClause]
+    busyLabels*: seq[string]      # M5: mirrors clauses, sourced from the
+                                   # captured DrainTimeoutError.busyLabels
     case site*: SettleFailureSite
     of sfEvent: eventIndex*: int   # index into `events`
     of sfFinalDrain: discard
@@ -271,7 +304,7 @@ Event loop, per event, **shared by both settle kinds** (H1: pre-H1 only `skDrain
 - (drain mode only) Inject, then `drainToIdle(screen, settle.drain)`; on `DrainTimeoutError`, record a `SettleFailure(site: sfEvent, ...)` and short-circuit remaining events. (fixed mode) Inject, then `sleepAsync(settle.perKeySettle)` — unchanged.
 - After the app-finish/cancel dance, one final **best-effort** drain in drain mode only (its timeout records `site = sfFinalDrain`, never raises out), then `teardownFlush()` + `paint()` + capture, unconditionally — exactly as today.
 
-A stuck `busy` from a crashed turn that skipped its `finally` (i.e. not using `withBusy`) surfaces as a `dcBusy` settle failure — diagnosable, not silent.
+A stuck `busy` from a crashed turn that skipped its `finally` (i.e. not using `withBusy`) surfaces as a `dcBusy` settle failure — diagnosable, not silent. When the stuck gate was reachable via `DrainSpec.gates` (§3, M5), the failure additionally names it: `SettleFailure.busyLabels` carries the gate's `label`, sourced from the underlying `DrainTimeoutError.busyLabels`.
 
 The plain Layout-based overload keeps fixed-sleep only; see §Out of scope.
 
@@ -283,7 +316,7 @@ Decided at round 1 (question raised by Corey); refined at round 2 (BusyGate re-h
 
 - **intonaco accessors** (`reactiveIdle`, `reactivePendingCount`, `animationsIdle`): general-purpose read-only introspection — plain exports, no flag. They serve reactive observability and are the layer a sibling frontend would build *its* drain from.
 - **fresco probes** (`commitIdle`, `surfaceIdle`): production-safe read-only observability (e.g. a devtools "surface settled" indicator) — plain exports.
-- **`busy` module** (`BusyGate`, `BusyPredicate`, `withBusy`): general-purpose — not test-gated, not homed in `headless/` (round 2).
+- **`busy` module** (`BusyGate`, `BusyPredicate`, `withBusy`, `anyBusy` — M5): general-purpose — not test-gated, not homed in `headless/` (round 2).
 - **`drainToIdle` + drain settling**: test-support. The **primary protection is the signature**: `InlineScreen[MemorySink]` cannot compile against a `TerminalSink` screen, so a production caller cannot reach the pump-loop idiom by accident — a compile-time-enforced boundary, on-thesis, and stronger than directory convention (Nim has no "test-only module" concept; nothing stops a production binary from importing `fresco/headless/runner` — the type constraint is what actually closes that gap). Module placement in `headless/` is the secondary, convention-level signal. A `-d:` flag would add friction without adding any protection the type doesn't already give.
 
 Sinopia note: sinopia is a *separate frontend* on intonaco — it never sees fresco's `InlineScreen`, so genericizing `drainToIdle` over `Sink` would not serve it; it composes its own drain from the intonaco accessors. (Its RFC does not yet name this need; the accessors' justification is reactive observability first, sinopia speculatively.) Production graceful-teardown (`inline_teardown.nim`) hand-implements a narrower flush today; consolidating it onto a generic drain would be a production-behavior change, out of scope per the upstream request's non-goals — noted as possible future work, deliberately not built speculatively.

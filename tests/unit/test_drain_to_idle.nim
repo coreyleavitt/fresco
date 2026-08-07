@@ -22,6 +22,7 @@ import fresco/events
 import fresco/input
 import fresco/inline_screen
 import fresco/render/sink/memory
+import fresco/busy
 import fresco/headless/input as headless_input
 import fresco/headless/runner
 
@@ -182,8 +183,78 @@ suite "B7: drainToIdle deadline + DrainTimeoutError":
         check e.failingClauses == {dcBusy}
         check e.msg.len > 0
         check "dcBusy" in e.msg
+        # M5 (round-1 stage-4): a closure-only `busy` is opaque past the
+        # call boundary — no `DrainSpec.gates` were set, so `busyLabels`
+        # stays empty. Documented asymmetry, not a bug.
+        check e.busyLabels.len == 0
       except CancelledError:
         check false        # would mean the outer withTimeout won the race
+
+    waitFor body()
+
+suite "M5: DrainSpec.gates + DrainTimeoutError.busyLabels":
+  ## Per rfc-headless-quiescence.md M5 (round-1 stage-4 code review):
+  ## `DrainSpec.gates` ORs one or more `BusyGate`s into the `dcBusy`
+  ## clause, and a `dcBusy` `DrainTimeoutError` names exactly the gates
+  ## that were `isBusy()` at raise time via `busyLabels`.
+
+  test "a stuck gate in DrainSpec.gates fails dcBusy and names only itself in busyLabels":
+    proc body() {.async: (raises: [Exception]).} =
+      let s = newInlineScreen(newMemorySink(), 5, 20)
+      discard s.newRegion(0, 0, 5, 20)
+
+      let idleGate = newBusyGate("idle-gate")
+      let stuckGate = newBusyGate("stuck-gate")
+
+      proc holdBusyForever() {.async: (raises: [Exception]).} =
+        withBusy(stuckGate):
+          await sleepAsync(10.seconds)
+      asyncSpawn holdBusyForever()
+
+      let spec = DrainSpec(busy: nil, gates: @[idleGate, stuckGate],
+                           drainTimeout: 20.milliseconds)
+      let fut = drainToIdle(s, spec)
+      let ok = await fut.withTimeout(2.seconds)
+      check ok
+      check fut.failed()
+
+      try:
+        await fut
+        check false
+      except DrainTimeoutError as e:
+        check e.failingClauses == {dcBusy}
+        check e.busyLabels == @["stuck-gate"]
+        check "stuck-gate" in e.msg
+
+    waitFor body()
+
+  test "spec.busy and spec.gates OR together: either alone is enough to fail dcBusy":
+    proc body() {.async: (raises: [Exception]).} =
+      let s = newInlineScreen(newMemorySink(), 5, 20)
+      discard s.newRegion(0, 0, 5, 20)
+
+      let gate = newBusyGate("gate-only")
+      proc idleBusy(): bool {.gcsafe, raises: [].} = false
+
+      let spec = DrainSpec(busy: idleBusy, gates: @[gate],
+                           drainTimeout: 1.milliseconds)
+
+      proc holdBusyForever() {.async: (raises: [Exception]).} =
+        withBusy(gate):
+          await sleepAsync(10.seconds)
+      asyncSpawn holdBusyForever()
+
+      let fut = drainToIdle(s, spec)
+      let ok = await fut.withTimeout(2.seconds)
+      check ok
+      check fut.failed()
+
+      try:
+        await fut
+        check false
+      except DrainTimeoutError as e:
+        check e.failingClauses == {dcBusy}
+        check e.busyLabels == @["gate-only"]
 
     waitFor body()
 

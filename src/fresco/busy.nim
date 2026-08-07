@@ -41,6 +41,21 @@ converter toPredicate*(g: BusyGate): BusyPredicate = g.predicate()
 proc begin(g: BusyGate) {.inline.} = inc g.count
 proc finish(g: BusyGate) {.inline.} = dec g.count
 
+proc anyBusy*(gates: varargs[BusyGate]): BusyPredicate =
+  ## Combinator (M5, rfc-headless-quiescence.md round-1 stage-4): a single
+  ## predicate that is busy iff ANY of `gates` is busy — the multi-gate
+  ## consumer no longer hand-rolls `proc(): bool = g1.isBusy() or
+  ## g2.isBusy()`. `gates` is materialized into a `seq` at construction
+  ## time and that seq (not the `varargs`-backed `openArray`) is what the
+  ## returned closure captures — the `varargs` parameter is only valid for
+  ## the duration of this call, so capturing it directly would dangle once
+  ## `anyBusy` returns.
+  let gs = @gates
+  result = proc(): bool {.gcsafe, raises: [].} =
+    for g in gs:
+      if g.isBusy(): return true
+    false
+
 template withBusy*(g: BusyGate, body: untyped) =
   ## Leak-proof by construction: the counter (vs a boolean) is correct
   ## under overlapping/nested turns on the same gate. Instrument each

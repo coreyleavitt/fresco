@@ -81,6 +81,33 @@ suite "B9: BusyGate — converter to BusyPredicate":
       check pred()
     check not pred()
 
+suite "M5: anyBusy combinator":
+  ## Per rfc-headless-quiescence.md M5 (round-1 stage-4 code review):
+  ## `anyBusy(gates: varargs[BusyGate]): BusyPredicate` — a single predicate
+  ## true iff ANY of `gates` is busy, so multi-gate consumers no longer
+  ## hand-roll `proc(): bool = g1.isBusy() or g2.isBusy()`.
+
+  test "anyBusy over two gates flips with either gate and reads false when both are idle":
+    let g1 = newBusyGate("g1")
+    let g2 = newBusyGate("g2")
+    let pred = anyBusy(g1, g2)
+
+    check not pred()
+
+    withBusy(g1):
+      check pred()
+    check not pred()
+
+    withBusy(g2):
+      check pred()
+    check not pred()
+
+    withBusy(g1):
+      withBusy(g2):
+        check pred()
+      check pred()  # g1 alone still holds it open
+    check not pred()
+
 suite "F2: BusyPredicate compile-time contract via reactive effect tags":
   ## Per the rfc's "BusyPredicate contract" paragraph: `forbids: [ReactiveRead,
   ## ReactiveWrite]` on the proc type makes the context-free half of the
