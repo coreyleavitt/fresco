@@ -721,8 +721,8 @@ proc teardownFlush*[S: Sink](s: InlineScreen[S]) =
   ## land the band in the wrong rows.
   ##
   ## After draining, explicitly disarms the static inline-tail buffer so
-  ## that the subsequent restoreAllAndReraise/flushInlineTailNow call is a
-  ## structural no-op rather than a coincidental one. This enforces the
+  ## that the subsequent `restoreAll`/`flushInlineTailNow` call (termios.nim)
+  ## is a structural no-op rather than a coincidental one. This enforces the
   ## invariant: "after teardownFlush, the static tail is disarmed/empty."
   ##
   ## ASYNC-SIGNAL-SAFETY: this is an EXPLICIT-call contract invoked from the
@@ -772,7 +772,7 @@ proc teardownFlush*[S: Sink](s: InlineScreen[S]) =
     # else (unknown sink): drained but not emitted — no scrollback to capture.
   # Explicitly disarm the static tail buffer — TerminalSink only (M11,
   # round-1 stage-4). On the graceful path this makes the
-  # flushInlineTailNow() call inside restoreAllAndReraise a structural no-op.
+  # flushInlineTailNow() call inside restoreAll (termios.nim) a structural no-op.
   # On the crash path teardownFlush never runs, so the tail stays armed for
   # the signal handler to flush. Either way: no double-emit, nothing dropped.
   # A MemorySink screen never armed the tail in the first place (mirrorTail

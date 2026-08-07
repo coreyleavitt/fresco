@@ -96,7 +96,8 @@ proc main() {.async: (raises: [CancelledError, Exception]).} =
   ## withInlineScreen owns all three teardown tiers:
   ##   tier-1 (finally): teardownFlush on normal return or exception.
   ##   tier-2 (graceful signal): watchTeardownSignals wakes on SIGTERM/INT,
-  ##     calls teardownFlush in normal context, then restoreAllAndReraise.
+  ##     then completeGracefulTeardown drains (teardownFlush) in normal
+  ##     context, always restores the terminal, then re-delivers the signal.
   ##   tier-3 (crash): static tail buffer armed on the output fd; crash handler
   ##     emits last committed bytes async-signal-safely.
   ## No manual teardown plumbing needed.

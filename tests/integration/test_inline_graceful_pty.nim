@@ -9,7 +9,8 @@
 ## (a) Parent sends SIGTERM after ~300ms. The graceful handler fires:
 ##     - writes one byte to the self-pipe → chronos wakes → teardownFlush
 ##       runs in normal context → both lines flushed to the PTY master.
-##     - restoreAllAndReraise re-raises SIGTERM → exit 128+15.
+##     - completeGracefulTeardown always restores the terminal, then
+##       reraiseSignal re-delivers SIGTERM → exit 128+15.
 ##     Assert: both lines in output, exit code 128+15.
 ##
 ## (b) Parent sends TWO SIGTERMs in quick succession. The second hits the
@@ -109,7 +110,8 @@ suite "inline graceful teardown: SIGTERM → self-pipe → dispatcher flush":
       sleepMs(50)
 
       # Send SIGTERM — graceful handler writes pipe byte; chronos wakes;
-      # teardownFlush runs; restoreAllAndReraise re-raises SIGTERM.
+      # completeGracefulTeardown drains (teardownFlush), always restores the
+      # terminal (restoreAll), then reraiseSignal re-delivers SIGTERM.
       discard kill(pid, SIGTERM)
 
       # Drain for up to 1500ms to capture the flushed lines.
@@ -195,7 +197,8 @@ suite "inline graceful teardown: SIGTERM → self-pipe → dispatcher flush":
     ## Exercises the SIGINT branch of gracefulSignalHandler (previously untested).
     ## Same scenario as test (a) but uses SIGINT instead of SIGTERM.
     ## The graceful handler fires on SIGINT → writes pipe byte → dispatcher wakes
-    ## → teardownFlush runs → restoreAllAndReraise re-raises SIGINT → exit 128+SIGINT.
+    ## → completeGracefulTeardown drains, always restores the terminal
+    ## (restoreAll), then reraiseSignal re-delivers SIGINT → exit 128+SIGINT.
     let (cOk3, cMsg3) = compileChildBinary(ChildSrcName, ChildBin)
     if not cOk3: skip()
     discard cMsg3

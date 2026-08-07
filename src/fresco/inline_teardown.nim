@@ -158,9 +158,11 @@ template withInlineScreenImpl(sink: untyped, s: untyped, body: untyped) =
   ##     or the tail buffer in an unclean state.
   ##
   ##   tier-2 (graceful SIGTERM/INT): `armGracefulTeardown` + `watchTeardownSignals`
-  ##     — the watch task awaits the self-pipe byte, calls `teardownFlush`, then
-  ##     `restoreAllAndReraise`. Layered on top of the hard handlers installed by
-  ##     `withCbreak` so the saved handler IS `termiosSignalHandler`.
+  ##     — the watch task awaits the self-pipe byte, then runs
+  ##     `completeGracefulTeardown` (drain, always `restoreAll`, then either
+  ##     re-raise a captured Defect or `reraiseSignal`). Layered on top of
+  ##     the hard handlers installed by `withCbreak` so the saved handler IS
+  ##     `termiosSignalHandler`.
   ##
   ##   tier-3 (SIGSEGV/crash): `armInlineTail(sink.fd)` — the static tail buffer
   ##     is armed on the output fd so the async-signal-safe crash handler can emit
