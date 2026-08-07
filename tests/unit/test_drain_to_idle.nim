@@ -392,3 +392,170 @@ suite "B8: adversarial tests of the single-read machine":
       check s.sink.rows.len == 5
 
     waitFor body()
+
+suite "M7: two drains concurrently in flight on the same screen are safe by construction":
+  ## Per rfc-headless-quiescence.md ~line 153: "two drains concurrently in
+  ## flight are safe by construction (all shared reads are read-only
+  ## probes; a double paint() is idempotent)". The B8 suite above only
+  ## proves SEQUENTIAL drains (one finishes, THEN the next starts) share no
+  ## state. Nothing before this suite starts two `drainToIdle` futures on
+  ## the same screen before awaiting either.
+
+  test "two drainToIdle futures started before either is awaited both complete cleanly with correct captured output":
+    ## `s.logSink.append` sets `pendingCommit` synchronously (B4's
+    ## test_surface_probes.nim), so `dcCommit` fails on the very first
+    ## `failingClauses` read for BOTH futures — neither fast-paths on
+    ## creation, so they genuinely overlap in the pump loop (each armed its
+    ## own `deadlineFut`, each racing the same async commit batcher) rather
+    ## than running one after the other.
+    proc body() {.async: (raises: [Exception]).} =
+      let s = newInlineScreen(newMemorySink(), 5, 20)
+      discard s.newRegion(0, 0, 5, 20)
+
+      s.logSink.append("concurrent line")
+      check not s.commitIdle()
+
+      # Both created before either is awaited: each runs synchronously up
+      # to its own first suspension (the commit batcher hasn't drained yet
+      # for either), so both are genuinely mid-drain at this point.
+      let f1 = drainToIdle(s)
+      let f2 = drainToIdle(s)
+      check not f1.finished
+      check not f2.finished
+
+      let ok1 = await f1.withTimeout(2.seconds)
+      let ok2 = await f2.withTimeout(2.seconds)
+      check ok1
+      check ok2
+      check not f1.failed()
+      check not f2.failed()
+
+      # Both completed cleanly, the screen ends idle, and the double
+      # paint() (one from each drain) is idempotent: exactly one copy of
+      # the committed line, and a correctly re-rendered live band.
+      check s.surfaceIdle()
+      check s.sink.committedRows == @["concurrent line"]
+      check s.sink.rows.len == 5
+
+    waitFor body()
+
+  test "a drain with a stuck busy clause times out while a concurrent busy-free drain on the same screen completes cleanly":
+    ## Confines `DrainTimeoutError` to the future that owns the stuck
+    ## `busy` clause — the concurrent sibling with no busy clause must not
+    ## be affected by (or itself raise because of) the other's timeout.
+    proc body() {.async: (raises: [Exception]).} =
+      let s = newInlineScreen(newMemorySink(), 5, 20)
+      discard s.newRegion(0, 0, 5, 20)
+
+      proc stuckBusy(): bool {.gcsafe, raises: [].} = true
+      let specBusy = DrainSpec(busy: stuckBusy, drainTimeout: 20.milliseconds)
+
+      let fBusy = drainToIdle(s, specBusy)
+      let fClean = drainToIdle(s)  # no busy clause; default 1s drainTimeout
+
+      let okBusy = await fBusy.withTimeout(2.seconds)
+      let okClean = await fClean.withTimeout(2.seconds)
+      check okBusy
+      check okClean
+
+      check fBusy.failed()
+      check not fClean.failed()
+
+      try:
+        await fBusy
+        check false        # must not reach here
+      except DrainTimeoutError as e:
+        check e.failingClauses == {dcBusy}
+
+      # The busy-free sibling settled and painted normally, unaffected by
+      # the other's timeout.
+      check s.surfaceIdle()
+      check s.sink.rows.len == 5
+
+    waitFor body()
+
+suite "M8: drainToIdle's own cancellation contract":
+  ## Per rfc-headless-quiescence.md ~line 155: "a CancelledError raised
+  ## into the pump loop propagates out without painting". The existing F1
+  ## cancellation tests (test_settle_drain.nim) only cancel the APP future
+  ## via runHeadless's `teardownAppFut` — a different mechanism entirely,
+  ## exercising the app's OWN cancellation handling, never `drainToIdle`'s.
+  ## This suite cancels the `drainToIdle` FUTURE ITSELF while it is
+  ## genuinely mid-pump.
+
+  test "cancelSoon on a mid-pump drainToIdle raises CancelledError into the awaiter, paints nothing, and leaves the screen drainable again afterward":
+    proc body() {.async: (raises: [Exception]).} =
+      let s = newInlineScreen(newMemorySink(), 5, 20)
+      discard s.newRegion(0, 0, 5, 20)
+
+      # A busy predicate held true forever is the "screen that stays
+      # non-idle" case: every other clause (reactive/animations/commit/
+      # dispatcher) already reads idle on a freshly-allocated region (no
+      # logSink.append here — deliberately, so nothing but drainToIdle's
+      # own paint() postcondition could ever populate sink.rows/
+      # committedRows below), so dcBusy alone keeps the pump looping on
+      # `await stepsAsync(1)` indefinitely, bounded only by the 5s
+      # drainTimeout that the cancel below preempts.
+      proc alwaysBusy(): bool {.gcsafe, raises: [].} = true
+      let spec = DrainSpec(busy: alwaysBusy, drainTimeout: 5.seconds)
+
+      let fut = drainToIdle(s, spec)
+      # drainToIdle runs synchronously up to its first suspension point
+      # (`await stepsAsync(1)`, since dcBusy fails on the very first
+      # `failingClauses` read) — so it is already mid-pump here, not
+      # merely scheduled.
+      check not fut.finished
+
+      fut.cancelSoon()
+      # `withTimeout` cannot be awaited plainly here: chronos's own
+      # implementation cancels its OWN returned future (rather than
+      # completing it with `false`) when the WRAPPED future finishes
+      # cancelled before the timeout elapses (`completeFuture`'s
+      # `timeout == false` branch calls `retFuture.cancelAndSchedule()`)
+      # — so a cancel that lands promptly surfaces as `CancelledError` out
+      # of this very `await`, not as a `bool`. That exception IS the
+      # bound-and-complete signal (it only fires once `fut` itself has
+      # actually finished); a genuine failure-to-land past the 2s bound
+      # instead returns `false` cleanly (chronos's own timeout path there
+      # completes `retFuture` rather than cancelling it).
+      var landed = false
+      try:
+        landed = await fut.withTimeout(2.seconds)
+      except CancelledError:
+        landed = fut.finished()  # the cancel already landed
+      check landed             # the cancel actually lands (not lost)
+      check fut.cancelled()
+
+      # (a) awaiting a cancelled future raises CancelledError.
+      var gotCancelled = false
+      try:
+        await fut
+      except CancelledError:
+        gotCancelled = true
+      check gotCancelled
+
+      # (b) no paint happened after cancellation. Nothing was ever queued
+      # on the commit batcher, so the ONLY way sink.rows/committedRows
+      # could become non-empty is drainToIdle's own paint() postcondition
+      # (`screen.paint()`, reached only via the loop's `break`) — which
+      # the cancellation, landing inside `await stepsAsync(1)`, must have
+      # skipped entirely.
+      check s.sink.rows.len == 0
+      check s.sink.committedRows.len == 0
+
+      # (c) the armed deadline timer was cleaned up. `deadlineFut` is
+      # local to drainToIdle's own stack frame and unobservable from a
+      # test directly, so — per the finding's fallback guidance — this
+      # asserts the practical regression signal instead: a FRESH
+      # drainToIdle on the SAME screen, now with no busy clause, still
+      # completes cleanly and paints. If the cancelled call's `defer:
+      # deadlineFut.cancelSoon()` had not run, or the cancel had left the
+      # screen in a half-updated state, this next drain would hang, time
+      # out unexpectedly, or observe corrupted screen state instead of
+      # settling immediately.
+      let cleanOk = await drainToIdle(s).withTimeout(2.seconds)
+      check cleanOk
+      check s.surfaceIdle()
+      check s.sink.rows.len == 5
+
+    waitFor body()

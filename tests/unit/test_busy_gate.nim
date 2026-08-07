@@ -93,6 +93,20 @@ suite "F2: BusyPredicate compile-time contract via reactive effect tags":
       let s = signalC(0)
       let bad: BusyPredicate = (proc(): bool {.gcsafe, raises: [].} = s.get() > 0))
 
+  test "a closure writing a signal fails to convert to BusyPredicate":
+    ## The ReactiveWrite half of the contract: `Signal.set` routes through
+    ## `setCore` -> `setRaw`, and `setRaw` carries `tags: [ReactiveWrite]`
+    ## as a declared Nim effect (intonaco
+    ## reactive/primitives/signal.nim:74) that infers up through `set`'s
+    ## call graph — so a closure that WRITES a signal must fail to convert
+    ## to `BusyPredicate` exactly like the read case above, not just the
+    ## read half.
+    check not compiles(block:
+      let s = signalC(0)
+      let bad: BusyPredicate = (proc(): bool {.gcsafe, raises: [].} =
+        s.set(1)
+        false))
+
   test "a plain Future.finished closure converts to BusyPredicate cleanly":
     proc check1() =
       let f = newFuture[void]("f2-probe")
