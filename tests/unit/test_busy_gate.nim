@@ -15,6 +15,7 @@
 
 import std/unittest
 import chronos
+import intonaco/reactive
 import fresco/busy
 import fresco/inline_screen
 import fresco/render/sink/memory
@@ -79,6 +80,25 @@ suite "B9: BusyGate — converter to BusyPredicate":
     withBusy(g):
       check pred()
     check not pred()
+
+suite "F2: BusyPredicate compile-time contract via reactive effect tags":
+  ## Per the rfc's "BusyPredicate contract" paragraph: `forbids: [ReactiveRead,
+  ## ReactiveWrite]` on the proc type makes the context-free half of the
+  ## contract compiler-checked, since `Signal.get`/`Dynamic.get` carry
+  ## `ReactiveRead` as a real Nim `tags` effect. Proves both directions —
+  ## non-vacuity requires the negative case to actually fail to compile.
+
+  test "a closure reading a signal fails to convert to BusyPredicate":
+    check not compiles(block:
+      let s = signalC(0)
+      let bad: BusyPredicate = (proc(): bool {.gcsafe, raises: [].} = s.get() > 0))
+
+  test "a plain Future.finished closure converts to BusyPredicate cleanly":
+    proc check1() =
+      let f = newFuture[void]("f2-probe")
+      let ok: BusyPredicate = (proc(): bool {.gcsafe, raises: [].} = f.finished)
+      check ok() == false
+    check1()
 
 suite "B9: BusyGate at a real drainToIdle call site (converter, end-to-end)":
   ## Upstream Category B (rfc §Acceptance): an async turn the framework

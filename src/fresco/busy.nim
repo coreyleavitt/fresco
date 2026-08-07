@@ -11,13 +11,21 @@
 ## LogSink exposes `append` and nothing else; the termios depth counter
 ## is likewise sealed.
 
+import intonaco/reactive
+
 type
-  BusyPredicate* = proc(): bool {.gcsafe, raises: [].}
+  BusyPredicate* = proc(): bool {.gcsafe, raises: [],
+                                  forbids: [ReactiveRead, ReactiveWrite].}
     ## Consumer-supplied "is my own async work still in flight" check.
     ## Must be O(1)-cheap (called every drain iteration) and
     ## context-free — reading plain fields, counters, or `Future.finished`
     ## state, never a scope-dependent reactive read (see rfc
-    ## §Design 3, "BusyPredicate contract").
+    ## §Design 3, "BusyPredicate contract"). `forbids: [ReactiveRead,
+    ## ReactiveWrite]` makes the context-free half of the contract a
+    ## compiler-checked property: `Signal.get`/`Dynamic.get` carry
+    ## `ReactiveRead` as a real Nim `tags` effect (intonaco
+    ## `reactive/primitives/subscribable.nim`), so a closure that reads
+    ## one fails to convert to `BusyPredicate` at the assignment site.
 
   BusyGate* = ref object
     labelStr: string

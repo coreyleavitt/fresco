@@ -154,7 +154,7 @@ Fixes baked into this shape (rounds 2–3):
 
 **Cancellation contract:** a `CancelledError` raised into the pump loop (e.g. an outer test wraps `runHeadless` in its own `withTimeout`) propagates out *without* painting — no half-drained postcondition; the caller inherits whatever surface state existed at cancellation, exactly like the existing `appFut` cancel path. `drainToIdle` owns no gate or shared state, so nothing leaks; a consumer's `withBusy` block remains exception-safe through its own `finally`.
 
-**`BusyPredicate` contract (honest framing):** must be O(1)-cheap (called every iteration) and **context-free** — reading plain fields, counters, or `Future.finished` state (amoxtli's `isReplBusy` shape), never scope-dependent reactive reads. It runs under the *harness's* ambient context, not the app's turn-local (possibly speculative) scope, so a reactive read could observe base values while the app's overlay still has work in flight — a silent false-idle. This is a **documented footgun, not an enforced contract**: the predicate type structurally admits any body and no mechanical check can detect a wrong-context read's wrong value. The steer is structural instead: `BusyGate` and `Future`-shaped closures are both context-free by construction.
+**`BusyPredicate` contract (compile-time enforced, F2 follow-up 2026-08-07):** must be O(1)-cheap (called every iteration) and **context-free** — reading plain fields, counters, or `Future.finished` state (amoxtli's `isReplBusy` shape), never scope-dependent reactive reads. It runs under the *harness's* ambient context, not the app's turn-local (possibly speculative) scope, so a reactive read could observe base values while the app's overlay still has work in flight — a silent false-idle. Round 2 accepted this as "no mechanical enforcement possible"; that premise was refuted by a spike: intonaco's `Signal.get`/`Dynamic.get` carry `ReactiveRead`, and `Signal.setRaw` carries `ReactiveWrite`, as genuine Nim `tags` effects (`reactive/primitives/subscribable.nim`, `signal.nim`), not just walker-level analysis — so `BusyPredicate* = proc(): bool {.gcsafe, raises: [], forbids: [ReactiveRead, ReactiveWrite].}` rejects a reactive-reading closure at the assignment/conversion site with a compiler error (`type mismatch: ... .notTag catched an illegal effect`), while plain-field, `Future.finished`, and `BusyGate.predicate()`/`toPredicate` closures convert cleanly (proven in `tests/unit/test_busy_gate.nim`). One honest limit: `forbids` sees only what the Nim effect system can infer through the call graph — a body that wraps a reactive read in `{.cast(tags: []).}:` (the same escape hatch intonaco's own `setCore` uses internally to firewall journaling effects) launders the tag and compiles anyway. That is a deliberate, visible unsafe-cast at the call site, not a silent gap; the structural steer (`BusyGate`/`Future`-shaped closures, no incentive to read reactive state in a busy check) remains the primary defense.
 
 ### 4. fresco: `busy` module — ship the counter, not just the signature
 
@@ -162,8 +162,11 @@ Fixes baked into this shape (rounds 2–3):
 
 ```nim
 # src/fresco/busy.nim
+import intonaco/reactive
+
 type
-  BusyPredicate* = proc(): bool {.gcsafe, raises: [].}
+  BusyPredicate* = proc(): bool {.gcsafe, raises: [],
+                                  forbids: [ReactiveRead, ReactiveWrite].}
   BusyGate* = ref object
     labelStr: string
     count: int
