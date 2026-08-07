@@ -28,15 +28,13 @@ proc setsid_c(): Pid {.importc: "setsid", header: "<unistd.h>".}
 const TIOCSCTTY_VAL: culong = 0x540E
 
 proc openPtyPair*(): tuple[master, slave: cint] =
-  ## Allocate a PTY and return both fds. Raises on failure.
-  let master = posix_openpt(O_RDWR or O_NOCTTY)
-  if master < 0: raise newException(OSError, "posix_openpt failed")
-  if grantpt(master) != 0: raise newException(OSError, "grantpt failed")
-  if unlockpt(master) != 0: raise newException(OSError, "unlockpt failed")
-  let name = ptsname(master)
-  if name == nil: raise newException(OSError, "ptsname returned nil")
-  let slave = open(name, O_RDWR)
-  if slave < 0: raise newException(OSError, "open slave PTY failed")
+  ## Allocate a PTY and return both fds. Raises on failure. Delegates the
+  ## open-a-PTY sequence to `pty_primitives.openPtyPairRaw` (shared with
+  ## `openPtySlave` — see that proc's doc comment for why `O_RDWR` alone,
+  ## without `O_NOCTTY`, is passed here) rather than hand-duplicating the
+  ## five FFI calls.
+  let (master, slave, err) = openPtyPairRaw(O_RDWR)
+  if err.len > 0: raise newException(OSError, err)
   (master, slave)
 
 # --- drain helper
