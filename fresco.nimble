@@ -1,6 +1,6 @@
 # Package metadata for fresco — see DESIGN.md for architecture.
 
-version       = "0.1.0"
+version       = "0.2.0"
 author        = "Corey Leavitt"
 description   = "Terminal-UI kernel: raw-mode input + region-based rendering + reactive task system."
 license       = "Apache-2.0"
