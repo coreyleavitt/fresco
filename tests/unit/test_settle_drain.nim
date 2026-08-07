@@ -1,5 +1,5 @@
 ## test_settle_drain.nim — RFC headless-quiescence slice B10: `Settle` union
-## + drain-mode `runHeadless` wiring.
+## + drain-mode `runHeadless` wiring; slice B11: failure surfacing.
 ##
 ## Per rfc-headless-quiescence.md Design 5 + Slices/B10: `Settle` is a
 ## discriminated union (`skFixed`/`skDrain`, mirroring `InlineEvent` two
@@ -10,10 +10,15 @@
 ## spec.drain)` between injected events instead of `sleepAsync(perKeySettle)`,
 ## plus one final pre-capture drain (exercised even with zero events).
 ##
-## B11 (SettleFailure/appError/settled()) is explicitly NOT this slice's
-## concern: a drain timeout in drain mode propagates as an ordinary
-## exception out of `runHeadless`, exactly like any other exception the
-## harness doesn't special-case today.
+## B11 (below, "B11:" suites) converts the harness from raising to
+## reporting (rfc §Design 5, "the primitive raises, the harness reports"):
+## a per-event `DrainTimeoutError` is captured as a `SettleFailure(site:
+## sfEvent, eventIndex: k)` and remaining events are NOT injected — the
+## RFC's event-loop bullets say "short-circuit remaining events", not
+## continue past a failed drain. A final-drain timeout is captured as
+## `site: sfFinalDrain` and never propagates. An app future that fails
+## lands its exception in `appError` instead of being silently discarded.
+## `settled()` is the one-expression clean-run check.
 ##
 ## Every drain-mode `runHeadless` await below is wrapped in
 ## `.withTimeout(...)` per the house idiom (test_drain_to_idle.nim) so a
@@ -211,5 +216,238 @@ suite "B10: an async app turn settles deterministically in drain mode":
       check hr.committedRows == @["async line"]
       check hr.rows[1] == "settled"
       check not gate.isBusy()
+
+    waitFor body()
+
+suite "B11: clean runs are settled()":
+
+  test "a clean settleDrain run is settled(), with no settle failures and no appError":
+    proc body() {.async: (raises: [Exception]).} =
+      let s = newInlineScreen(newMemorySink(), 10, 40)
+      let r = s.newRegion(1, 0, 9, 40)
+
+      proc app(stream: InputStream) {.async: (raises: [Exception]).} =
+        r.set(["hello"])
+        s.appendLine("line1")
+        discard s.commit()
+        let key = await stream.nextKey()
+        discard key
+
+      let fut = runHeadless(s, app, events = @[keyEv(atomKey(kEscape))],
+                            settle = settleDrain())
+      let ok = await fut.withTimeout(2.seconds)
+      check ok
+      let hr = fut.read()
+
+      check hr.settled()
+      check hr.settleFailures.len == 0
+      check hr.appError.isNil
+      check hr.committedRows == @["line1"]
+
+    waitFor body()
+
+  test "a clean settleFixed run is settled(), with no settle failures and no appError":
+    ## Item 5 of B11's scope: settleFixed runs report settleFailures = @[]
+    ## trivially, and settled() semantics hold there too — no fixed-path
+    ## regression from the failure-surfacing fields landing on
+    ## HeadlessResult.
+    proc body() {.async: (raises: [Exception]).} =
+      let s = newInlineScreen(newMemorySink(), 10, 40)
+      let r = s.newRegion(1, 0, 9, 40)
+
+      proc app(stream: InputStream) {.async: (raises: [Exception]).} =
+        r.set(["hello"])
+        s.appendLine("line1")
+        discard s.commit()
+
+      let result = await runHeadless(s, app, events = @[],
+                                     settle = settleFixed())
+      check result.settled()
+      check result.settleFailures.len == 0
+      check result.appError.isNil
+      check result.committedRows == @["line1"]
+
+    waitFor body()
+
+suite "B11: an app that raises surfaces appError":
+
+  test "an app that raises immediately reports appError and settled() is false":
+    proc body() {.async: (raises: [Exception]).} =
+      let s = newInlineScreen(newMemorySink(), 10, 40)
+
+      proc app(stream: InputStream) {.async: (raises: [Exception]).} =
+        raise newException(ValueError, "boom")
+
+      let fut = runHeadless(s, app, events = @[], settle = settleDrain())
+      let ok = await fut.withTimeout(2.seconds)
+      check ok
+      let hr = fut.read()
+
+      check not hr.settled()
+      check not hr.appError.isNil
+      check hr.appError.msg == "boom"
+      check hr.settleFailures.len == 0
+
+    waitFor body()
+
+  test "an app that crashes mid-script stops further injection and still reports appError":
+    ## The app-death short-circuit (rfc §Design 5): "if appFut.finished
+    ## before injection, stop injecting". Distinct from the drain-timeout
+    ## short-circuit below — here the drain after each event always
+    ## succeeds (nothing is ever busy); it's `appFut.finished` becoming
+    ## true between events that must stop the remaining script.
+    proc body() {.async: (raises: [Exception]).} =
+      let s = newInlineScreen(newMemorySink(), 10, 40)
+      var delivered: seq[int] = @[]
+
+      proc app(stream: InputStream) {.async: (raises: [Exception]).} =
+        let key1 = await stream.nextKey()
+        discard key1
+        delivered.add 1
+        raise newException(ValueError, "crashed mid-script")
+
+      let events = @[keyEv(atomKey(kEnter)), keyEv(atomKey(kEnter)),
+                     keyEv(atomKey(kEscape))]
+      let fut = runHeadless(s, app, events = events, settle = settleDrain())
+      let ok = await fut.withTimeout(2.seconds)
+      check ok
+      let hr = fut.read()
+
+      check delivered == @[1]
+      check not hr.appError.isNil
+      check hr.appError.msg == "crashed mid-script"
+      check hr.settleFailures.len == 0
+      check not hr.settled()
+
+    waitFor body()
+
+suite "B11: a stuck busy predicate reports a SettleFailure instead of raising":
+
+  test "stuck busy on event k records a sfEvent failure and short-circuits the remaining script":
+    ## Per rfc §Design 5's event-loop bullets: "on DrainTimeoutError,
+    ## record a SettleFailure and short-circuit remaining events" — NOT
+    ## continue. Event index 1 (the second keyEv, 0-based) never settles
+    ## (the gate is held busy for 120ms, well past the 50ms drainTimeout);
+    ## event index 2 (the escape key) must never be delivered.
+    proc body() {.async: (raises: [Exception]).} =
+      let s = newInlineScreen(newMemorySink(), 10, 40)
+      let gate = newBusyGate("stuck")
+      var delivered: seq[int] = @[]
+
+      proc app(stream: InputStream) {.async: (raises: [Exception]).} =
+        var n = 0
+        while true:
+          let key = await stream.nextKey()
+          inc n
+          delivered.add n
+          if key.kind == kEscape:
+            return
+          if n == 2:
+            proc holdBusy() {.async: (raises: [Exception]).} =
+              withBusy(gate):
+                await sleepAsync(120.milliseconds)
+            asyncSpawn holdBusy()
+
+      let events = @[keyEv(atomKey(kEnter)), keyEv(atomKey(kEnter)),
+                     keyEv(atomKey(kEscape))]
+      let fut = runHeadless(s, app, events = events, timeout = 200.milliseconds,
+                            settle = settleDrain(busy = gate,
+                                                 drainTimeout = 50.milliseconds))
+      let ok = await fut.withTimeout(2.seconds)
+      check ok
+      let hr = fut.read()
+
+      check not hr.settled()
+      check hr.settleFailures.len == 1
+      check hr.settleFailures[0].site == sfEvent
+      check hr.settleFailures[0].eventIndex == 1
+      check hr.settleFailures[0].clauses == {dcBusy}
+      check delivered == @[1, 2]
+      check hr.appError.isNil
+
+    waitFor body()
+
+  test "a stuck busy predicate that never clears fails both the event drain and the final drain":
+    ## Same shape as above but the gate never releases (holds for the
+    ## whole test), so the best-effort final drain (rfc §Design 5, "one
+    ## final best-effort drain ... never raises out") also times out and
+    ## contributes a second, sfFinalDrain failure — proving the final
+    ## drain runs even after an earlier per-event SettleFailure, and that
+    ## its own timeout is recorded rather than propagated.
+    proc body() {.async: (raises: [Exception]).} =
+      let s = newInlineScreen(newMemorySink(), 10, 40)
+      let gate = newBusyGate("stuck-forever")
+      var delivered: seq[int] = @[]
+
+      proc app(stream: InputStream) {.async: (raises: [Exception]).} =
+        var n = 0
+        while true:
+          let key = await stream.nextKey()
+          inc n
+          delivered.add n
+          if key.kind == kEscape:
+            return
+          if n == 1:
+            proc holdBusyForever() {.async: (raises: [Exception]).} =
+              withBusy(gate):
+                await sleepAsync(10.seconds)
+            asyncSpawn holdBusyForever()
+
+      let events = @[keyEv(atomKey(kEnter)), keyEv(atomKey(kEscape))]
+      let fut = runHeadless(s, app, events = events, timeout = 100.milliseconds,
+                            settle = settleDrain(busy = gate,
+                                                 drainTimeout = 30.milliseconds))
+      let ok = await fut.withTimeout(2.seconds)
+      check ok
+      let hr = fut.read()
+
+      check not hr.settled()
+      check hr.settleFailures.len == 2
+      check hr.settleFailures[0].site == sfEvent
+      check hr.settleFailures[0].eventIndex == 0
+      check hr.settleFailures[0].clauses == {dcBusy}
+      check hr.settleFailures[1].site == sfFinalDrain
+      check hr.settleFailures[1].clauses == {dcBusy}
+      check delivered == @[1]
+
+    waitFor body()
+
+suite "B11: a final-drain-only failure has an unrepresentable eventIndex":
+
+  test "a drain failure only at the final capture drain records a single sfFinalDrain failure":
+    ## No per-event failure at all (events = @[], so the per-event loop
+    ## never runs) — the busy gate only goes stuck via a task spawned from
+    ## inside the app body, so the only drain that ever observes it is the
+    ## final pre-capture drain. `SettleFailure` is a discriminated union
+    ## (rfc §Design 5): `eventIndex` is unrepresentable for `sfFinalDrain`
+    ## by construction, not by convention — demonstrated below via the
+    ## exhaustive `case` match rather than a sentinel value.
+    proc body() {.async: (raises: [Exception]).} =
+      let s = newInlineScreen(newMemorySink(), 10, 40)
+      let gate = newBusyGate("final-stuck")
+
+      proc app(stream: InputStream) {.async: (raises: [Exception]).} =
+        proc holdBusyForever() {.async: (raises: [Exception]).} =
+          withBusy(gate):
+            await sleepAsync(10.seconds)
+        asyncSpawn holdBusyForever()
+        # Returns immediately; the gate stays busy for the rest of the test.
+
+      let fut = runHeadless(s, app, events = @[],
+                            settle = settleDrain(busy = gate,
+                                                 drainTimeout = 50.milliseconds))
+      let ok = await fut.withTimeout(2.seconds)
+      check ok
+      let hr = fut.read()
+
+      check not hr.settled()
+      check hr.settleFailures.len == 1
+      check hr.settleFailures[0].clauses == {dcBusy}
+      case hr.settleFailures[0].site
+      of sfFinalDrain:
+        discard   # correct — eventIndex is not even a field on this branch
+      of sfEvent:
+        check false   # wrong discriminant — would have an eventIndex field
+      check hr.appError.isNil
 
     waitFor body()

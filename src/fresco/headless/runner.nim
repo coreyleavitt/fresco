@@ -21,6 +21,36 @@ import ./input as headless_input
 export busy
 
 type
+  # DrainClause / SettleFailureSite / SettleFailure declared here, ahead of
+  # HeadlessResult, purely for forward-reference reasons: HeadlessResult's
+  # `settleFailures` field needs `SettleFailure` (which needs `DrainClause`)
+  # already in scope. `DrainTimeoutError`/`DrainSpec`/`drainToIdle` stay at
+  # their original location below (RFC §Design 3) — only the enum moved.
+  DrainClause* = enum
+    dcReactive    ## reactiveIdle() is false — invariant, not expected to
+                  ## ever fail (model §1); see rfc §Design 3.
+    dcAnimations  ## a live frame animation is registered (skipped when
+                  ## spec.ignoreAnimations).
+    dcCommit      ## the InlineScreen commit batcher has work in flight.
+    dcDispatcher  ## the chronos dispatcher has ready callbacks pending —
+                  ## the delivery-gap clause (rfc §Delivery-gap decision,
+                  ## model §7): every synthetic-input delivery hop is a
+                  ## ready callback, so this is exact for any app topology.
+    dcBusy        ## spec.busy() reports true (skipped when spec.busy is nil).
+
+  SettleFailureSite* = enum sfEvent, sfFinalDrain
+  SettleFailure* = object
+    ## A drain timeout captured instead of raised (rfc-headless-quiescence.md
+    ## §Design 5, "the primitive raises, the harness reports"). `eventIndex`
+    ## is unrepresentable for a final-drain failure — a discriminated union,
+    ## not a sentinel (round 2 of the RFC rejected `eventIndex = -1`).
+    clauses*: set[DrainClause]
+    case site*: SettleFailureSite
+    of sfEvent:
+      eventIndex*: int   ## index into the `events` seq passed to runHeadless.
+    of sfFinalDrain:
+      discard
+
   HeadlessApp* = proc(stream: InputStream, layout: Layout): Future[void]
                  {.async: (raises: [Exception]).}
   HeadlessResult* = object
@@ -33,7 +63,25 @@ type
       ## `runHeadless(app, layout)` overload (no InlineScreen).
       ## Populated by `runHeadless(screen, app, events)` after the
       ## InlineScreen-level drain completes.
+    appError*: ref Exception
+      ## Nil unless the app future failed. Populated by the
+      ## `runHeadless(screen, app, events)` overload's app-finish/cancel
+      ## dance (both settle kinds) — including the drain-mode app-death
+      ## short-circuit, where the app dies mid-script and injection stops
+      ## (rfc §Design 5, "App-death short-circuit"). The plain
+      ## `runHeadless(app, inputs, ...)` overload does not populate this
+      ## field (out of scope; see rfc §Out of scope).
+    settleFailures*: seq[SettleFailure]
+      ## Drain-mode settle timeouts recorded instead of raised. Always
+      ## empty for `settleFixed` runs and for the plain Layout-based
+      ## overload (fixed-sleep only; no drain machinery).
 
+proc settled*(r: HeadlessResult): bool =
+  ## True iff the run hit no drain timeout and the app raised nothing —
+  ## the one-expression "clean run" assertion (rfc §Design 5).
+  r.appError.isNil and r.settleFailures.len == 0
+
+type
   InlineEventKind* = enum
     ievKey     ## A keyboard event delivered to the app via pushKey.
     ievResize  ## A terminal-resize event applied via s.setSize(h, w).
@@ -122,18 +170,8 @@ type
 # ---------------------------------------------------------------------------
 
 type
-  DrainClause* = enum
-    dcReactive    ## reactiveIdle() is false — invariant, not expected to
-                  ## ever fail (model §1); see rfc §Design 3.
-    dcAnimations  ## a live frame animation is registered (skipped when
-                  ## spec.ignoreAnimations).
-    dcCommit      ## the InlineScreen commit batcher has work in flight.
-    dcDispatcher  ## the chronos dispatcher has ready callbacks pending —
-                  ## the delivery-gap clause (rfc §Delivery-gap decision,
-                  ## model §7): every synthetic-input delivery hop is a
-                  ## ready callback, so this is exact for any app topology.
-    dcBusy        ## spec.busy() reports true (skipped when spec.busy is nil).
-
+  # DrainClause moved up to the HeadlessResult type block above (needed
+  # there for SettleFailure.clauses); DrainTimeoutError/DrainSpec stay here.
   DrainTimeoutError* = object of AsyncTimeoutError
     failingClauses*: set[DrainClause]
       ## The clauses that were still failing at the deadline. Never empty
@@ -247,6 +285,14 @@ proc settleDrain*(busy: BusyPredicate = nil,
   Settle(kind: skDrain, drain: DrainSpec(busy: busy, drainTimeout: drainTimeout,
                                         ignoreAnimations: ignoreAnimations))
 
+const CancelGrace* = 100.milliseconds
+  ## Bounds the post-cancel `await appFut` in drain mode (rfc-headless-
+  ## quiescence.md §Design 5): this codebase's own record on chronos
+  ## `race()` not propagating cancellation to children means an unbounded
+  ## wait after `cancelSoon()` can hang. A future still unfinished after
+  ## the grace is abandoned and the capture proceeds. The fixed path keeps
+  ## its existing unbounded `await appFut` — untouched by this bound.
+
 proc runHeadless*(screen: InlineScreen[MemorySink],
                   app: HeadlessInlineApp,
                   events: seq[InlineEvent] = @[],
@@ -274,10 +320,22 @@ proc runHeadless*(screen: InlineScreen[MemorySink],
   ##     fixed sleep — deterministic quiescence instead of a guessed
   ##     margin (rfc §Problem). One additional drain runs before the final
   ##     capture regardless of `events.len` (so `events = @[]` still
-  ##     drains). B10 scope note: a `DrainTimeoutError` from either drain
-  ##     propagates out of `runHeadless` as an ordinary exception — B11
-  ##     adds `SettleFailure` recording + best-effort final-drain handling;
-  ##     this slice does not soften drain-mode failures.
+  ##     drains).
+  ##
+  ## Failure semantics — the primitive raises, the harness reports (rfc
+  ## §Design 5): a `DrainTimeoutError` from a per-event drain is captured
+  ## as a `SettleFailure(site: sfEvent, eventIndex: <that event>)` and
+  ## remaining events are NOT injected (short-circuit — under drain every
+  ## framework clause reads vacuously idle once nothing is left to settle,
+  ## so continuing would silently race through a broken run). A dead app
+  ## future (finished, successfully or not) is the same short-circuit
+  ## trigger, checked before each injection. The final pre-capture drain
+  ## is best-effort: its timeout is recorded as `site: sfFinalDrain`
+  ## instead of propagating, so `runHeadless` always returns a
+  ## `HeadlessResult` — never raises `DrainTimeoutError` itself. If the
+  ## app future fails (in either settle mode), its exception lands in
+  ## `result.appError` instead of being silently discarded. Use
+  ## `result.settled()` for the one-expression "clean run" check.
   ##
   ## Use this overload when the consumer is an InlineScreen-based app
   ## (e.g., amoxtli's REPL) and the test needs to assert on committed
@@ -285,29 +343,60 @@ proc runHeadless*(screen: InlineScreen[MemorySink],
   ##
   ## The plain `runHeadless(app, inputs, height, width, ...)` overload is
   ## unchanged and handles plain Layout-based apps (fixed-sleep only; see
-  ## rfc-headless-quiescence.md §Out of scope).
+  ## rfc-headless-quiescence.md §Out of scope) — it does not populate
+  ## `appError`/`settleFailures`.
   let stream = newSyntheticInputStream()
   let appFut = app(stream)
 
-  for ev in events:
-    case ev.kind
-    of ievKey:
-      stream.pushKey(ev.key)
-    of ievResize:
-      screen.setSize(ev.resizeH, ev.resizeW)
-    case settle.kind
-    of skFixed:
+  var settleFailures: seq[SettleFailure] = @[]
+
+  case settle.kind
+  of skFixed:
+    for ev in events:
+      case ev.kind
+      of ievKey:
+        stream.pushKey(ev.key)
+      of ievResize:
+        screen.setSize(ev.resizeH, ev.resizeW)
       await sleepAsync(settle.perKeySettle)
-    of skDrain:
-      await drainToIdle(screen, settle.drain)
+  of skDrain:
+    for idx, ev in events:
+      # App-death short-circuit (rfc §Design 5): a dead app must not be
+      # raced through the remaining script — under drain every framework
+      # clause goes vacuously idle, so the harness would otherwise sprint
+      # through a dead run in silence. `appError` (success or failure) is
+      # captured uniformly below, once the app-finish/cancel dance settles.
+      if appFut.finished:
+        break
+      case ev.kind
+      of ievKey:
+        stream.pushKey(ev.key)
+      of ievResize:
+        screen.setSize(ev.resizeH, ev.resizeW)
+      try:
+        await drainToIdle(screen, settle.drain)
+      except DrainTimeoutError as e:
+        settleFailures.add SettleFailure(clauses: e.failingClauses,
+                                         site: sfEvent, eventIndex: idx)
+        break
 
   if not appFut.finished:
     discard await appFut.withTimeout(timeout)
     if not appFut.finished:
       appFut.cancelSoon()
-      try: await appFut
-      except CancelledError: discard
-      except CatchableError: discard
+      case settle.kind
+      of skFixed:
+        try: await appFut
+        except CancelledError: discard
+        except CatchableError: discard
+      of skDrain:
+        # CancelGrace bound: race()'s cancel does not propagate to
+        # children (this codebase's own documented hazard), so an
+        # unbounded wait here can hang. `withTimeout` never raises the
+        # underlying future's exception — it just reports whether `appFut`
+        # settled within the grace; a future still unfinished after it is
+        # abandoned and the capture proceeds regardless.
+        discard await appFut.withTimeout(CancelGrace)
 
   case settle.kind
   of skFixed:
@@ -315,10 +404,15 @@ proc runHeadless*(screen: InlineScreen[MemorySink],
   of skDrain:
     # Final pre-capture drain (rfc §Design 5): runs unconditionally in
     # drain mode, even when `events.len == 0` and the per-event loop above
-    # never ran. B10 scope: not yet best-effort (that's B11's
-    # `site = sfFinalDrain` recording) — a timeout here propagates like
-    # any other exception.
-    await drainToIdle(screen, settle.drain)
+    # never ran, and even after an earlier per-event SettleFailure or app
+    # death. Best-effort: a timeout here is recorded (site: sfFinalDrain)
+    # instead of propagating, preserving the always-returns-a-result
+    # contract both overloads already document.
+    try:
+      await drainToIdle(screen, settle.drain)
+    except DrainTimeoutError as e:
+      settleFailures.add SettleFailure(clauses: e.failingClauses,
+                                       site: sfFinalDrain)
 
   # Final capture: drain any buffered committed lines + capture live band.
   #
@@ -336,3 +430,6 @@ proc runHeadless*(screen: InlineScreen[MemorySink],
 
   result.rows = screen.sink.rows
   result.committedRows = screen.sink.committedRows
+  result.settleFailures = settleFailures
+  if appFut.failed:
+    result.appError = appFut.error
