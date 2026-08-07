@@ -38,18 +38,34 @@ type
                   ## ready callback, so this is exact for any app topology.
     dcBusy        ## spec.busy() reports true (skipped when spec.busy is nil).
 
-  SettleFailureSite* = enum sfEvent, sfFinalDrain
+  SettleFailureSite* = enum sfEvent, sfFinalDrain, sfScriptTruncated
   SettleFailure* = object
-    ## A drain timeout captured instead of raised (rfc-headless-quiescence.md
-    ## §Design 5, "the primitive raises, the harness reports"). `eventIndex`
-    ## is unrepresentable for a final-drain failure — a discriminated union,
-    ## not a sentinel (round 2 of the RFC rejected `eventIndex = -1`).
+    ## A settle-time failure captured instead of raised or silently dropped
+    ## (rfc-headless-quiescence.md §Design 5, "the primitive raises, the
+    ## harness reports"). `sfEvent`/`sfFinalDrain` are drain timeouts
+    ## (`clauses` names the still-failing `DrainClause`s at the deadline).
+    ## `sfScriptTruncated` is not a drain timeout at all — it fires when the
+    ## app future finishes (successfully or with an error) before the
+    ## scripted `events` are fully injected, so `clauses` is always `{}`
+    ## there (round-1 stage-4 H1: a successful early app exit used to drop
+    ## the remaining script in silence — `settled()` read `true` over a
+    ## script that only partly ran). Each site's payload is unrepresentable
+    ## on the other branches — a discriminated union, not a sentinel
+    ## (round 2 of the RFC rejected `eventIndex = -1`; H1 applies the same
+    ## discipline to the app-death case).
     clauses*: set[DrainClause]
     case site*: SettleFailureSite
     of sfEvent:
       eventIndex*: int   ## index into the `events` seq passed to runHeadless.
     of sfFinalDrain:
       discard
+    of sfScriptTruncated:
+      firstUndeliveredIndex*: int
+        ## index into `events` of the first event never injected. Recorded
+        ## in BOTH settle modes (rfc §Design 5, H1 resolution) — the app
+        ## future finishing does not distinguish success from failure here;
+        ## a failure lands its own fact in `appError` separately, since a
+        ## crash and a truncated script are both true at once.
 
   HeadlessApp* = proc(stream: InputStream, layout: Layout): Future[void]
                  {.async: (raises: [Exception]).}
@@ -66,15 +82,20 @@ type
     appError*: ref Exception
       ## Nil unless the app future failed. Populated by the
       ## `runHeadless(screen, app, events)` overload's app-finish/cancel
-      ## dance (both settle kinds) — including the drain-mode app-death
-      ## short-circuit, where the app dies mid-script and injection stops
-      ## (rfc §Design 5, "App-death short-circuit"). The plain
-      ## `runHeadless(app, inputs, ...)` overload does not populate this
-      ## field (out of scope; see rfc §Out of scope).
+      ## dance (both settle kinds) — including the app-death short-circuit
+      ## (rfc §Design 5, "App-death short-circuit"; H1: now shared by both
+      ## settle kinds), where the app dies mid-script and injection stops.
+      ## The plain `runHeadless(app, inputs, ...)` overload does not
+      ## populate this field (out of scope; see rfc §Out of scope).
     settleFailures*: seq[SettleFailure]
-      ## Drain-mode settle timeouts recorded instead of raised. Always
-      ## empty for `settleFixed` runs and for the plain Layout-based
-      ## overload (fixed-sleep only; no drain machinery).
+      ## Settle-time failures recorded instead of raised or silently
+      ## dropped. `sfEvent`/`sfFinalDrain` (drain timeouts) are only ever
+      ## produced by `settleDrain` runs. `sfScriptTruncated` (H1: the app
+      ## future finished before the script finished injecting) can occur
+      ## under EITHER settle kind, since both loops share the same
+      ## app-death short-circuit. Always empty for the plain Layout-based
+      ## overload (fixed-sleep only; no drain machinery, no truncation
+      ## tracking; out of scope — see rfc §Out of scope).
     cancelGraceExpired*: bool
       ## True iff the post-cancel `CancelGrace` wait (below) elapsed with
       ## `appFut` still not finished — the app's cancellation path is hung
@@ -383,14 +404,22 @@ proc runHeadless*(screen: InlineScreen[MemorySink],
   ## remaining events are NOT injected (short-circuit — under drain every
   ## framework clause reads vacuously idle once nothing is left to settle,
   ## so continuing would silently race through a broken run). A dead app
-  ## future (finished, successfully or not) is the same short-circuit
-  ## trigger, checked before each injection. The final pre-capture drain
-  ## is best-effort: its timeout is recorded as `site: sfFinalDrain`
-  ## instead of propagating, so `runHeadless` always returns a
-  ## `HeadlessResult` — never raises `DrainTimeoutError` itself. If the
-  ## app future fails (in either settle mode), its exception lands in
-  ## `result.appError` instead of being silently discarded. Use
-  ## `result.settled()` for the one-expression "clean run" check.
+  ## future (finished, successfully or not) is the SAME short-circuit
+  ## trigger in BOTH settle modes, checked before each injection (H1,
+  ## round-1 stage-4: `settleFixed` used to have no short-circuit at all,
+  ## and `settleDrain`'s silently dropped the tail of the script on a
+  ## successful early exit) — the harness stops injecting and records
+  ## `SettleFailure(site: sfScriptTruncated, firstUndeliveredIndex: <first
+  ## event never injected>)`, so an early-but-successful app exit is a
+  ## witnessed fact instead of a `settled() == true` false positive. The
+  ## final pre-capture drain is best-effort: its timeout is recorded as
+  ## `site: sfFinalDrain` instead of propagating, so `runHeadless` always
+  ## returns a `HeadlessResult` — never raises `DrainTimeoutError` itself.
+  ## If the app future fails (in either settle mode), its exception lands
+  ## in `result.appError` IN ADDITION to any `sfScriptTruncated` failure —
+  ## a crash and a truncated script are distinct facts, both recorded when
+  ## both are true. Use `result.settled()` for the one-expression "clean
+  ## run" check.
   ##
   ## Use this overload when the consumer is an InlineScreen-based app
   ## (e.g., amoxtli's REPL) and the test needs to assert on committed
@@ -409,7 +438,18 @@ proc runHeadless*(screen: InlineScreen[MemorySink],
 
   case settle.kind
   of skFixed:
-    for ev in events:
+    for idx, ev in events:
+      # App-death short-circuit (H1, round-1 stage-4): shared with skDrain
+      # below — a dead app must not be raced through the remaining script.
+      # Pre-H1 this branch had no short-circuit at all (it pushed into a
+      # dead app's queue and slept regardless); now a successful-or-failed
+      # early exit stops injection and is recorded, not dropped silently.
+      # `appError` (on failure) is captured uniformly below, once the
+      # app-finish/cancel dance settles.
+      if appFut.finished:
+        settleFailures.add SettleFailure(clauses: {}, site: sfScriptTruncated,
+                                         firstUndeliveredIndex: idx)
+        break
       case ev.kind
       of ievKey:
         stream.pushKey(ev.key)
@@ -418,12 +458,16 @@ proc runHeadless*(screen: InlineScreen[MemorySink],
       await sleepAsync(settle.perKeySettle)
   of skDrain:
     for idx, ev in events:
-      # App-death short-circuit (rfc §Design 5): a dead app must not be
-      # raced through the remaining script — under drain every framework
-      # clause goes vacuously idle, so the harness would otherwise sprint
-      # through a dead run in silence. `appError` (success or failure) is
-      # captured uniformly below, once the app-finish/cancel dance settles.
+      # App-death short-circuit (rfc §Design 5; H1, round-1 stage-4: now
+      # recorded rather than silent): a dead app must not be raced through
+      # the remaining script — under drain every framework clause goes
+      # vacuously idle, so the harness would otherwise sprint through a
+      # dead run in silence AND `settled()` would read `true` over a
+      # script that only partly ran. `appError` (on failure) is captured
+      # uniformly below, once the app-finish/cancel dance settles.
       if appFut.finished:
+        settleFailures.add SettleFailure(clauses: {}, site: sfScriptTruncated,
+                                         firstUndeliveredIndex: idx)
         break
       case ev.kind
       of ievKey:

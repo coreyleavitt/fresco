@@ -297,6 +297,11 @@ suite "B11: an app that raises surfaces appError":
     ## short-circuit below — here the drain after each event always
     ## succeeds (nothing is ever busy); it's `appFut.finished` becoming
     ## true between events that must stop the remaining script.
+    ##
+    ## H1 (round-1 stage-4): the short-circuit now ALSO records a
+    ## `sfScriptTruncated` failure naming the first undelivered event —
+    ## `appError` and the truncation are distinct facts recorded together,
+    ## not one superseding the other.
     proc body() {.async: (raises: [Exception]).} =
       let s = newInlineScreen(newMemorySink(), 10, 40)
       var delivered: seq[int] = @[]
@@ -317,7 +322,9 @@ suite "B11: an app that raises surfaces appError":
       check delivered == @[1]
       check not hr.appError.isNil
       check hr.appError.msg == "crashed mid-script"
-      check hr.settleFailures.len == 0
+      check hr.settleFailures.len == 1
+      check hr.settleFailures[0].site == sfScriptTruncated
+      check hr.settleFailures[0].firstUndeliveredIndex == 1
       check not hr.settled()
 
     waitFor body()
@@ -449,6 +456,8 @@ suite "B11: a final-drain-only failure has an unrepresentable eventIndex":
         discard   # correct — eventIndex is not even a field on this branch
       of sfEvent:
         check false   # wrong discriminant — would have an eventIndex field
+      of sfScriptTruncated:
+        check false   # wrong discriminant — events = @[], nothing to truncate
       check hr.appError.isNil
 
     waitFor body()
@@ -599,6 +608,100 @@ suite "B12: representative fixed-settle test ported to settleDrain":
       check layoutHAfter == 30
       check layoutWAfter == 120
       check hr.settled()
+
+    waitFor body()
+
+# -----------------------------------------------------------------------
+# H1 (round-1 stage-4 code review): a successful early app exit used to
+# drop the remaining scripted events in total silence — appError stayed
+# nil, settleFailures stayed empty, settled() read true. skFixed had no
+# short-circuit at all (it kept pushing into a dead app's queue). Approved
+# fix (rfc-headless-quiescence.md, event-loop bullets): both settle kinds
+# now share one short-circuit that fires the instant appFut.finished
+# (success OR failure) and records a `SettleFailure(site:
+# sfScriptTruncated, firstUndeliveredIndex: <first event never injected>)`
+# — a discriminated-union fact, not a silently-dropped tail.
+# -----------------------------------------------------------------------
+
+suite "H1: a successful early app exit truncates the script — recorded, not silent":
+
+  test "settleDrain: app returns after consuming 1 of 3 events records sfScriptTruncated at index 1":
+    proc body() {.async: (raises: [Exception]).} =
+      let s = newInlineScreen(newMemorySink(), 10, 40)
+
+      proc app(stream: InputStream) {.async: (raises: [Exception]).} =
+        let key = await stream.nextKey()
+        discard key
+        # Returns cleanly after exactly one key — events[1] (another key)
+        # and events[2] (escape) are scripted but never injected.
+
+      let events = @[keyEv(atomKey(kEnter)), keyEv(atomKey(kEnter)),
+                     keyEv(atomKey(kEscape))]
+      let fut = runHeadless(s, app, events = events, settle = settleDrain())
+      let ok = await fut.withTimeout(2.seconds)
+      check ok
+      let hr = fut.read()
+
+      check not hr.settled()
+      check hr.settleFailures.len == 1
+      check hr.settleFailures[0].site == sfScriptTruncated
+      check hr.settleFailures[0].firstUndeliveredIndex == 1
+      check hr.appError.isNil
+
+    waitFor body()
+
+  test "settleFixed: app returns after consuming 1 of 3 events records sfScriptTruncated at index 1":
+    ## Same shape under settleFixed, which pre-H1 had NO short-circuit at
+    ## all — proving both settle kinds now agree.
+    proc body() {.async: (raises: [Exception]).} =
+      let s = newInlineScreen(newMemorySink(), 10, 40)
+
+      proc app(stream: InputStream) {.async: (raises: [Exception]).} =
+        let key = await stream.nextKey()
+        discard key
+
+      let events = @[keyEv(atomKey(kEnter)), keyEv(atomKey(kEnter)),
+                     keyEv(atomKey(kEscape))]
+      let fut = runHeadless(s, app, events = events, settle = settleFixed())
+      let ok = await fut.withTimeout(2.seconds)
+      check ok
+      let hr = fut.read()
+
+      check not hr.settled()
+      check hr.settleFailures.len == 1
+      check hr.settleFailures[0].site == sfScriptTruncated
+      check hr.settleFailures[0].firstUndeliveredIndex == 1
+      check hr.appError.isNil
+
+    waitFor body()
+
+  test "an app that consumes every scripted event reports no truncation failure (non-vacuity guard)":
+    ## The short-circuit check only ever fires BEFORE an injection, so an
+    ## app that is still processing the last scripted event when it
+    ## returns never trips it — proving the fix does not spuriously flag
+    ## ordinary, fully-scripted runs.
+    proc body() {.async: (raises: [Exception]).} =
+      let s = newInlineScreen(newMemorySink(), 10, 40)
+      var delivered: seq[int] = @[]
+
+      proc app(stream: InputStream) {.async: (raises: [Exception]).} =
+        while true:
+          let key = await stream.nextKey()
+          if key.kind == kEscape:
+            delivered.add 99
+            return
+          delivered.add 1
+
+      let events = @[keyEv(atomKey(kEnter)), keyEv(atomKey(kEnter)),
+                     keyEv(atomKey(kEscape))]
+      let fut = runHeadless(s, app, events = events, settle = settleDrain())
+      let ok = await fut.withTimeout(2.seconds)
+      check ok
+      let hr = fut.read()
+
+      check delivered == @[1, 1, 99]
+      check hr.settled()
+      check hr.settleFailures.len == 0
 
     waitFor body()
 
