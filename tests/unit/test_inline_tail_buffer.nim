@@ -13,6 +13,7 @@ import std/[unittest, posix, strutils]
 import fresco/terminal/termios
 import fresco/inline_screen
 import fresco/render/sink/memory
+import fresco/render/sink/terminal
 
 # ─── helpers ────────────────────────────────────────────────────────────────
 
@@ -101,15 +102,17 @@ suite "InlineScreen slice 15: static tail buffer":
     # After flush, sigTailArmed is 0 (flushInlineTailNow clears it) — disarm is a no-op.
     disarmInlineTail()
 
-  test "4 end-to-end mirror via append/drain on InlineScreen":
-    # Build an InlineScreen[MemorySink] (no real fd needed for append/drain).
-    # Arm the tail buffer so setInlineTail calls inside append/drain are live.
-    # Use a harmless fd (devnull) — we never call flushInlineTailNow here.
+  test "4 TerminalSink screens still mirror into and disarm the crash tail (end-to-end)":
+    ## Build an InlineScreen[TerminalSink] (a real fd, even if it's /dev/null
+    ## here) and prove the crash-tail mirror/disarm machinery still fires for
+    ## the sink type it exists for — TerminalSink sessions are the whole
+    ## reason the static tail buffer exists (see M11 below: MemorySink must
+    ## NOT touch it).
     let devNull = posix.open("/dev/null", O_WRONLY)
     defer: discard posix.close(devNull)
 
-    let mem = newMemorySink()
-    let s = newInlineScreen(mem, 10, 40, pinnedHeaderRows = 1)
+    let term = newTerminalSink(devNull)
+    let s = newInlineScreen(term, 10, 40, pinnedHeaderRows = 1)
 
     armInlineTail(devNull)
 
@@ -118,8 +121,7 @@ suite "InlineScreen slice 15: static tail buffer":
     s.appendLine("L2")
     check inlineTailSnapshot() == "L1\nL2\n"
 
-    # Drain (commit flushes committed lines from MemorySink path — no output
-    # written but pending is cleared; teardownFlush disarms tail).
+    # Drain (teardownFlush writes the buffered tail raw and disarms).
     teardownFlush(s)
     check inlineTailSnapshot() == ""
     # After teardownFlush the tail is disarmed — subsequent setInlineTail is no-op.
@@ -162,3 +164,46 @@ suite "InlineScreen slice 15: static tail buffer":
     check snap.len == InlineTailCap
     check snap == lineB & "\n"
     disarmInlineTail()
+
+# ---------------------------------------------------------------------------
+# M11 (round-1 stage-4): crash-tail buffer isolation by sink type
+# ---------------------------------------------------------------------------
+#
+# The static signal-tail buffer is process-global. Pre-fix, LogSink.append
+# unconditionally called termiosMod.setInlineTail(...) and teardownFlush
+# unconditionally called termiosMod.disarmInlineTail() regardless of which
+# sink owned the screen — so in a mixed suite (a real TerminalSink session
+# armed in the same thread + a headless MemorySink test), the headless
+# screen's appends would overwrite the real session's crash-tail content and
+# its teardown would prematurely disarm the real session's safety net.
+# MemorySink/headless screens must be structurally incapable of touching the
+# global tail state — gated at compile time on sink type (test 4 above is
+# the non-vacuity companion: the mechanism still works for TerminalSink).
+
+suite "M11: crash-tail buffer isolation by sink type":
+
+  test "a headless InlineScreen[MemorySink] does not touch a concurrently-armed real session's crash tail":
+    ## Arm + seed the tail exactly as a real TerminalSink session would
+    ## (the tail is process-global, not screen-owned, so this can be done
+    ## directly without constructing a TerminalSink screen). Then run a full
+    ## append/commit/teardownFlush cycle on an UNRELATED
+    ## InlineScreen[MemorySink]. The "real session's" armed state and content
+    ## must be untouched throughout — never clobbered by the headless
+    ## screen's appends, never disarmed by its teardown.
+    let devNull = posix.open("/dev/null", O_WRONLY)
+    defer: discard posix.close(devNull)
+
+    armInlineTail(devNull)
+    setInlineTail(["real-session-line"])
+    check inlineTailSnapshot() == "real-session-line\n"
+
+    let mem = newMemorySink()
+    let s = newInlineScreen(mem, 10, 40, pinnedHeaderRows = 1)
+    s.appendLine("headless-line")
+    discard s.commit()
+    teardownFlush(s)
+
+    check inlineTailArmed()
+    check inlineTailSnapshot() == "real-session-line\n"
+
+    disarmInlineTail()  # cleanup: don't bleed armed state into later tests

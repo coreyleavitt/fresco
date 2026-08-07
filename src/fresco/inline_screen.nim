@@ -89,6 +89,18 @@ type
       ## Installed by newInlineScreen after construction.
       ## Called by append after every enqueue. The closure captures the
       ## screen and calls scheduleCommit. nil until the screen is wired.
+    mirrorTail: proc(pending: seq[string]) {.gcsafe.}
+      ## M11 (round-1 stage-4): installed by newInlineScreen, compile-time
+      ## gated on sink type (`when compiles(sink.fd)` — the same TerminalSink
+      ## discriminator commitOneBatch/teardownFlush already use). TerminalSink
+      ## screens get a closure that mirrors into the process-global
+      ## signal-tail buffer (termiosMod.setInlineTail); every other sink
+      ## (MemorySink, etc.) gets a no-op closure — structurally incapable of
+      ## touching the global tail, not merely policy-gated at runtime. `append`
+      ## is sink-erased (LogSink carries no `S`), so this is the one call site
+      ## that cannot gate directly on `s.sink` and needs a closure baked at
+      ## construction time, where `S` is still known. nil until the screen is
+      ## wired.
 
 # ---------------------------------------------------------------------------
 # Public types
@@ -206,8 +218,12 @@ proc append*(s: LogSink, line: string) =
   ## sanitize — all content passes through here.
   s.log.pending.add(ansiMod.sanitizeLogLine(line))
   # Mirror the updated pending seq into the static tail buffer so the crash
-  # handler can flush it async-signal-safely. Lines are already sanitized.
-  termiosMod.setInlineTail(s.log.pending)
+  # handler can flush it async-signal-safely (TerminalSink screens only —
+  # M11, round-1 stage-4: mirrorTail is a no-op for every other sink, so a
+  # headless MemorySink screen is structurally incapable of touching the
+  # process-global tail). Lines are already sanitized.
+  if s.log.mirrorTail != nil:
+    s.log.mirrorTail(s.log.pending)
   if s.log.notify != nil:
     s.log.notify()
 
@@ -415,6 +431,16 @@ proc newInlineScreen*[S: Sink](sink: S, size: Signal[(int, int)],
     # commit is even scheduled, rather than staying silently buried.
     reraisePendingDefect(scr)
     scheduleCommit(scr)
+  # M11 (round-1 stage-4): compile-time sink-type gate (`when compiles(sink.fd)`
+  # — the same TerminalSink discriminator commitOneBatch/teardownFlush use
+  # below). TerminalSink screens mirror into the process-global crash-tail
+  # buffer; every other sink (MemorySink, etc.) gets a no-op — structurally
+  # incapable of touching global state a headless test doesn't own.
+  when compiles(sink.fd):
+    scr.log.mirrorTail = proc(pending: seq[string]) {.gcsafe.} =
+      termiosMod.setInlineTail(pending)
+  else:
+    scr.log.mirrorTail = proc(pending: seq[string]) {.gcsafe.} = discard
   scr
 
 proc newInlineScreen*[S: Sink](sink: S, h, w: int,
@@ -600,7 +626,11 @@ proc commitOneBatch[S: Sink](s: InlineScreen[S]): string =
   if batch.len == 0:
     return ""
   # Mirror the now-smaller pending seq into the tail buffer after the drain.
-  termiosMod.setInlineTail(s.log.pending)
+  # M11 (round-1 stage-4): TerminalSink only — `s` is in scope here (unlike
+  # LogSink.append), so this gates directly on the sink type instead of
+  # needing the mirrorTail closure.
+  when compiles(s.sink.fd):
+    termiosMod.setInlineTail(s.log.pending)
 
   # Design-2: fail-fast on a non-bottom-anchored band.
   # The bottom-anchor contract requires that committed content spills from the
@@ -662,8 +692,11 @@ proc teardownFlush*[S: Sink](s: InlineScreen[S]) =
   ## + static-buffer flush, which ARE async-signal-safe. The lines are already
   ## sanitized (LogSink.append chokepoint), so emit them as-is.
   ##
-  ## MemorySink (no scrollback model): still disarms the tail buffer so the
-  ## structural invariant holds regardless of sink type.
+  ## MemorySink (no scrollback model): does NOT touch the static tail buffer
+  ## (M11, round-1 stage-4 — see below). The tail is process-global, not
+  ## screen-owned; a headless MemorySink teardown must not disarm a real
+  ## TerminalSink session's crash-tail safety net that happens to be armed
+  ## concurrently in the same process/thread.
   ##
   ## H2 (round-1 stage-4): re-raises any Defect previously captured by the
   ## async commit driver BEFORE draining, so it surfaces here synchronously
@@ -684,11 +717,18 @@ proc teardownFlush*[S: Sink](s: InlineScreen[S]) =
     elif compiles(s.sink.committedRows):   # MemorySink capture path
       for line in batch: s.sink.committedRows.add(line)
     # else (unknown sink): drained but not emitted — no scrollback to capture.
-  # Explicitly disarm the static tail buffer. On the graceful path this makes
-  # the flushInlineTailNow() call inside restoreAllAndReraise a structural
-  # no-op. On the crash path teardownFlush never runs, so the tail stays armed
-  # for the signal handler to flush. Either way: no double-emit, nothing dropped.
-  termiosMod.disarmInlineTail()
+  # Explicitly disarm the static tail buffer — TerminalSink only (M11,
+  # round-1 stage-4). On the graceful path this makes the
+  # flushInlineTailNow() call inside restoreAllAndReraise a structural no-op.
+  # On the crash path teardownFlush never runs, so the tail stays armed for
+  # the signal handler to flush. Either way: no double-emit, nothing dropped.
+  # A MemorySink screen never armed the tail in the first place (mirrorTail
+  # is a no-op for it — see LogSink.append) and must not disarm it here
+  # either: the tail is process-global, and a concurrently-armed REAL
+  # TerminalSink session's safety net must survive an unrelated headless
+  # teardown untouched.
+  when compiles(s.sink.fd):
+    termiosMod.disarmInlineTail()
 
 proc commit*[S: Sink](s: InlineScreen[S]): string {.discardable.} =
   ## Synchronous full-drain commit. Batch-loops until the log is empty.
