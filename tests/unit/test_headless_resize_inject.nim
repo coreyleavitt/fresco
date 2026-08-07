@@ -362,3 +362,75 @@ suite "R2-M1: teardownFlush drains pending lines before re-raising a stashed Def
 
     expect BandNotBottomAnchoredDefect:
       waitFor body()
+
+# ---------------------------------------------------------------------------
+# Suite 5: R2-M4 (round-2 stage-4) — reraisePendingDefect's blessed entry
+# points, tested individually.
+# ---------------------------------------------------------------------------
+#
+# reraisePendingDefect's doc comment (inline_screen.nim) names four blessed
+# entry points that re-raise a stored Defect: paint, the LogSink.append
+# notify path, teardownFlush, and commit. Only teardown-path behavior was
+# tested pre-round-2 (the H2/R2-M1 suites above, both via teardownFlush).
+# This suite pins the other three individually; a comment on
+# reraisePendingDefect itself points here as the test file that pins the
+# entry-point set.
+#
+# Each test drives the same stale-band recipe (resize w/o reanchor +
+# post-resize appendLine) directly against an InlineScreen[MemorySink] —
+# no runHeadless involved — then pumps the dispatcher directly (a plain
+# `sleepAsync`, NOT `drainToIdle`) until the async commit driver has
+# genuinely captured the Defect, before exercising the entry point under
+# test. `drainToIdle` cannot be used for this priming step: its own
+# postcondition calls `screen.paint()` unconditionally once every clause
+# reads idle, which would itself call `reraisePendingDefect` and consume
+# the Defect the instant it's captured — leaving nothing pending for the
+# test to exercise. (Confirmed empirically: swapping the sleep below for
+# `await drainToIdle(s)` makes the Defect escape from INSIDE that call,
+# via its internal `paint()` postcondition, instead of staying pending.)
+
+suite "R2-M4: reraisePendingDefect's other blessed entry points":
+
+  proc primeStaleBandDefect(): Future[InlineScreen[MemorySink]]
+      {.async: (raises: [Exception]).} =
+    ## Shared setup: build a 10x40 screen with a bottom-anchored region,
+    ## resize (grow) WITHOUT reanchoring, append a line to trigger the
+    ## async commit driver, then pump the dispatcher directly (no
+    ## drainToIdle — see the suite comment above) until driveCommitStep has
+    ## genuinely caught BandNotBottomAnchoredDefect and stored it as
+    ## screen.pendingDefect, leaving it there for the test to exercise.
+    let sink = newMemorySink()
+    let s = newInlineScreen(sink, 10, 40)
+    let r = s.newRegion(1, 0, 9, 40)
+    doAssert r.row + r.height == s.layout.height
+
+    s.setSize(15, 40)  # grow, no reanchor: band now stale
+    s.appendLine("post-resize, no reanchor")  # schedules the async driver
+
+    await sleepAsync(20.milliseconds)  # let the callSoon-scheduled driver run
+
+    result = s
+
+  test "paint re-raises a pending Defect":
+    proc body() {.async: (raises: [Exception]).} =
+      let s = await primeStaleBandDefect()
+      expect BandNotBottomAnchoredDefect:
+        s.paint()
+
+    waitFor body()
+
+  test "LogSink.append (appendLine) re-raises a pending Defect":
+    proc body() {.async: (raises: [Exception]).} =
+      let s = await primeStaleBandDefect()
+      expect BandNotBottomAnchoredDefect:
+        s.appendLine("second line, after the capture")
+
+    waitFor body()
+
+  test "commit re-raises a pending Defect":
+    proc body() {.async: (raises: [Exception]).} =
+      let s = await primeStaleBandDefect()
+      expect BandNotBottomAnchoredDefect:
+        discard s.commit()
+
+    waitFor body()

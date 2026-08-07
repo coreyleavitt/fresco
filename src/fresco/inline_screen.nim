@@ -313,6 +313,12 @@ proc reraisePendingDefect[S: Sink](s: InlineScreen[S]) {.inline.} =
   ## via the notify closure, teardownFlush, commit) so a Defect caught
   ## out-of-band by driveCommitStep resurfaces deterministically at the
   ## next such call instead of staying silently buried on the screen.
+  ##
+  ## R2-M4 (round-2 stage-4): this exact four-entry-point set is pinned by
+  ## test — teardownFlush by tests/unit/test_headless_resize_inject.nim's
+  ## "H2"/"R2-M1" suites, and paint/LogSink.append/commit individually by
+  ## its "R2-M4" suite. If a new public entry point starts touching the
+  ## commit machinery, it needs its own re-raise call AND a test there.
   if s.pendingDefect != nil:
     let d = s.pendingDefect
     s.pendingDefect = nil
