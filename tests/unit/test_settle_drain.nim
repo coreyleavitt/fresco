@@ -32,6 +32,7 @@ import intonaco/reactive
 import fresco/events
 import fresco/input
 import fresco/inline_screen
+import fresco/render/layout
 import fresco/render/sink/memory
 import fresco/busy
 import fresco/headless/input as headless_input
@@ -449,5 +450,154 @@ suite "B11: a final-drain-only failure has an unrepresentable eventIndex":
       of sfEvent:
         check false   # wrong discriminant — would have an eventIndex field
       check hr.appError.isNil
+
+    waitFor body()
+
+# -----------------------------------------------------------------------
+# B12: resize under drain.
+#
+# rfc-headless-quiescence.md §Model item 7 draws the line this slice
+# proves in the full `runHeadless` harness: key delivery crosses a
+# multi-hop dispatcher chain (closed by `dcDispatcher`), but
+# `ievResize`'s `s.setSize(h, w)` -> `applySizeNow` is fully synchronous
+# — no delivery chain to wait on. `applySizeNow` also marks EVERY region
+# `pending = true` (the biggest dirty-set case in the codebase), so the
+# thing actually worth proving under drain is the *other* half:
+# `drainToIdle`'s paint postcondition must re-render the WHOLE resized
+# surface correctly, and composition with the other clauses (`dcBusy`
+# in particular) must still hold when a resize event is involved.
+# -----------------------------------------------------------------------
+
+suite "B12: resize under drain":
+
+  test "a resize event under drain applies synchronously; the following drain paints the full resized surface (the biggest dirty-set case)":
+    ## `applySizeNow` marks every region pending on resize. This proves
+    ## `drainToIdle`'s paint postcondition (rfc §Design 3) re-renders the
+    ## whole live band at the NEW geometry, not a stale/partial one, and
+    ## that the geometry itself is visible to the app by the time the
+    ## next event (the closing key) is delivered — i.e. no delivery-chain
+    ## wait was needed for the resize to take effect.
+    proc body() {.async: (raises: [Exception]).} =
+      let s = newInlineScreen(newMemorySink(), 10, 40)
+      let r = s.newRegion(1, 0, 9, 40)
+
+      var heightAfter = 0
+      var widthAfter = 0
+
+      proc app(stream: InputStream) {.async: (raises: [Exception]).} =
+        r.set(["v1"])
+        s.appendLine("line1")
+        discard s.commit()
+        let key = await stream.nextKey()
+        discard key
+        heightAfter = s.layout.height
+        widthAfter = s.layout.width
+
+      let events = @[resizeEv(20, 60), keyEv(atomKey(kEscape))]
+      let fut = runHeadless(s, app, events = events, settle = settleDrain())
+      let ok = await fut.withTimeout(2.seconds)
+      check ok
+      let hr = fut.read()
+
+      check heightAfter == 20
+      check widthAfter == 60
+      check hr.committedRows == @["line1"]
+      # The paint postcondition re-rendered the full new geometry: 20
+      # rows captured, not the pre-resize 10 and not a partial repaint.
+      check hr.rows.len == 20
+      check hr.settled()
+
+    waitFor body()
+
+  test "resize applies immediately even while an unrelated async turn is busy; the drain after it still waits the turn out before the next event is injected":
+    ## Category D (rfc §Acceptance: "multi-turn — A/B/C composed per
+    ## event") composed with a resize event specifically: `turn()` is
+    ## spawned at app startup (independent of any injected event) and
+    ## holds `gate` busy for a real 30ms. The resize event is injected
+    ## while `gate` is still busy — `setSize` does not consult `dcBusy`
+    ## at all (it only stages behind `commitInProgress`), so the geometry
+    ## change lands on the same synchronous turn as the injection. The
+    ## drain that follows the resize event, however, DOES have to wait
+    ## the gate out before `runHeadless` injects the closing key — proven
+    ## by the app observing the gate idle at key delivery.
+    ##
+    ## `turn()` deliberately touches no region: a resize that changes
+    ## height leaves a previously bottom-anchored band stale until the
+    ## consumer calls `reanchorBottom` (rfc out of scope here; S0b/S0c's
+    ## documented gap) — orthogonal to what this test proves, so it is
+    ## sidestepped rather than papered over.
+    proc body() {.async: (raises: [Exception]).} =
+      let s = newInlineScreen(newMemorySink(), 10, 40)
+      let gate = newBusyGate("startup")
+
+      var gateBusyAtKeyDelivery = true
+      var heightAtKeyDelivery = 0
+      var widthAtKeyDelivery = 0
+      var synced = false
+
+      proc app(stream: InputStream) {.async: (raises: [Exception]).} =
+        proc turn() {.async: (raises: [Exception]).} =
+          withBusy(gate):
+            await sleepAsync(30.milliseconds)
+            synced = true
+        asyncSpawn turn()
+        # Returns immediately; turn() is still in flight when the resize
+        # event below is injected.
+        let key = await stream.nextKey()
+        discard key
+        gateBusyAtKeyDelivery = gate.isBusy()
+        heightAtKeyDelivery = s.layout.height
+        widthAtKeyDelivery = s.layout.width
+
+      let events = @[resizeEv(20, 60), keyEv(atomKey(kEscape))]
+      let fut = runHeadless(s, app, events = events,
+                            settle = settleDrain(busy = gate))
+      let ok = await fut.withTimeout(2.seconds)
+      check ok
+      let hr = fut.read()
+
+      check heightAtKeyDelivery == 20
+      check widthAtKeyDelivery == 60
+      check synced
+      check not gateBusyAtKeyDelivery
+      check hr.settled()
+
+    waitFor body()
+
+suite "B12: representative fixed-settle test ported to settleDrain":
+
+  test "layout dimensions reflect new size after resize event (settleDrain port of test_headless_resize_inject.nim's settleFixed test)":
+    ## Direct port of the test of the same name in
+    ## test_headless_resize_inject.nim (S0b) — same screen, same events,
+    ## same assertions — with `settle = settleDrain()` in place of that
+    ## test's implicit `settleFixed()` default. No fixed sleep anywhere
+    ## in this test; the original is left in place unported so both
+    ## settle paths cover the same scenario (rfc B12: "both settle paths
+    ## green").
+    proc body() {.async: (raises: [Exception]).} =
+      let sink = newMemorySink()
+      let s = newInlineScreen(sink, 24, 80)
+
+      var layoutHAfter = 0
+      var layoutWAfter = 0
+
+      proc app(stream: InputStream) {.async: (raises: [Exception]).} =
+        let key = await stream.nextKey()
+        layoutHAfter = s.layout.height
+        layoutWAfter = s.layout.width
+        discard key
+
+      let events = @[
+        resizeEv(30, 120),
+        keyEv(atomKey(kEscape)),
+      ]
+      let fut = runHeadless(s, app, events = events, settle = settleDrain())
+      let ok = await fut.withTimeout(2.seconds)
+      check ok
+      let hr = fut.read()
+
+      check layoutHAfter == 30
+      check layoutWAfter == 120
+      check hr.settled()
 
     waitFor body()
