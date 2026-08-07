@@ -195,10 +195,21 @@ type
                   ## ready callback, so this is exact for any app topology.
     dcBusy        ## spec.busy() reports true (skipped when spec.busy is nil).
 
+  DrainTimeoutError* = object of AsyncTimeoutError
+    failingClauses*: set[DrainClause]
+      ## The clauses that were still failing at the deadline. Never empty
+      ## on a raise — an idle-at-deadline read breaks instead (slice B7).
+
   DrainSpec* = object
     busy*: BusyPredicate
     drainTimeout*: Duration
-      ## Not yet enforced — slice B7 adds the deadline + DrainTimeoutError.
+      ## Bounds the drain (slice B7). `drainToIdle` arms a real
+      ## `sleepAsync(drainTimeout)` timer once at entry — the same future
+      ## is both the liveness bound (its presence in the timer heap bounds
+      ## every `poll()` `select()` wait, so a pump on an otherwise-dormant
+      ## dispatcher cannot block forever) and the deadline truth (no
+      ## `Moment.now()` anywhere). See rfc-headless-quiescence.md
+      ## "Pump & liveness" (stage-3 finding).
     ignoreAnimations*: bool
 
 proc failingClauses(screen: InlineScreen[MemorySink], spec: DrainSpec): set[DrainClause] =
@@ -219,10 +230,40 @@ proc failingClauses(screen: InlineScreen[MemorySink], spec: DrainSpec): set[Drai
 proc drainToIdle*(screen: InlineScreen[MemorySink],
                   spec: DrainSpec): Future[void] {.async.} =
   ## Pump the dispatcher until `failingClauses` reads empty, then paint.
-  ## Single-read semantics (slice B6): no deadline, no stability window —
-  ## the very first idle read ends the loop. See rfc-headless-quiescence.md
-  ## §Design 3 for the full (B7/B8-complete) state machine this grows into.
-  while failingClauses(screen, spec) != {}:
+  ## Slice B7 adds the deadline + DrainTimeoutError. No stability window,
+  ## no backoff (stage-3 redesign deleted both — see rfc-headless-quiescence.md
+  ## "Why there is no stability window or backoff"): a single idle read is
+  ## sound because `dcDispatcher` is an exact witness for framework-visible
+  ## work, and a backoff has nothing to back off from once the pump is
+  ## event-driven (below).
+  ##
+  ## Deadline liveness AND truth come from one armed timer, not
+  ## `Moment.now()`: `sleepAsync(spec.drainTimeout)` is armed once at entry
+  ## and cancelled on every exit path. Its presence in the timer heap
+  ## bounds every `poll()` `select()` wait — a pump on an otherwise-dormant
+  ## dispatcher (stage-3 finding: `stepsAsync`'s tick queue does not itself
+  ## bound `select()`) now sleeps at zero CPU until either real dispatcher
+  ## activity or the deadline timer fires, instead of blocking forever.
+  ##
+  ## The deadline is checked only after a clause evaluation, and only on
+  ## the branch where that evaluation was non-empty: an idle read always
+  ## breaks (succeeds) unconditionally, so an already-idle screen with a
+  ## near-zero drainTimeout can never raise, and a raise's `failingClauses`
+  ## can never be the empty set (same evaluation reused, no re-evaluation
+  ## divergence).
+  let deadlineFut = sleepAsync(spec.drainTimeout)
+  defer:
+    if not deadlineFut.finished:
+      deadlineFut.cancelSoon()
+  while true:
+    let failing = failingClauses(screen, spec)
+    if failing == {}:
+      break
+    if deadlineFut.finished:
+      var e = newException(DrainTimeoutError,
+                           "drain timeout; failing clauses: " & $failing)
+      e.failingClauses = failing
+      raise e
     await stepsAsync(1)
   screen.paint()
 
