@@ -9,6 +9,7 @@
 ## know about the app's reactive setup.
 
 import chronos
+import intonaco/reactive
 import ../events
 import ../input
 import ../render/layout
@@ -164,3 +165,71 @@ proc runHeadless*(screen: InlineScreen[MemorySink],
 
   result.rows = screen.sink.rows
   result.committedRows = screen.sink.committedRows
+
+# ---------------------------------------------------------------------------
+# drainToIdle — RFC headless-quiescence, slice B6 (single-read core).
+#
+# Deliberately deferred to later slices (see rfc-headless-quiescence.md
+# §Slices B7/B8): a `drainTimeout` deadline + `DrainTimeoutError` (B7), and
+# the stability window / backoff (B8). This slice's loop is the bare
+# single-read form: pump until one `failingClauses` read is empty, then
+# paint as a postcondition.
+# ---------------------------------------------------------------------------
+
+type
+  BusyPredicate* = proc(): bool {.gcsafe, raises: [].}
+    ## Consumer-supplied "is my own async work still in flight" check.
+    ## Homed here for now — RFC slice B9 moves it to its own `busy.nim`
+    ## module (BusyGate lives there too) and `headless/runner` re-exports
+    ## it; the call-site shape (`nil` = no busy clause) does not change.
+
+  DrainClause* = enum
+    dcReactive    ## reactiveIdle() is false — invariant, not expected to
+                  ## ever fail (model §1); see rfc §Design 3.
+    dcAnimations  ## a live frame animation is registered (skipped when
+                  ## spec.ignoreAnimations).
+    dcCommit      ## the InlineScreen commit batcher has work in flight.
+    dcDispatcher  ## the chronos dispatcher has ready callbacks pending —
+                  ## the delivery-gap clause (rfc §Delivery-gap decision,
+                  ## model §7): every synthetic-input delivery hop is a
+                  ## ready callback, so this is exact for any app topology.
+    dcBusy        ## spec.busy() reports true (skipped when spec.busy is nil).
+
+  DrainSpec* = object
+    busy*: BusyPredicate
+    drainTimeout*: Duration
+      ## Not yet enforced — slice B7 adds the deadline + DrainTimeoutError.
+    ignoreAnimations*: bool
+
+proc failingClauses(screen: InlineScreen[MemorySink], spec: DrainSpec): set[DrainClause] =
+  ## Evaluate every wait clause exactly once against `screen` + `spec`.
+  ## A clause disabled by `spec.ignoreAnimations` (or `spec.busy == nil`)
+  ## is never evaluated and never appears in the result.
+  if not reactiveIdle():
+    result.incl dcReactive
+  if not spec.ignoreAnimations and not animationsIdle():
+    result.incl dcAnimations
+  if not screen.commitIdle():
+    result.incl dcCommit
+  if pendingCallbacksCount() != 0:
+    result.incl dcDispatcher
+  if spec.busy != nil and spec.busy():
+    result.incl dcBusy
+
+proc drainToIdle*(screen: InlineScreen[MemorySink],
+                  spec: DrainSpec): Future[void] {.async.} =
+  ## Pump the dispatcher until `failingClauses` reads empty, then paint.
+  ## Single-read semantics (slice B6): no deadline, no stability window —
+  ## the very first idle read ends the loop. See rfc-headless-quiescence.md
+  ## §Design 3 for the full (B7/B8-complete) state machine this grows into.
+  while failingClauses(screen, spec) != {}:
+    await stepsAsync(1)
+  screen.paint()
+
+proc drainToIdle*(screen: InlineScreen[MemorySink],
+                  busy: BusyPredicate = nil,
+                  drainTimeout = 1.seconds,
+                  ignoreAnimations = false): Future[void] =
+  ## Convenience overload; forwards a DrainSpec.
+  drainToIdle(screen, DrainSpec(busy: busy, drainTimeout: drainTimeout,
+                                ignoreAnimations: ignoreAnimations))
