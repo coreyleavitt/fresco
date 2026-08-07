@@ -142,6 +142,16 @@ proc reclipRows*(r: Region) =
   for i in 0 ..< cur.len:
     r.setRow(i, cur[i])
 
+proc anyPending*(l: Layout): bool =
+  ## True iff any region in `l` has unpainted content (`pending`) or a
+  ## queued scroll operation (`pendingScroll`). The canonical "does this
+  ## layout owe a paint" scan — the auto-paint gate for every Screen
+  ## variant (Screen, InlineScreen, AltScreen) shares this one definition
+  ## rather than each keeping its own private copy.
+  for r in l.regions:
+    if r.pending or r.pendingScroll != 0: return true
+  false
+
 proc reanchorBottom*(layout: Layout, bandRegions: openArray[Region]) =
   ## Restack a set of bottom-anchored band regions so the band's lowest
   ## edge reaches `layout.height` after a terminal resize.

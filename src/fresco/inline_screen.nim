@@ -231,15 +231,6 @@ proc appendLine*[S: Sink](s: InlineScreen[S], line: string) =
   s.logSink.append(line)
 
 # ---------------------------------------------------------------------------
-# Auto-paint gate predicate (private layout helper)
-# ---------------------------------------------------------------------------
-
-proc anyPendingLayout(layout: Layout): bool =
-  for r in layout.regions:
-    if r.pending or r.pendingScroll != 0: return true
-  false
-
-# ---------------------------------------------------------------------------
 # Shared single-batch emit body
 # ---------------------------------------------------------------------------
 # commitOneBatch must be forward-declared here as a concept because the
@@ -676,7 +667,7 @@ proc shouldAutoPaint*[S: Sink](s: InlineScreen[S]): bool =
   ## True iff auto-paint should fire: no commit in progress AND a region is
   ## pending. Exposed as a testable predicate so tests can assert suppression
   ## without racing the 33ms timer.
-  (not s.commitInProgress) and anyPendingLayout(s.layout)
+  (not s.commitInProgress) and anyPending(s.layout)
 
 proc runAutoPaint*[S: Sink](s: InlineScreen[S]) {.async.} =
   ## Long-running task that paints the live band whenever a region is dirty

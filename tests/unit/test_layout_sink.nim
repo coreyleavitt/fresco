@@ -78,3 +78,28 @@ suite "Layout + MemorySink: headless rendering substrate":
       check sink.rows[0] == "header"     # unchanged
       check sink.rows[2] == "footer"     # unchanged
     dispose(root)
+
+suite "Layout: anyPending":
+
+  test "empty layout (no regions) is not pending":
+    let layout = newLayout(height = 3, width = 10)
+    check anyPending(layout) == false
+
+  test "layout with only clean regions is not pending":
+    let layout = newLayout(height = 3, width = 10)
+    discard newRegion(layout, 0, 0, 1, 10)
+    discard newRegion(layout, 1, 0, 1, 10)
+    check anyPending(layout) == false
+
+  test "one dirty region among clean ones is pending":
+    let layout = newLayout(height = 3, width = 10)
+    discard newRegion(layout, 0, 0, 1, 10)
+    let dirty = newRegion(layout, 1, 0, 1, 10)
+    markDirty(dirty)
+    check anyPending(layout) == true
+
+  test "a region with only pendingScroll set is pending":
+    let layout = newLayout(height = 2, width = 10)
+    let r = newRegion(layout, 0, 0, 2, 10)
+    scrollUp(r, 1)
+    check anyPending(layout) == true

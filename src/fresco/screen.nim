@@ -128,11 +128,6 @@ proc paint*[S: Sink](s: Screen[S]) =
   mixin commit
   s.sink.commit(s.layout)
 
-proc anyPending(layout: Layout): bool =
-  for r in layout.regions:
-    if r.pending or r.pendingScroll != 0: return true
-  false
-
 proc runAutoPaint*[S: Sink](s: Screen[S]): Future[void] {.async.} =
   ## Long-running task that paints the screen whenever a region is dirty.
   ##
