@@ -145,9 +145,9 @@ proc reclipRows*(r: Region) =
 proc anyPending*(l: Layout): bool =
   ## True iff any region in `l` has unpainted content (`pending`) or a
   ## queued scroll operation (`pendingScroll`). The canonical "does this
-  ## layout owe a paint" scan — the auto-paint gate for every Screen
-  ## variant (Screen, InlineScreen, AltScreen) shares this one definition
-  ## rather than each keeping its own private copy.
+  ## layout owe a paint" scan — the Screen and InlineScreen auto-paint
+  ## gates share this one definition rather than each keeping its own
+  ## private copy.
   for r in l.regions:
     if r.pending or r.pendingScroll != 0: return true
   false
