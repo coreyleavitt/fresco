@@ -18,9 +18,6 @@
 import std/posix
 import ./pty_primitives
 
-export pty_primitives  # re-export posix_openpt/grantpt/unlockpt/ptsname/openPtySlave
-                        # for any file that imports pty_subprocess and expects them here
-
 # Custom ioctl with 3-arg form (for TIOCSCTTY). Nim's posix.ioctl only
 # exposes the 2-arg variant; we need the full C signature here.
 proc ioctlSetCTTY(fd: cint; request: culong; arg: cint): cint
