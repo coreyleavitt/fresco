@@ -16,13 +16,10 @@
 ## container, so the open/setup path is always available.
 
 import std/posix
+import ./pty_primitives
 
-# --- PTY primitives (same declarations as test_termios_pty / test_input_pty)
-
-proc posix_openpt*(flags: cint): cint {.importc, header: "<stdlib.h>".}
-proc grantpt*(fd: cint): cint         {.importc, header: "<stdlib.h>".}
-proc unlockpt*(fd: cint): cint        {.importc, header: "<stdlib.h>".}
-proc ptsname*(fd: cint): cstring      {.importc, header: "<stdlib.h>".}
+export pty_primitives  # re-export posix_openpt/grantpt/unlockpt/ptsname/openPtySlave
+                        # for any file that imports pty_subprocess and expects them here
 
 # Custom ioctl with 3-arg form (for TIOCSCTTY). Nim's posix.ioctl only
 # exposes the 2-arg variant; we need the full C signature here.

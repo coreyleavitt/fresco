@@ -5,27 +5,7 @@
 import std/unittest
 import std/[posix, termios]
 import fresco/terminal/termios
-
-proc posix_openpt(flags: cint): cint
-  {.importc, header: "<stdlib.h>".}
-proc grantpt(fd: cint): cint
-  {.importc, header: "<stdlib.h>".}
-proc unlockpt(fd: cint): cint
-  {.importc, header: "<stdlib.h>".}
-proc ptsname(fd: cint): cstring
-  {.importc, header: "<stdlib.h>".}
-
-proc openPtySlave(): cint =
-  ## Allocate a PTY via POSIX primitives and return the slave fd.
-  let master = posix_openpt(O_RDWR or O_NOCTTY)
-  check master >= 0
-  check grantpt(master) == 0
-  check unlockpt(master) == 0
-  let name = ptsname(master)
-  check name != nil
-  let slave = open(name, O_RDWR or O_NOCTTY)
-  check slave >= 0
-  return slave
+import ./helpers/pty_primitives
 
 proc bitsOf(fd: cint): Cflag =
   var t: Termios

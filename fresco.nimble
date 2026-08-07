@@ -117,6 +117,7 @@ task test, "run all tests":
     "tests/integration/test_inline_pty_scrollback.nim",
     "tests/integration/test_inline_tail_pty.nim",
     "tests/integration/test_inline_graceful_pty.nim",
+    "tests/integration/test_inline_lifecycle_pty.nim",
   ]
   for t in unitTests & integrationTests:
     exec "nim r -d:frescoTesting --hints:off --warnings:off --path:src " & t
