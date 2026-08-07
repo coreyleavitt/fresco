@@ -104,6 +104,36 @@ const CancelGrace* = 100.milliseconds
   ## unfinished after the grace is deliberately abandoned; the capture
   ## proceeds regardless.
 
+proc boundedAwait(fut: Future[void], bound: Duration): Future[bool]
+    {.async: (raises: [Exception]).} =
+  ## The TOTAL variant of `chronos.withTimeout`: wait up to `bound` for
+  ## `fut` without ever cancelling it and without waiting for any
+  ## cancellation to land. Returns whether `fut` finished within the
+  ## bound; on `false` the future is STILL PENDING and the caller owns
+  ## the abandonment decision.
+  ##
+  ## `chronos.withTimeout` cannot provide this: on timeout it cancels
+  ## the target, but its OWN returned future resolves only once the
+  ## target future actually finishes — for a future whose cancellation
+  ## is swallowed, that is never, so a `withTimeout` call hangs instead
+  ## of bounding anything (discovered building the teardown below; see
+  ## rfc-headless-quiescence.md, "the withTimeout correction"). `race()`
+  ## has no such coupling: it resolves the instant EITHER argument
+  ## finishes and never touches the loser, so racing against a plain
+  ## timer genuinely bounds the wait. Never cancel the `race()` future
+  ## itself — this codebase's own record on chronos `race()` not
+  ## propagating cancellation to children means that would leave the
+  ## loser dangling uncancelled; `race()` is always awaited to
+  ## completion, and the losing timer is cancelled by hand so the timer
+  ## heap stays clean.
+  if fut.finished:
+    return true
+  let timer = sleepAsync(bound)
+  discard await race(fut, timer)
+  if not timer.finished:
+    timer.cancelSoon()
+  return fut.finished
+
 proc teardownAppFut(appFut: Future[void], timeout: Duration): Future[bool]
     {.async: (raises: [Exception]).} =
   ## Shared post-script teardown for BOTH `runHeadless` overloads: wait up
@@ -112,39 +142,10 @@ proc teardownAppFut(appFut: Future[void], timeout: Duration): Future[bool]
   ## still pending after the grace — the app is deliberately abandoned in
   ## that case, never read again; the caller proceeds with capture
   ## regardless (rfc §Design 5).
-  ##
-  ## `chronos.withTimeout` cannot implement this: on timeout it cancels
-  ## the target, but its OWN returned future resolves only once the
-  ## target future actually finishes — for an app whose cancellation is
-  ## swallowed, that is never, so a `withTimeout`-based version of this
-  ## routine hangs at the very first call instead of bounding anything
-  ## (discovered building this routine; see rfc-headless-quiescence.md,
-  ## "the withTimeout correction"). `race()` has no such coupling: it
-  ## resolves the instant EITHER argument finishes and never touches the
-  ## loser, so racing against a plain timer genuinely bounds the wait.
-  ## Never cancel the `race()` future itself — this codebase's own record
-  ## on chronos `race()` not propagating cancellation to children means
-  ## that would leave the loser dangling uncancelled; `race()` is always
-  ## awaited to completion, and the LOSING side is cancelled by hand
-  ## afterward so the timer heap stays clean.
-  if appFut.finished:
+  if await boundedAwait(appFut, timeout):
     return false
-
-  let deadline = sleepAsync(timeout)
-  discard await race(appFut, deadline)
-  if not deadline.finished:
-    deadline.cancelSoon()
-
-  if appFut.finished:
-    return false
-
   appFut.cancelSoon()
-  let grace = sleepAsync(CancelGrace)
-  discard await race(appFut, grace)
-  if not grace.finished:
-    grace.cancelSoon()
-
-  result = not appFut.finished
+  result = not (await boundedAwait(appFut, CancelGrace))
 
 type
   InlineEventKind* = enum
