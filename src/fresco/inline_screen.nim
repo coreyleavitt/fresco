@@ -319,6 +319,16 @@ proc reraisePendingDefect[S: Sink](s: InlineScreen[S]) {.inline.} =
   ## "H2"/"R2-M1" suites, and paint/LogSink.append/commit individually by
   ## its "R2-M4" suite. If a new public entry point starts touching the
   ## commit machinery, it needs its own re-raise call AND a test there.
+  ##
+  ## Defect precedence, general doctrine (canonical statement — this
+  ## comment and rfc-headless-quiescence.md §2 are the two sites that state
+  ## it in full; every other call site below points back here instead of
+  ## restating it): whatever cleanup/draining a call site owns always
+  ## completes first; a captured Defect, when present, is re-raised only
+  ## after that, and then supersedes whatever outcome the call was about
+  ## to report. Each call site's own doc comment covers only its
+  ## site-specific facts (which cleanup, which entry point, which ordering
+  ## bug it fixed) — not this general rule.
   if s.pendingDefect != nil:
     let d = s.pendingDefect
     s.pendingDefect = nil
@@ -739,25 +749,23 @@ proc teardownFlush*[S: Sink](s: InlineScreen[S]) =
   ## TerminalSink session's crash-tail safety net that happens to be armed
   ## concurrently in the same process/thread.
   ##
-  ## H2 (round-1 stage-4): re-raises any Defect previously captured by the
-  ## async commit driver AFTER draining and disarming (round-2 M1 — see
-  ## below), so it surfaces here synchronously and deterministically. This
-  ## is the harness's own end-of-run call (see headless/runner.nim), so it
-  ## is the guaranteed re-raise point on every runHeadless exit path — a
-  ## Defect captured mid-run can never outlive the originating caller's
-  ## waitFor.
+  ## Defect precedence (canonical statement: rfc-headless-quiescence.md §2
+  ## + `reraisePendingDefect`'s doc comment): draining and disarming above
+  ## always run first; only then, as this proc's LAST statement, does it
+  ## re-raise (H2, round-1 stage-4) any Defect the async commit driver
+  ## captured mid-run. This is the harness's own end-of-run call (see
+  ## headless/runner.nim), so it is the guaranteed re-raise point on every
+  ## runHeadless exit path — a Defect captured mid-run can never outlive
+  ## the originating caller's waitFor.
   ##
   ## R2-M1 (round-2 stage-4 code review, 2026-08-07): the re-raise used to
   ## be this proc's FIRST statement, which voided the "zero bytes dropped"
-  ## guarantee below exactly when a pendingDefect was stashed — any tail
+  ## guarantee above exactly when a pendingDefect was stashed — any tail
   ## lines buffered since the capture were never drained, and the tail
-  ## buffer was never disarmed. The re-raise is now the LAST statement:
-  ## draining and disarming always complete first, and the Defect (still a
-  ## real re-raise, still fail-fast) surfaces only once that work is done.
-  ## Callers that themselves need to run cleanup after teardownFlush (e.g.
-  ## withInlineScreenImpl's `finally`, see inline_teardown.nim) must not
-  ## assume this call cannot raise — see that module for how it sequences
-  ## its own cleanup around the possibility.
+  ## buffer was never disarmed. Callers that themselves need to run cleanup
+  ## after teardownFlush (e.g. withInlineScreenImpl's `finally`, see
+  ## inline_teardown.nim) must not assume this call cannot raise — see that
+  ## module for how it sequences its own cleanup around the possibility.
   mixin writeAll
   let n = s.logPendingLen()
   if n > 0:
@@ -850,6 +858,16 @@ proc commit*[S: Sink](s: InlineScreen[S]): string {.discardable.} =
 
 proc commitIdle*[S: Sink](s: InlineScreen[S]): bool =
   ## True iff no commit batch is pending or in progress.
+  ##
+  ## Transient caveat: immediately after a `settleFixed` `runHeadless` call
+  ## returns, a second-batch commit continuation (`driveCommitStep`'s
+  ## `callSoon` re-schedule when a batch drained but more log lines
+  ## remained) can still be queued for one more dispatcher turn — this
+  ## probe can read busy for that one turn even though the caller has
+  ## already gotten its `HeadlessResult` back. Self-resolving (the queued
+  ## continuation runs and clears it on the next turn) and does not affect
+  ## `settleDrain`, whose own final `drainToIdle` already waits on
+  ## `commitIdle` before returning.
   not s.pendingCommit and not s.commitInProgress
 
 proc surfaceIdle*[S: Sink](s: InlineScreen[S]): bool =

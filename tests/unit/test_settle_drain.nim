@@ -22,7 +22,14 @@
 ##
 ## Every drain-mode `runHeadless` await below is wrapped in
 ## `.withTimeout(...)` per the house idiom (test_drain_to_idle.nim) so a
-## pump-loop regression fails fast instead of wedging the suite.
+## pump-loop regression fails fast instead of wedging the suite. This is
+## CI hygiene / defense-in-depth, not distrust of the harness: `runHeadless`
+## and `drainToIdle` are total by construction (deadline-timer-bounded
+## drains, `teardownAppFut`'s race()-based bound — see rfc-headless-
+## quiescence.md §Design 3 and 5), so every path here is already supposed
+## to resolve well inside 2 seconds. The wrap exists so a regression that
+## breaks that totality fails THIS test instead of hanging the CI job (no
+## job-level timeout is configured).
 
 {.experimental: "callOperator".}
 

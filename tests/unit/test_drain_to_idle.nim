@@ -135,7 +135,12 @@ suite "B6: drainToIdle waits for synthetic key delivery (model §7, the dcDispat
 
       check keyReceived  # the multi-hop delivery chain fully flushed
 
-      await appFut
+      # appFut is already finished here (keyReceived is only set after it
+      # resumes and returns) — wrapped anyway to match this file's
+      # `.withTimeout(2.seconds)` idiom (see file header) rather than
+      # leaving this the one unwrapped await; semantics unchanged.
+      let appFutOk = await appFut.withTimeout(2.seconds)
+      check appFutOk
 
     waitFor body()
 

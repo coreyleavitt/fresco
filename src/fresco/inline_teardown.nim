@@ -192,28 +192,27 @@ template withInlineScreenImpl(sink: untyped, s: untyped, body: untyped) =
     try:
       body
     finally:
-      # R2-M1 (round-2 stage-4): teardownFlush now re-raises a pending
-      # Defect (H2, round-1 stage-4) as its LAST statement, AFTER draining
-      # — but a raise mid-`finally` still skips every finally statement
-      # AFTER the raising call. Catch it here instead of letting it fly:
-      # run every remaining cleanup step (watch-task cancel, self-pipe
-      # unregister, graceful/tail disarm) unconditionally first, THEN
-      # re-raise at the very end of the finally block. The Defect still
-      # surfaces deterministically out of this scope (fail-fast preserved)
-      # — only the ordering relative to cleanup changes.
+      # Defect precedence: canonical statement is
+      # rfc-headless-quiescence.md §2 + inline_screen.nim's
+      # `reraisePendingDefect` doc comment. R2-M1 (round-2 stage-4):
+      # teardownFlush now re-raises a pending Defect (H2, round-1 stage-4)
+      # as its LAST statement, AFTER draining — but a raise mid-`finally`
+      # still skips every finally statement AFTER the raising call, so we
+      # catch it here instead of letting it fly: run every remaining
+      # cleanup step (watch-task cancel, self-pipe unregister, graceful/tail
+      # disarm) unconditionally first, THEN re-raise at the very end of the
+      # finally block.
       #
       # R3-3 (round-3 stage-4, documented, deliberate): if `body` is
       # cancelled, this `finally` runs with a `CancelledError` already
       # in flight. The `raise pendingTeardownDefect` below then executes
       # mid-unwind — Nim's raise-during-unwind semantics mean a NEW raise
       # there REPLACES the in-flight exception, so the caller observes the
-      # Defect, never the CancelledError. This is the same precedence
-      # doctrine as everywhere else in this file (cleanup always
-      # completes first; a captured Defect, when present, wins the final
-      # outcome) applied to the cancellation case specifically — chronos's
-      # own cancellation propagation is a casualty of it in this one
-      # compound scenario, not a separate bug. See the RFC's R3-3 addendum
-      # (§2, after the R2-M1 addendum) for the residual-risk framing.
+      # Defect, never the CancelledError — the same doctrine applied to
+      # the cancellation case specifically; chronos's own cancellation
+      # propagation is a casualty of it in this one compound scenario, not
+      # a separate bug. See the RFC's R3-3 addendum (§2, after the R2-M1
+      # addendum) for the residual-risk framing.
       let pendingTeardownDefect = captureTeardownDefect(s)
       when compiles(sink.fd):
         if not watchFut.finished: watchFut.cancelSoon()
