@@ -273,6 +273,17 @@ type
       ## "Pump & liveness" (stage-3 finding).
     ignoreAnimations*: bool
 
+proc newDrainSpec*(busy: BusyPredicate = nil, drainTimeout = 1.seconds,
+                   ignoreAnimations = false): DrainSpec =
+  ## Canonical `DrainSpec` constructor (M3, round-1 stage-4): the sole
+  ## place these three defaults are declared. `drainToIdle`'s convenience
+  ## overload and `settleDrain` both forward to this, so the defaults
+  ## cannot drift out of sync between them — the same
+  ## one-declaration-can't-drift argument that unified `DrainSpec` with
+  ## `Settle.skDrain`'s payload in the first place (rfc §Design 3).
+  DrainSpec(busy: busy, drainTimeout: drainTimeout,
+           ignoreAnimations: ignoreAnimations)
+
 proc failingClauses(screen: InlineScreen[MemorySink], spec: DrainSpec): set[DrainClause] =
   ## Evaluate every wait clause exactly once against `screen` + `spec`.
   ## A clause disabled by `spec.ignoreAnimations` (or `spec.busy == nil`)
@@ -333,8 +344,7 @@ proc drainToIdle*(screen: InlineScreen[MemorySink],
                   drainTimeout = 1.seconds,
                   ignoreAnimations = false): Future[void] =
   ## Convenience overload; forwards a DrainSpec.
-  drainToIdle(screen, DrainSpec(busy: busy, drainTimeout: drainTimeout,
-                                ignoreAnimations: ignoreAnimations))
+  drainToIdle(screen, newDrainSpec(busy, drainTimeout, ignoreAnimations))
 
 # ---------------------------------------------------------------------------
 # Settle — RFC headless-quiescence, slice B10.
@@ -366,8 +376,22 @@ proc settleFixed*(perKeySettle = 1.milliseconds): Settle =
 proc settleDrain*(busy: BusyPredicate = nil,
                   drainTimeout = 1.seconds,
                   ignoreAnimations = false): Settle =
-  Settle(kind: skDrain, drain: DrainSpec(busy: busy, drainTimeout: drainTimeout,
-                                        ignoreAnimations: ignoreAnimations))
+  Settle(kind: skDrain, drain: newDrainSpec(busy, drainTimeout, ignoreAnimations))
+
+proc injectEvent(stream: InputStream, screen: InlineScreen[MemorySink],
+                 ev: InlineEvent) =
+  ## Apply one scripted `InlineEvent` to the running app: a key event goes
+  ## through the synthetic input stream (crosses the multi-hop dispatcher
+  ## delivery chain, rfc §Model item 7); a resize event calls
+  ## `s.setSize(h, w)` directly (fully synchronous, no delivery chain).
+  ## Shared by both `skFixed` and `skDrain` below (M4, round-1 stage-4) —
+  ## only the wait strategy between events differs between the two settle
+  ## kinds, not the dispatch itself.
+  case ev.kind
+  of ievKey:
+    stream.pushKey(ev.key)
+  of ievResize:
+    screen.setSize(ev.resizeH, ev.resizeW)
 
 proc runHeadless*(screen: InlineScreen[MemorySink],
                   app: HeadlessInlineApp,
@@ -450,11 +474,7 @@ proc runHeadless*(screen: InlineScreen[MemorySink],
         settleFailures.add SettleFailure(clauses: {}, site: sfScriptTruncated,
                                          firstUndeliveredIndex: idx)
         break
-      case ev.kind
-      of ievKey:
-        stream.pushKey(ev.key)
-      of ievResize:
-        screen.setSize(ev.resizeH, ev.resizeW)
+      injectEvent(stream, screen, ev)
       await sleepAsync(settle.perKeySettle)
   of skDrain:
     for idx, ev in events:
@@ -469,11 +489,7 @@ proc runHeadless*(screen: InlineScreen[MemorySink],
         settleFailures.add SettleFailure(clauses: {}, site: sfScriptTruncated,
                                          firstUndeliveredIndex: idx)
         break
-      case ev.kind
-      of ievKey:
-        stream.pushKey(ev.key)
-      of ievResize:
-        screen.setSize(ev.resizeH, ev.resizeW)
+      injectEvent(stream, screen, ev)
       try:
         await drainToIdle(screen, settle.drain)
       except DrainTimeoutError as e:
