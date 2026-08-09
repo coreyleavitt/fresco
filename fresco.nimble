@@ -29,6 +29,10 @@ requires "nim >= 2.0.0"
 task test, "run all tests":
   # Tier 1 (pure unit) — list each new test file here as it lands.
   # Tier 2 (PTY integration) tests live in tests/integration/.
+  # Pre-split substrate tests (reactive, collection, speculative,
+  # parallel, supervisor-restart, grant-inject, context-isolation)
+  # moved to intonaco's own suite — the substrate validates itself;
+  # see intonaco/tests/.
   let unitTests = @[
     "tests/unit/test_ansi.nim",
     "tests/unit/test_events.nim",
@@ -37,7 +41,6 @@ task test, "run all tests":
     "tests/unit/test_screen.nim",
     "tests/unit/test_screen_v2.nim",
     "tests/unit/test_layout.nim",
-    "tests/unit/test_reactive.nim",
     "tests/unit/test_binding.nim",
     "tests/unit/test_render_target.nim",
     "tests/unit/test_layout_sink.nim",
@@ -48,17 +51,13 @@ task test, "run all tests":
     "tests/unit/test_dsl.nim",
     "tests/unit/test_aggregate_import.nim",
     "tests/unit/test_journal.nim",
-    "tests/unit/test_speculative.nim",
-    "tests/unit/test_speculative_reentrancy.nim",
     "tests/unit/test_mailbox.nim",
     "tests/unit/test_receive_multi.nim",
     "tests/unit/test_bitemporal.nim",
     "tests/unit/test_journal_snapshots.nim",
-    "tests/unit/test_collection.nim",
     "tests/unit/test_capabilities.nim",
     "tests/unit/test_concurrency.nim",
     "tests/unit/test_capconcept.nim",
-    "tests/unit/test_grant_inject.nim",
     "tests/unit/test_infer_caps.nim",
     "tests/unit/test_xmodule_caps.nim",
     "tests/unit/test_devtools.nim",
@@ -90,7 +89,6 @@ task test, "run all tests":
     "tests/integration/test_input_pty.nim",
     "tests/integration/test_task.nim",
     "tests/integration/test_receive_pty.nim",
-    "tests/integration/test_parallel.nim",
     "tests/integration/test_mount.nim",
     "tests/integration/test_hotkey_pty.nim",
     "tests/integration/test_supervisor.nim",
@@ -100,7 +98,6 @@ task test, "run all tests":
     "tests/integration/test_journal_signal.nim",
     "tests/integration/test_journal_input_sup.nim",
     "tests/integration/test_supervisor_onerror.nim",
-    "tests/integration/test_supervisor_restart.nim",
     "tests/integration/test_supervisor_strategies.nim",
     "tests/integration/test_supervisor_pools.nim",
     "tests/integration/test_animation.nim",
@@ -109,7 +106,6 @@ task test, "run all tests":
     "tests/integration/test_devtools_panel.nim",
     "tests/integration/test_devtools_panel_memorysink.nim",
     "tests/integration/test_ex05_stopwatch.nim",
-    "tests/integration/test_context_isolation.nim",
     "tests/integration/test_topology.nim",
     "tests/integration/test_altscreen_signal.nim",
     "tests/integration/test_inline_trigger.nim",

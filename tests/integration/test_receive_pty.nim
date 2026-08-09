@@ -383,16 +383,21 @@ suite "receive: after timeout":
         outcome = "key-discarded"
     check got == "key-discarded"
 
-  test "await inside a receive arm body is CLS-protected by {.task.}":
+  test "await inside a receive arm body keeps journal task attribution (CLS)":
     # Verify the AST-walking analysis: the task macro's rewriter
     # descends into the receive call's argument stmtlist (since macro
     # args are just AST when task runs), so user-source-level awaits
-    # inside arm bodies ARE rewritten with save/restore. A signal
-    # write after such an await attributes to the task's scope, not
-    # to whichever stale scope the dispatcher left in currentScope.
+    # inside arm bodies ARE rewritten with save/restore.
+    #
+    # Asserted via the journal (the user-visible contract), not scope
+    # identity: a labeled write AFTER the await must attribute to the
+    # task that opened the receive — not RootTask, and not whichever
+    # stale scope the dispatcher left behind. The probe scope carries
+    # a synthetic non-root taskId so a broken restore can't pass
+    # vacuously (the old nil-vs-nil identity probe could).
     proc inner(): Future[bool] {.async: (raises: [Exception]).} =
       resetJournal()
-      discard useJournal()
+      let j = useJournal()
       let (master, slave) = openPtyPair()
       let stream = newInputStream(slave)
       fresco_input.start(stream)
@@ -400,16 +405,27 @@ suite "receive: after timeout":
         fresco_input.stop(stream)
         discard close(master); discard close(slave)
       writeAll(master, "x")
-      let taskScopeBefore = currentScope
-      receive:
-        on stream as ev:
-          Char(c):
-            await sleepAsync(2.milliseconds)
-            # After await inside arm body: currentScope must still be
-            # the {.task.}'d outer scope.
-            return currentScope == taskScopeBefore
-          _: return false
-      return false
+      let probeScope = newScope()
+      probeScope.taskId = TaskId(424242)
+      var matched = false
+      withScope(probeScope):
+        journalEvent:
+          jrnl.logSignalWrite(taskTid, parentEvt, "cls-probe", "before")
+        receive:
+          on stream as ev:
+            Char(c):
+              await sleepAsync(2.milliseconds)
+              journalEvent:
+                jrnl.logSignalWrite(taskTid, parentEvt, "cls-probe", "after")
+              matched = true
+            _: discard
+      if not matched: return false
+      var seen = 0
+      for ev in j.events:
+        if ev.kind == ekSignalWrite and ev.signalLabel == "cls-probe":
+          inc seen
+          if ev.taskId != TaskId(424242): return false
+      return seen == 2
     check waitFor(inner())
 
   test "stream close mid-wait propagates rather than firing after":
