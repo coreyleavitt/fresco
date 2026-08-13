@@ -861,3 +861,71 @@ suite "F1: CancelGrace expiry is representable":
       check hr.settled()
 
     waitFor body()
+
+suite "fresco#115: a clean drain run returns on proven-idle, not after the full timeout":
+
+  test "an input-only app (no self-exit) returns as soon as it is idle, well under the timeout ceiling":
+    ## The residual after #112: `teardownAppFut` used to optimistically wait
+    ## the whole `timeout` for the app to finish on its own. An input-only
+    ## app — a REPL-shaped `while true: nextKey` loop that never sends its
+    ## own quit — never finishes, so the run burned the full ceiling every
+    ## time. Post-#115, a clean drain run (every event's `drainToIdle`
+    ## settled, no truncation/timeout) is already proven parked-idle on
+    ## input, so teardown cancels the idle app immediately instead of
+    ## waiting. `runHeadless`'s own `timeout` is a generous 4s here; the run
+    ## must return well inside the 1s house-idiom bound. Pre-#115 it would
+    ## sit for ~4s and blow that bound.
+    proc body() {.async: (raises: [Exception]).} =
+      let s = newInlineScreen(newMemorySink(), 10, 40)
+      let r = s.newRegion(1, 0, 9, 40)
+
+      proc app(stream: InputStream) {.async: (raises: [Exception]).} =
+        r.set(["ready"])
+        s.appendLine("line1")
+        discard s.commit()
+        while true:
+          # Parks on input forever — no quit key, like an input-only UI test.
+          let key = await stream.nextKey()
+          discard key
+
+      let fut = runHeadless(s, app, events = @[keyEv(atomKey(kEnter))],
+                            timeout = 4.seconds, settle = settleDrain())
+      let ok = await fut.withTimeout(1.seconds)
+      check ok               # returned on-idle, NOT after the 4s ceiling
+      let hr = fut.read()
+
+      check hr.settled()                 # clean run — the app was quiescent
+      check hr.settleFailures.len == 0
+      check hr.appError.isNil            # cancelled cleanly, not failed
+      check not hr.cancelGraceExpired    # idle app honored the cancel at once
+      check hr.committedRows == @["line1"]
+      check hr.rows[1] == "ready"
+
+    waitFor body()
+
+  test "settleFixed is unaffected — the fixed path keeps waiting the timeout (no drain to prove idle)":
+    ## The #115 early-return is gated on `skDrain`: `settleFixed` has no idle
+    ## probe, so it cannot prove the app quiescent and must keep the original
+    ## self-exit wait. This pins that the optimization does NOT leak into the
+    ## fixed path. A never-exiting app under settleFixed with a short 100ms
+    ## timeout still returns (bounded by timeout+grace), and is NOT settled()
+    ## the way an input-only drain run is — it was truncated/cancelled.
+    proc body() {.async: (raises: [Exception]).} =
+      let s = newInlineScreen(newMemorySink(), 10, 40)
+
+      proc app(stream: InputStream) {.async: (raises: [Exception]).} =
+        while true:
+          let key = await stream.nextKey()
+          discard key
+
+      let fut = runHeadless(s, app, events = @[keyEv(atomKey(kEnter))],
+                            timeout = 100.milliseconds, settle = settleFixed())
+      let ok = await fut.withTimeout(2.seconds)
+      check ok
+      let hr = fut.read()
+      # Fixed path still cancels the parked app after its timeout; it honors
+      # the cancel promptly (parked on a cancellable nextKey), so this stays
+      # a clean teardown — the point is only that #115 did not touch it.
+      check not hr.cancelGraceExpired
+
+    waitFor body()

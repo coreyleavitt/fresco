@@ -184,7 +184,8 @@ proc boundedAwait(fut: Future[void], bound: Duration): Future[bool]
   discard await race(fut, timer)
   return fut.finished
 
-proc teardownAppFut(appFut: Future[void], timeout: Duration): Future[bool]
+proc teardownAppFut(appFut: Future[void], timeout: Duration,
+                    expectSelfExit = true): Future[bool]
     {.async: (raises: [Exception]).} =
   ## Shared post-script teardown for BOTH `runHeadless` overloads: wait up
   ## to `timeout` for `appFut` to finish on its own, cancel it and wait up
@@ -192,6 +193,18 @@ proc teardownAppFut(appFut: Future[void], timeout: Duration): Future[bool]
   ## still pending after the grace — the app is deliberately abandoned in
   ## that case, never read again; the caller proceeds with capture
   ## regardless (rfc §Design 5).
+  ##
+  ## `expectSelfExit` (fresco#115): the up-to-`timeout` optimistic wait only
+  ## makes sense for an app expected to terminate on its own (a `/quit`-style
+  ## test). When the caller has already PROVEN the app quiescent — a clean
+  ## `settleDrain` run whose every `drainToIdle` settled with the app still
+  ## parked on input — there is no self-exit coming (an input-only test never
+  ## sends its own quit), so pass `expectSelfExit = false`: skip the wait and
+  ## cancel the idle app immediately. That app is parked on `nextEvent`, so
+  ## its cancellation lands within `CancelGrace` and it is NOT abandoned —
+  ## which also avoids the M12 accumulation below for the common case. The
+  ## plain-Layout overload (no idle probe) and any drain run that did not end
+  ## cleanly idle keep `expectSelfExit = true`.
   ##
   ## Documented, accepted cost (M12, round-1 stage-4): abandoning `appFut`
   ## leaves chronos's cancellation retry (`cancelSoon`'s `checktick`)
@@ -202,7 +215,10 @@ proc teardownAppFut(appFut: Future[void], timeout: Duration): Future[bool]
   ## across a suite) accumulates these monotonically, not just once (rfc
   ## §"Residual, documented, not fork-patched" / "Accumulation across
   ## calls").
-  if await boundedAwait(appFut, timeout):
+  if expectSelfExit:
+    if await boundedAwait(appFut, timeout):
+      return false
+  elif appFut.finished:
     return false
   appFut.cancelSoon()
   result = not (await boundedAwait(appFut, CancelGrace))
@@ -633,7 +649,22 @@ proc runHeadless*(screen: InlineScreen[MemorySink],
   # Shared teardown (rfc §Design 5, "the withTimeout correction"): same
   # routine as the plain Layout overload, for both settle kinds — totality
   # is a harness invariant, not a settle-mode-specific policy.
-  result.cancelGraceExpired = await teardownAppFut(appFut, timeout)
+  #
+  # fresco#115: a clean drain run — every event injected, every `drainToIdle`
+  # settled, no app-death (`sfScriptTruncated`) or drain-timeout (`sfEvent`)
+  # break — has already proven the app parked idle on input. An input-only
+  # test sends no quit, so `teardownAppFut` must not burn the full `timeout`
+  # waiting for a self-exit that isn't coming; cancel the idle app at once.
+  # `skFixed` (no idle probe) and any short-circuited/timed-out drain run keep
+  # the optimistic self-exit wait, since the app's state is not proven idle.
+  # (Edge, accepted under the drain contract: an app that goes idle then
+  # self-exits via an armed-but-unfired timer — invisible to the idle probe —
+  # is cancelled before that timer fires. "Return when idle" is settleDrain's
+  # contract; a delayed self-exit while idle contradicts it. See fresco#115.)
+  let endedCleanIdle = settle.kind == skDrain and events.len > 0 and
+                       settleFailures.len == 0
+  result.cancelGraceExpired =
+    await teardownAppFut(appFut, timeout, expectSelfExit = not endedCleanIdle)
 
   case settle.kind
   of skFixed:
